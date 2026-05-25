@@ -193,6 +193,17 @@ class GameControllerView(context: Context) : View(context) {
                 activity.sendKey(49 + next, GLFW_PRESS)
                 activity.sendKey(49 + next, GLFW_RELEASE)
             }
+            glfwCode == -6 && action == GLFW_PRESS -> {
+                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                        as android.view.inputmethod.InputMethodManager
+                val surfaceView = activity.window.decorView.findViewWithTag<android.view.View>("minecraft_surface")
+                surfaceView?.requestFocus()
+                @Suppress("DEPRECATION")
+                imm.toggleSoftInput(
+                    android.view.inputmethod.InputMethodManager.SHOW_FORCED,
+                    android.view.inputmethod.InputMethodManager.HIDE_IMPLICIT_ONLY
+                )
+            }
         }
     }
 

@@ -78,7 +78,10 @@ object GlfwKeysAll {
         KeyInfo("N.", 330), KeyInfo("N/", 331), KeyInfo("N*", 332),
         KeyInfo("N-", 333), KeyInfo("N+", 334), KeyInfo("N↵", 335),
         // 마우스
-        KeyInfo("⚔", -1), KeyInfo("🧱", -2), KeyInfo("🖱", -3),
+        KeyInfo("⚔", -1),
+        KeyInfo("🧱", -2),
+        KeyInfo("🖱", -3),
+        KeyInfo("⌨️", -6),  // 소프트 키보드
     )
 }
 

@@ -11,6 +11,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.components.GameControllerOverlay
@@ -610,16 +611,24 @@ class MinecraftActivity : BaseActivity() {
 //            "-Dorg.lwjgl.glfw.libname=libpojavexec.so",
 //            "-Dminecraft.graphics.disableClouds=true",
 //        )
+        val session = MicrosoftAuthManager.loadSession(this)
+            ?: run { finish(); return }
+
+// 만료 체크 후 갱신
+        val validSession = if (!MicrosoftAuthManager.isSessionValid(session)) {
+            MicrosoftAuthManager.refreshSession(session.refreshToken)
+                .also { MicrosoftAuthManager.saveSession(this, it) }
+        } else session
 
         val mcArgs = arrayOf(
-            "--username", "DongHyun",
+            "--username", validSession.username,
             "--version", versionId,
             "--gameDir", mcDir.absolutePath,
             "--assetsDir", assetsDir.absolutePath,
             "--assetIndex", assetIndex,
-            "--uuid", "00000000-0000-0000-0000-000000000000",
-            "--accessToken", "0000",
-            "--userType", "mojang"
+            "--uuid", validSession.uuid,
+            "--accessToken", validSession.accessToken,
+            "--userType", "msa"
         )
 
         Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}")

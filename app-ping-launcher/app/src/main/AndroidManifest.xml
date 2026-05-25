@@ -17,6 +17,8 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.PingLauncher"
         tools:targetApi="31">
+        <activity android:name=".presentation.LoginActivity"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
         <activity android:name=".presentation.CrashReportActivity"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
         <activity android:name=".presentation.ModPackDetailActivity"

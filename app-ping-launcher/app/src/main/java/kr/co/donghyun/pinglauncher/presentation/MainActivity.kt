@@ -1,10 +1,12 @@
 package kr.co.donghyun.pinglauncher.presentation
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.lifecycleScope
@@ -13,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceMeta
 import kr.co.donghyun.pinglauncher.data.instance.InstanceType
@@ -36,12 +39,34 @@ class MainActivity : BaseActivity() {
 
     private val versionRepo = VersionRepository()
 
+    private var loginErrorMessage by mutableStateOf<String?>(null)
+    private var isLoggedIn by mutableStateOf(false)
+    private var username by mutableStateOf<String?>(null)
+
+    private val loginLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_CANCELED) {
+            val error = result.data?.getStringExtra(LoginActivity.RESULT_ERROR)
+            if (error != null) {
+                loginErrorMessage = error
+            }
+        } else if (result.resultCode == RESULT_OK) {
+            loginErrorMessage = null
+            // 세션 갱신
+            refreshLoginState()
+        }
+    }
+
     override fun onCreated() {
+        refreshLoginState()
+
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(
                 scrim = android.graphics.Color.TRANSPARENT
             )
         )
+
         setContent {
             PingLauncherTheme {
                 val versions by _versions.asStateFlow().collectAsState()
@@ -61,7 +86,10 @@ class MainActivity : BaseActivity() {
                     onDownloadAndPlay = { version -> startDownload(version) },
                     onOpenModPacks = { ModPackBrowserActivity.start(this@MainActivity) },
                     onOpenKeySettings = { KeyboardLayoutEditorActivity.start(this@MainActivity) },
-                    onOpenJVMSettings = { JvmSettingsActivity.start(this@MainActivity) }
+                    onOpenJVMSettings = { JvmSettingsActivity.start(this@MainActivity) },
+                    isLoggedIn = isLoggedIn,
+                    username = username,
+                    onLogin = { loginLauncher.launch(Intent(this, LoginActivity::class.java)) },
                 )
             }
         }
@@ -175,6 +203,12 @@ class MainActivity : BaseActivity() {
         }
     }
 
+    private fun refreshLoginState() {
+        val session = MicrosoftAuthManager.loadSession(this)
+        isLoggedIn = session != null && session.refreshToken.isNotEmpty()
+        username = session?.username
+    }
+
     private fun copyLwjglJarFromAssets(baseDir: File) {
         val dest = File(baseDir, "lwjgl3/lwjgl-glfw-classes.jar")
         dest.parentFile?.mkdirs()
@@ -191,5 +225,6 @@ class MainActivity : BaseActivity() {
             prefs.edit().remove("pending_crash_instance").apply()
             CrashReportActivity.start(this, pendingCrash)
         }
+        refreshLoginState()
     }
 }

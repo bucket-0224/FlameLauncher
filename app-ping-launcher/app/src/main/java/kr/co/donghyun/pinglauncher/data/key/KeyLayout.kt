@@ -32,6 +32,13 @@ object KeyLayoutManager {
         KeyButton("inv",    "E",  69,   0.92f, 0.72f, width = 52f, height = 52f),
         KeyButton("prev_slot", "⬅️", -4,   0.76f, 0.72f, width = 52f, height = 52f),
         KeyButton("next_slot", "➡️", -5,   0.84f, 0.72f, width = 52f, height = 52f),
+        KeyButton("esc",    "ESC", 256, 0.04f, 0.04f, width = 52f, height = 52f),
+        KeyButton("f3",     "F3",  292, 0.08f, 0.04f, width = 52f, height = 52f),
+        KeyButton("f5",     "F5",  294, 0.12f, 0.04f, width = 52f, height = 52f),
+        KeyButton("t",      "T",   84,  0.04f, 0.14f, width = 52f, height = 52f),
+        KeyButton("slash",  "/",   47,  0.08f, 0.14f, width = 52f, height = 52f),
+        KeyButton("drop",   "Q",   81,  0.12f, 0.14f, width = 52f, height = 52f),
+        KeyButton("keyboard", "⌨️", -6, 0.16f, 0.04f, width = 52f, height = 52f),
     )
 
     fun load(context: Context): List<KeyButton> {

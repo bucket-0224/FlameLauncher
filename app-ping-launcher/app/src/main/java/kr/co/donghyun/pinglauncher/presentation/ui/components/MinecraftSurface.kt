@@ -60,6 +60,7 @@ fun MinecraftSurface(
                     }
                 }
             }.apply {
+                tag = "minecraft_surface"
                 isFocusable = true
                 isFocusableInTouchMode = true
                 requestFocus()

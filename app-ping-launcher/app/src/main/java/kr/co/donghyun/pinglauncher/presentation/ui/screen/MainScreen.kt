@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -39,7 +40,11 @@ fun MainScreen(
     onDownloadAndPlay: (VersionEntry) -> Unit,
     onOpenModPacks: () -> Unit,
     onOpenKeySettings: () -> Unit,
-    onOpenJVMSettings: () -> Unit
+    onOpenJVMSettings: () -> Unit,
+    isLoggedIn: Boolean,        // ← 추가
+    username: String?,          // ← 추가
+    onLogin: () -> Unit,        // ← 추가
+    loginError: String? = null,
 ) {
     val isDownloading = progress.phase != DownloadPhase.IDLE &&
             progress.phase != DownloadPhase.DONE &&
@@ -119,7 +124,11 @@ fun MainScreen(
             progress = progress,
             isDownloading = isDownloading,
             onDownloadAndPlay = onDownloadAndPlay,
-            modifier = Modifier.align(Alignment.BottomCenter)
+            modifier = Modifier.align(Alignment.BottomCenter),
+            username = username,
+            isLoggedIn = isLoggedIn,
+            onLogin = onLogin,
+            loginError = loginError
         )
     }
 }
@@ -289,7 +298,11 @@ fun BottomPanel(
     progress: DownloadProgress,
     isDownloading: Boolean,
     onDownloadAndPlay: (VersionEntry) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    isLoggedIn: Boolean,
+    username: String?,
+    onLogin: () -> Unit,
+    loginError : String?
 ) {
     val isSelectedSupported = selectedVersion?.let { isVersionSupported(it.id) } ?: false
 
@@ -375,31 +388,69 @@ fun BottomPanel(
                         fontSize = 12.sp
                     )
                 }
+                if (isLoggedIn && username != null) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = username,
+                        color = PinkPrimary,
+                        fontSize = 11.sp
+                    )
+                }
             }
 
-            Button(
-                onClick = { selectedVersion?.let { onDownloadAndPlay(it) } },
-                enabled = selectedVersion != null && !isDownloading && isSelectedSupported,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = PinkPrimary,
-                    disabledContainerColor = BgBorder
-                ),
-                shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.height(44.dp)
-            ) {
-                if (isDownloading) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        modifier = Modifier.size(18.dp),
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    Text(
-                        text = "▶  Play",
-                        color = Color.White,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp
-                    )
+            if (!isLoggedIn) {
+                Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.End) {
+                    Button(
+                        onClick = onLogin,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = PinkPrimary,
+                            disabledContainerColor = BgBorder
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.height(44.dp)
+                    ) {
+                        Text(
+                            text = "🔑 로그인",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                    }
+                    if (loginError != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "❌ $loginError",
+                            color = Color(0xFFFF6B6B),
+                            fontSize = 12.sp,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+            } else {
+                Button(
+                    onClick = { selectedVersion?.let { onDownloadAndPlay(it) } },
+                    enabled = selectedVersion != null && !isDownloading && isSelectedSupported,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PinkPrimary,
+                        disabledContainerColor = BgBorder
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.height(44.dp)
+                ) {
+                    if (isDownloading) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            modifier = Modifier.size(18.dp),
+                            strokeWidth = 2.dp
+                        )
+                    } else {
+                        Text(
+                            text = "▶  Play",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp
+                        )
+                    }
                 }
             }
         }
