@@ -5,7 +5,6 @@ import com.google.gson.Gson
 import java.io.File
 
 data class JvmSettings(
-    val applicationContext: Context,
     val maxHeapMb: Int = 2048,
     val minHeapMb: Int = 512,
     val useG1GC: Boolean = true,
@@ -16,7 +15,8 @@ data class JvmSettings(
     val extraJvmArgs: String = "",   // 줄바꿈 구분 커스텀 인자
     val mouseSensitivity: Float = 1.5f,
     val renderDistance: Int = 8,
-    val graphicsMode: Int = 0        // 0=fast, 1=fancy, 2=fabulous
+    val graphicsMode: Int = 0,       // 0=fast, 1=fancy, 2=fabulous
+    val cacheDirPath: String = ""
 ) {
     fun toJvmArgArray(
         userDir: String,
@@ -55,7 +55,7 @@ data class JvmSettings(
             "-Dfml.earlyprogresswindow=false",
             "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
             "-Dorg.lwjgl.glfw.libname=libpojavexec.so",
-            "-Djava.io.tmpdir=${applicationContext.cacheDir.absolutePath}",
+            "-Djava.io.tmpdir=${cacheDirPath}",
         )
         if (disableClouds) args += "-Dminecraft.graphics.disableClouds=true"
 
@@ -76,10 +76,15 @@ object JvmSettingsManager {
     fun load(context: Context): JvmSettings {
         return try {
             val file = File(context.filesDir, FILE_NAME)
-            if (!file.exists()) return JvmSettings(context)
-            gson.fromJson(file.readText(), JvmSettings::class.java) ?: JvmSettings(context)
+            if (!file.exists()) return JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
+            val settings = gson.fromJson(file.readText(), JvmSettings::class.java)
+                ?: JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
+            // cacheDirPath가 비어있으면 채워주기
+            if (settings.cacheDirPath.isEmpty())
+                settings.copy(cacheDirPath = context.cacheDir.absolutePath)
+            else settings
         } catch (_: Exception) {
-            JvmSettings(context)
+            JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
         }
     }
 
@@ -90,7 +95,7 @@ object JvmSettingsManager {
     }
 
     fun reset(context: Context): JvmSettings {
-        val default = JvmSettings(context)
+        val default = JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
         save(context, default)
         return default
     }

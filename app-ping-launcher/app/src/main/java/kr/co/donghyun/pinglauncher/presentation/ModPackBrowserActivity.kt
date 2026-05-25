@@ -302,10 +302,11 @@ class ModPackBrowserActivity : BaseActivity() {
                 _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
                 _statusMessage.value = "✅ 설치 완료!"
 
+                prepareNatives(applicationContext, applicationInfo)
+                copyLwjglJar(applicationContext)
+                prePopulateLwjgl(result.mcVersion, applicationContext)
+
                 withContext(Dispatchers.Main) {
-                    prepareNatives(applicationContext, applicationInfo)
-                    copyLwjglJar(applicationContext)
-                    prePopulateLwjgl(result.mcVersion, applicationContext)
                     launchInstance(meta, instanceDir)
                 }
             } catch (e: Exception) {

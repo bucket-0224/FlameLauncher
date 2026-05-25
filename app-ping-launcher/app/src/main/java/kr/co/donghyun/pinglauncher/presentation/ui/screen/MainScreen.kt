@@ -166,17 +166,18 @@ fun Header(onOpenModPacks: () -> Unit, onOpenKeySettings: () -> Unit, onOpenJVMS
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(BgSurface)
-                    .border(1.dp, BgBorder, RoundedCornerShape(8.dp))
-                    .clickable { onOpenModPacks() }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("📦 모드팩", color = PinkLight, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-            }
+            // is disabled now;
+//            Box(
+//                modifier = Modifier
+//                    .clip(RoundedCornerShape(8.dp))
+//                    .background(BgSurface)
+//                    .border(1.dp, BgBorder, RoundedCornerShape(8.dp))
+//                    .clickable { onOpenModPacks() }
+//                    .padding(horizontal = 10.dp, vertical = 6.dp),
+//                contentAlignment = Alignment.Center
+//            ) {
+//                Text("📦 모드팩", color = PinkLight, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+//            }
 
             Box(
                 modifier = Modifier

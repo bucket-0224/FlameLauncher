@@ -611,30 +611,48 @@ class MinecraftActivity : BaseActivity() {
 //            "-Dorg.lwjgl.glfw.libname=libpojavexec.so",
 //            "-Dminecraft.graphics.disableClouds=true",
 //        )
-        val session = MicrosoftAuthManager.loadSession(this)
-            ?: run { finish(); return }
 
-// 만료 체크 후 갱신
-        val validSession = if (!MicrosoftAuthManager.isSessionValid(session)) {
-            MicrosoftAuthManager.refreshSession(session.refreshToken)
-                .also { MicrosoftAuthManager.saveSession(this, it) }
-        } else session
+        // 만료 체크 후 갱신
+        // startMinecraft() 내부에서 mcArgs 생성 부분
 
-        val mcArgs = arrayOf(
-            "--username", validSession.username,
-            "--version", versionId,
-            "--gameDir", mcDir.absolutePath,
-            "--assetsDir", assetsDir.absolutePath,
-            "--assetIndex", assetIndex,
-            "--uuid", validSession.uuid,
-            "--accessToken", validSession.accessToken,
-            "--userType", "msa"
-        )
 
         Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}")
 
         Thread {
             try {
+                val session = MicrosoftAuthManager.loadSession(this)
+                val validSession = if (session != null && !MicrosoftAuthManager.isSessionValid(session)) {
+                    try {
+                        MicrosoftAuthManager.refreshSession(session.refreshToken)
+                            .also { MicrosoftAuthManager.saveSession(this, it) }
+                    } catch (_: Exception) { session }
+                } else session
+
+                val mcArgs = if (validSession != null) {
+                    arrayOf(
+                        "--username", validSession.username,
+                        "--version", versionId,
+                        "--gameDir", mcDir.absolutePath,
+                        "--assetsDir", assetsDir.absolutePath,
+                        "--assetIndex", assetIndex,
+                        "--uuid", validSession.uuid,
+                        "--accessToken", validSession.accessToken,
+                        "--userType", "msa"
+                    )
+                } else {
+                    // 로그인 안 된 경우 오프라인 모드
+                    arrayOf(
+                        "--username", "Player",
+                        "--version", versionId,
+                        "--gameDir", mcDir.absolutePath,
+                        "--assetsDir", assetsDir.absolutePath,
+                        "--assetIndex", assetIndex,
+                        "--uuid", "00000000-0000-0000-0000-000000000000",
+                        "--accessToken", "0",
+                        "--userType", "mojang"
+                    )
+                }
+
                 JavaNativeLauncher().bootMinecraftJVM(libJvmPath, jvmArgs, mcArgs)
             } catch (e: Exception) {
                 Log.e("PING_LAUNCHER", "MC 실행 예외: ${e.message}")
