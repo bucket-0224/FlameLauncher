@@ -2,6 +2,16 @@
 
 Android에서 Minecraft: Java Edition을 실행하는 런처입니다. [PojavLauncher](https://github.com/PojavLauncherTeam/PojavLauncher)를 기반으로 제작되었습니다.
 
+## ⚠️ 주의사항
+
+> **이 런처는 현재 Fabric 모드로더만 지원합니다.**
+>
+> - Forge 1.17 이상은 Android JRE의 한계로 지원되지 않습니다.
+> - Forge 1.12.2는 부분적으로 지원되나 LWJGL2 미지원으로 인해 정상 동작을 보장하지 않습니다.
+> - **모드팩 브라우저는 Fabric 전용 모드팩만 표시합니다.**
+> - 일부 Fabric 모드팩도 포함된 모드에 따라 정상 실행되지 않을 수 있습니다. OpenGL 셰이더, 특정 렌더링 모드, 플랫폼별 네이티브 라이브러리를 사용하는 모드는 자동으로 비활성화되거나 크래시를 유발할 수 있습니다.
+> - 실행 중 크래시가 발생하면 앱 내 **크래시 리포트 뷰어**에서 원인 모드를 비활성화하고 재시도하세요.
+
 ## 기능
 
 - **바닐라 마인크래프트** 지원 (1.21.4 이하)
@@ -121,6 +131,16 @@ Minecraft는 Mojang Studios / Microsoft의 상표입니다. 이 프로젝트는 
 # PingLauncher (English)
 
 An Android launcher for Minecraft: Java Edition, built on top of [PojavLauncher](https://github.com/PojavLauncherTeam/PojavLauncher).
+
+## ⚠️ Important Notes
+
+> **This launcher currently supports Fabric mod loader only.**
+>
+> - Forge 1.17+ is not supported due to Android JRE limitations (`jdk.nio.zipfs` missing).
+> - Forge 1.12.2 is partially supported but not guaranteed to work due to missing LWJGL2 support.
+> - **The modpack browser only shows Fabric-based modpacks.**
+> - Some Fabric modpacks may not work correctly depending on the mods included. Mods that use OpenGL shaders, specific rendering features, or platform-specific native libraries may be automatically disabled or cause crashes.
+> - If a crash occurs, use the built-in **Crash Report Viewer** to identify and disable the problematic mod, then retry.
 
 ## Features
 
