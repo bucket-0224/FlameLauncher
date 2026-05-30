@@ -84,6 +84,7 @@ class MainActivity : BaseActivity() {
                     onVersionSelect = { _selectedVersion.value = it },
                     onToggleFilter = { _showOnlyRelease.value = !showOnlyRelease },
                     onDownloadAndPlay = { version -> startDownload(version) },
+                    onLaunchFabric = { version, loader -> startFabricDownloadAndPlay(version, loader) },
                     onOpenModPacks = { ModPackBrowserActivity.start(this@MainActivity) },
                     onOpenKeySettings = { KeyboardLayoutEditorActivity.start(this@MainActivity) },
                     onOpenJVMSettings = { JvmSettingsActivity.start(this@MainActivity) },
@@ -214,6 +215,89 @@ class MainActivity : BaseActivity() {
         dest.parentFile?.mkdirs()
         assets.open("lwjgl-glfw-classes.jar").use { input ->
             dest.outputStream().use { input.copyTo(it) }
+        }
+    }
+
+    private fun startFabricDownloadAndPlay(version: VersionEntry, loaderVersion: String) {
+        val mcVersion = version.id
+        val instanceId = kr.co.donghyun.pinglauncher.data.instance.InstanceManager.fabricId(mcVersion, loaderVersion)
+        val instanceDir = kr.co.donghyun.pinglauncher.data.instance.InstanceManager.instanceDir(this, instanceId)
+        val internalBaseDir = applicationContext.filesDir
+        val nativesDir = File(internalBaseDir, "natives")
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                _progress.value = DownloadProgress(phase = DownloadPhase.FETCHING_MANIFEST)
+
+                // 1) 바닐라 다운로드 (인스턴스 dir로)
+                val mcPreparer = kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftDownloader(
+                    instanceDir = instanceDir,
+                    versionEntry = version,
+                    onProgress = { _progress.value = it }
+                )
+                val assetIndexId = mcPreparer.prepare()
+
+                // 2) Fabric 라이브러리 같은 인스턴스 dir에 머지
+                val fabricResult = kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricInstaller(
+                    instanceDir
+                ) { msg, cur, tot ->
+                    _progress.value = DownloadProgress(
+                        phase = DownloadPhase.DOWNLOADING_LIBRARIES,
+                        current = cur, total = tot, fileName = msg
+                    )
+                }.install(mcVersion, loaderVersion)
+
+                if (!fabricResult.success) {
+                    _progress.value = DownloadProgress(
+                        phase = DownloadPhase.ERROR,
+                        error = "Fabric 설치 실패: ${fabricResult.error}"
+                    )
+                    return@launch
+                }
+
+                // 3) natives & lwjgl
+                copyNativesFromApkLibDir(nativesDir)
+                copyLwjglJarFromAssets(internalBaseDir)
+                prePopulateLwjglExtractDir(internalBaseDir, nativesDir, mcVersion)
+
+                // 4) mods 폴더 보장
+                File(instanceDir, "mods").mkdirs()
+
+                // 5) 인스턴스 메타 저장
+                kr.co.donghyun.pinglauncher.data.instance.InstanceManager.saveMeta(
+                    this@MainActivity,
+                    kr.co.donghyun.pinglauncher.data.instance.InstanceMeta(
+                        id = instanceId,
+                        name = "$mcVersion · Fabric $loaderVersion",
+                        type = kr.co.donghyun.pinglauncher.data.instance.InstanceType.FABRIC,
+                        mcVersion = mcVersion,
+                        loaderType = "fabric",
+                        loaderVersion = loaderVersion,
+                        mainClass = fabricResult.mainClass,
+                        extraJars = fabricResult.extraJars,
+                        assetIndexId = assetIndexId,
+                        iconEmoji = "🧵",
+                        gameJvmArgs = fabricResult.gameJvmArgs,
+                        gameArgs = fabricResult.gameArgs
+                    )
+                )
+
+                _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
+
+                withContext(Dispatchers.Main) {
+                    MinecraftActivity.start(
+                        this@MainActivity,
+                        versionId = mcVersion,
+                        assetIndex = assetIndexId,
+                        extraJars = fabricResult.extraJars,
+                        mainClass = fabricResult.mainClass,
+                        instanceDir = instanceDir.absolutePath
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e("PING_LAUNCHER", "Fabric 흐름 실패: ${e.message}", e)
+                _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = e.message)
+            }
         }
     }
 

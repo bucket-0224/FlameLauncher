@@ -147,14 +147,76 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSetupBridg
     LOGI("MinecraftActivity: nativeSetupBridgeWindow 완료");
 }
 
+// Caused by 체인까지 재귀 출력
+static void printJavaException(JNIEnv* env, jthrowable ex, int depth) {
+    if (!ex || depth > 8) return;
+
+    jclass exClass = env->GetObjectClass(ex);
+    if (!exClass) return;
+
+    jmethodID toStringMethod = env->GetMethodID(exClass, "toString", "()Ljava/lang/String;");
+    if (toStringMethod) {
+        jstring msgString = (jstring)env->CallObjectMethod(ex, toStringMethod);
+        if (msgString) {
+            const char* msgC = env->GetStringUTFChars(msgString, nullptr);
+            if (depth == 0) LOGE("❌ 예외: %s", msgC);
+            else            LOGE("⤷ Caused by: %s", msgC);
+            env->ReleaseStringUTFChars(msgString, msgC);
+            env->DeleteLocalRef(msgString);
+        }
+    }
+
+    jmethodID getStackTraceMethod = env->GetMethodID(exClass, "getStackTrace", "()[Ljava/lang/StackTraceElement;");
+    if (getStackTraceMethod) {
+        jobjectArray stackTrace = (jobjectArray)env->CallObjectMethod(ex, getStackTraceMethod);
+        if (stackTrace) {
+            jsize length = env->GetArrayLength(stackTrace);
+            int maxFrames = (depth == 0) ? 30 : 20;
+            for (int i = 0; i < length && i < maxFrames; i++) {
+                jobject element = env->GetObjectArrayElement(stackTrace, i);
+                if (element) {
+                    jclass elementClass = env->GetObjectClass(element);
+                    jmethodID elementToString = env->GetMethodID(elementClass, "toString", "()Ljava/lang/String;");
+                    if (elementToString) {
+                        jstring elementString = (jstring)env->CallObjectMethod(element, elementToString);
+                        if (elementString) {
+                            const char* elementC = env->GetStringUTFChars(elementString, nullptr);
+                            LOGE("    at %s", elementC);
+                            env->ReleaseStringUTFChars(elementString, elementC);
+                            env->DeleteLocalRef(elementString);
+                        }
+                    }
+                    env->DeleteLocalRef(elementClass);
+                    env->DeleteLocalRef(element);
+                }
+            }
+            env->DeleteLocalRef(stackTrace);
+        }
+    }
+
+    jmethodID getCauseMethod = env->GetMethodID(exClass, "getCause", "()Ljava/lang/Throwable;");
+    if (getCauseMethod) {
+        jthrowable cause = (jthrowable)env->CallObjectMethod(ex, getCauseMethod);
+        if (cause && !env->IsSameObject(cause, ex)) {
+            printJavaException(env, cause, depth + 1);
+        }
+        if (cause) env->DeleteLocalRef(cause);
+    }
+
+    env->DeleteLocalRef(exClass);
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMinecraftJVM(
         JNIEnv* env, jobject thiz, jstring lib_jvm_path, jobjectArray jvm_args, jobjectArray mc_args) {
 
-    setenv("POJAV_RENDERER", "opengles3", 1);
+    setenv("POJAV_RENDERER", "vulkan_ltw", 1);
+    setenv("LIBGL_STRING", "VulkanGL", 1);
+    setenv("LIBGL_NAME", "libltw.so", 1);
+    setenv("DLOPEN", "libltw.so", 1);
+    setenv("MESA_GLSL_CACHE_DIR", "/data/data/kr.co.donghyun.pinglauncher/cache", 1);
     setenv("FORCE_VSYNC", "false", 1);
     setenv("POJAV_VSYNC", "1", 1);
-    setenv("LIBGL_ES", "3", 1);  // 2 → 3
 
 
     // =========================================================================
@@ -208,6 +270,11 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
 
     LOGI("자바 핵심 의존성 라이브러리 선행 로드 완료!");
     // =========================================================================
+
+    // ───────── 여기 추가 ─────────
+    unsetenv("POJAV_RENDERER");
+    LOGI("POJAV_RENDERER env 제거됨 (Sodium 시그니처 회피)");
+    // ─────────────────────────────
 
     // 2. OpenJDK의 JNI_CreateJavaVM 함수 포인터 획득
     CreateJavaVM_t createJavaVM = (CreateJavaVM_t)dlsym(handle, "JNI_CreateJavaVM");
@@ -287,51 +354,13 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
 
     jclass mainClass = customEnv->FindClass(mainClassNameStr.c_str());
     if (mainClass == nullptr) {
-        // 🔥 OpenJDK 내부에서 발생한 자바 예외를 JNI로 직접 파싱하여 로그캣에 강제 출력
         if (customEnv->ExceptionCheck()) {
-            LOGE("🚨 OpenJDK 내부에서 치명적 예외 발생! 상세 스택트레이스를 출력합니다.");
+            LOGE("🚨 OpenJDK 내부 예외 발생!");
             jthrowable ex = customEnv->ExceptionOccurred();
-            customEnv->ExceptionClear(); // JNI 호출을 위해 일시적 클리어
-
-            // 예외 클래스 이름 및 기본 메시지 출력 (e.g. java.lang.ClassNotFoundException)
-            jclass exClass = customEnv->GetObjectClass(ex);
-            jmethodID toStringMethod = customEnv->GetMethodID(exClass, "toString", "()Ljava/lang/String;");
-            if (toStringMethod) {
-                jstring msgString = (jstring)customEnv->CallObjectMethod(ex, toStringMethod);
-                if (msgString) {
-                    const char* msgCString = customEnv->GetStringUTFChars(msgString, nullptr);
-                    LOGE("❌ 예외 원인: %s", msgCString);
-                    customEnv->ReleaseStringUTFChars(msgString, msgCString);
-                }
-            }
-
-            // 자바 스택 트레이스 배열(StackTraceElement[])을 순회하며 원인 한 줄씩 출력
-            jmethodID getStackTraceMethod = customEnv->GetMethodID(exClass, "getStackTrace", "()[Ljava/lang/StackTraceElement;");
-            if (getStackTraceMethod) {
-                jobjectArray stackTrace = (jobjectArray)customEnv->CallObjectMethod(ex, getStackTraceMethod);
-                if (stackTrace) {
-                    jsize length = customEnv->GetArrayLength(stackTrace);
-                    for (int i = 0; i < length && i < 15; i++) { // 최대 15줄 출력
-                        jobject element = customEnv->GetObjectArrayElement(stackTrace, i);
-                        if (element) {
-                            jclass elementClass = customEnv->GetObjectClass(element);
-                            jmethodID elementToString = customEnv->GetMethodID(elementClass, "toString", "()Ljava/lang/String;");
-                            if (elementToString) {
-                                jstring elementString = (jstring)customEnv->CallObjectMethod(element, elementToString);
-                                if (elementString) {
-                                    const char* elementCString = customEnv->GetStringUTFChars(elementString, nullptr);
-                                    LOGE("    at %s", elementCString);
-                                    customEnv->ReleaseStringUTFChars(elementString, elementCString);
-                                }
-                            }
-                            customEnv->DeleteLocalRef(elementClass);
-                            customEnv->DeleteLocalRef(element);
-                        }
-                    }
-                }
-            }
+            customEnv->ExceptionClear();
+            printJavaException(customEnv, ex, 0);
+            customEnv->DeleteLocalRef(ex);
         }
-
         LOGE("마인크래프트 메인 클래스를 찾을 수 없습니다.");
         return -4;
     }
@@ -360,7 +389,7 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
     }
 
     // 🚀 드디어 마인크래프트 최초 구동
-    LOGI("net.minecraft.client.main.Main.main() 실행!");
+    LOGI("%s.main() 실행!", mainClassNameStr.c_str());
     customEnv->CallStaticVoidMethod(mainClass, mainMethod, mc_args_for_jvm);
 
     // =========================================================================
@@ -369,45 +398,10 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
     if (customEnv->ExceptionCheck()) {
         LOGE("🚨 마인크래프트 실행 중 치명적인 자바 예외가 발생했습니다!");
         jthrowable ex = customEnv->ExceptionOccurred();
-        customEnv->ExceptionClear(); // 로그 출력을 위해 JNI 예외 상태 일시 클리어
-
-        jclass exClass = customEnv->GetObjectClass(ex);
-        jmethodID toStringMethod = customEnv->GetMethodID(exClass, "toString", "()Ljava/lang/String;");
-        if (toStringMethod) {
-            jstring msgString = (jstring)customEnv->CallObjectMethod(ex, toStringMethod);
-            if (msgString) {
-                const char* msgCString = customEnv->GetStringUTFChars(msgString, nullptr);
-                LOGE("❌ 마인크래프트 다운 원인: %s", msgCString);
-                customEnv->ReleaseStringUTFChars(msgString, msgCString);
-            }
-        }
-
-        // 스택 트레이스 세부 출력
-        jmethodID getStackTraceMethod = customEnv->GetMethodID(exClass, "getStackTrace", "()[Ljava/lang/StackTraceElement;");
-        if (getStackTraceMethod) {
-            jobjectArray stackTrace = (jobjectArray)customEnv->CallObjectMethod(ex, getStackTraceMethod);
-            if (stackTrace) {
-                jsize length = customEnv->GetArrayLength(stackTrace);
-                for (int i = 0; i < length && i < 20; i++) { // 원인 추적을 위해 20줄 출력
-                    jobject element = customEnv->GetObjectArrayElement(stackTrace, i);
-                    if (element) {
-                        jclass elementClass = customEnv->GetObjectClass(element);
-                        jmethodID elementToString = customEnv->GetMethodID(elementClass, "toString", "()Ljava/lang/String;");
-                        if (elementToString) {
-                            jstring elementString = (jstring)customEnv->CallObjectMethod(element, elementToString);
-                            if (elementString) {
-                                const char* elementCString = customEnv->GetStringUTFChars(elementString, nullptr);
-                                LOGE("    at %s", elementCString);
-                                customEnv->ReleaseStringUTFChars(elementString, elementCString);
-                            }
-                        }
-                        customEnv->DeleteLocalRef(elementClass);
-                        customEnv->DeleteLocalRef(element);
-                    }
-                }
-            }
-        }
-        return -6; // 예외 발생 시 에러 코드 리턴
+        customEnv->ExceptionClear();
+        printJavaException(customEnv, ex, 0);
+        customEnv->DeleteLocalRef(ex);
+        return -6;
     }
 
     return 0;

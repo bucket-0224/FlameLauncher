@@ -188,23 +188,15 @@ class ModPackBrowserActivity : BaseActivity() {
     }
 
     private fun launchModpack(mod: CurseForgeMod) {
-        val cache = loadCache(mod) ?: return
-        val instanceId = InstanceManager.modpackId(mod.name)  // "modpack_COBBLEVERSE_..."
+        val instanceId = InstanceManager.modpackId(mod.name)
         val instanceDir = InstanceManager.instanceDir(this@ModPackBrowserActivity, instanceId)
+        val meta = InstanceManager.loadMeta(instanceDir) ?: return
 
         lifecycleScope.launch(Dispatchers.Main) {
             prepareNatives(applicationContext, applicationInfo)
             copyLwjglJar(applicationContext)
-            prePopulateLwjgl(cache.mcVersion, applicationContext)
-
-            MinecraftActivity.start(
-                this@ModPackBrowserActivity,
-                versionId = cache.mcVersion,
-                assetIndex = cache.assetIndexId,
-                extraJars = cache.extraJars,
-                mainClass = cache.mainClass,
-                instanceDir = instanceDir.absolutePath
-            )
+            prePopulateLwjgl(meta.mcVersion, applicationContext)
+            launchInstance(meta, instanceDir)
         }
     }
 
@@ -219,85 +211,119 @@ class ModPackBrowserActivity : BaseActivity() {
                 val instanceDir = InstanceManager.instanceDir(this@ModPackBrowserActivity, instanceId)
 
                 // 캐시 확인
-                val cacheFile = File(instanceDir, "instance.json")
-                val existingMeta = if (cacheFile.exists()) {
-                    try { InstanceManager.loadMeta(instanceDir) } catch (_: Exception) { null }
-                } else null
-
+                val existingMeta = InstanceManager.loadMeta(instanceDir)
                 if (existingMeta != null) {
-                    // 캐시 존재 — 바로 실행
                     val assetExists = File(instanceDir, "assets/indexes/${existingMeta.assetIndexId}.json").exists()
                     if (assetExists) {
-                        Log.d("PING_LAUNCHER", "✅ 캐시에서 로드: ${mod.name}")
+                        Log.d("PING_LAUNCHER", "✅ 인스턴스 캐시 사용: ${mod.name}")
                         _installedIds.value = _installedIds.value + mod.id
                         _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
-                        withContext(Dispatchers.Main) {
-                            launchInstance(existingMeta, instanceDir)
-                        }
+                        withContext(Dispatchers.Main) { launchInstance(existingMeta, instanceDir) }
                         return@launch
                     }
                 }
 
-                // 모드팩 설치
+                // 1) 모드팩 콘텐츠 (zip, manifest, overrides, mods 다운로드)
                 _progress.value = DownloadProgress(phase = DownloadPhase.FETCHING_MANIFEST, fileName = mod.name)
-                val files = curseApi.getModFiles(mod.id)
-                if (files.isEmpty()) { _statusMessage.value = "❌ 파일을 찾을 수 없음"; return@launch }
+
+                val mcRegex = Regex("^1\\.\\d+(\\..*)?$")
+
+// 1순위: latestFilesIndexes에서 Fabric(=4) + 정상 MC 버전 항목 (검색 응답에 이미 포함됨)
+                val fabricIdx = mod.latestFilesIndexes
+                    .filter { it.modLoader == 4 }
+                    .firstOrNull { it.gameVersion.matches(mcRegex) }
+
+                val (chosenFileId, chosenMc) = if (fabricIdx != null) {
+                    Log.d("PING_LAUNCHER", "Fabric 인덱스 선택: fileId=${fabricIdx.fileId}, mc=${fabricIdx.gameVersion}")
+                    fabricIdx.fileId to fabricIdx.gameVersion
+                } else {
+                    // 2순위: files 엔드포인트 폴백
+                    val files = curseApi.getModFiles(mod.id)
+                    val targetFile = files.firstOrNull()
+                        ?: run { _statusMessage.value = "❌ 파일 목록 비어있음"; return@launch }
+                    val mcFromFile = targetFile.gameVersions.firstOrNull { it.matches(mcRegex) }
+                    Log.d("PING_LAUNCHER", "files 폴백: id=${targetFile.id}, gameVersions=${targetFile.gameVersions}, mc=$mcFromFile")
+                    targetFile.id to (mcFromFile ?: "")
+                }
+
+                if (chosenMc.isEmpty()) {
+                    val tags = mod.latestFilesIndexes.map { "${it.gameVersion}/loader=${it.modLoader}" }
+                    _statusMessage.value = "❌ MC 버전 추론 실패. 태그: $tags"
+                    Log.e("PING_LAUNCHER", "MC 버전 추론 실패. latestFilesIndexes=$tags")
+                    return@launch
+                }
 
                 val installer = ModPackInstaller(
-                    baseDir = instanceDir,   // ← 인스턴스 폴더 안에 설치
+                    baseDir = instanceDir,
                     curseForgeApi = curseApi,
                     onProgress = { _progress.value = it }
                 )
-                val result = installer.install(mod, files.first().id)
+                val result = installer.install(
+                    mod = mod,
+                    fileId = chosenFileId,
+                    mcVersionOverride = chosenMc
+                )
+
                 if (!result.success) { _statusMessage.value = "❌ ${result.error}"; return@launch }
 
-                // Fabric/Forge 설치
-                val extraJars = mutableListOf<String>()
-                var mainClass = "net.minecraft.client.main.Main"
-                var loaderType: String? = null
-                var loaderVersion: String? = null
-
-                result.forgeId?.let { forgeId ->
-                    val forgeInstaller = ForgeInstaller(instanceDir) { msg ->
-                        _statusMessage.value = msg
-                    }
-                    val forgeResult = forgeInstaller.install(forgeId)
-                    if (forgeResult.success) {
-                        extraJars.addAll(forgeResult.extraJars)
-                        mainClass = forgeResult.mainClass
-                        loaderType = if (forgeId.contains("fabric")) "fabric" else "forge"
-                        loaderVersion = forgeResult.forgeVersion
-                    }
+                // 2) 로더 분기 — Fabric만 지원
+                if (result.loaderType != "fabric") {
+                    _statusMessage.value = "❌ ${result.loaderType ?: "알 수 없는"} 모드팩은 아직 지원되지 않습니다."
+                    InstanceManager.deleteInstance(this@ModPackBrowserActivity, instanceId)
+                    return@launch
                 }
+                val loaderVersion = result.loaderVersion
+                    ?: run { _statusMessage.value = "❌ Fabric 로더 버전 누락"; return@launch }
 
-                // MC 다운로드 — instanceDir 안에
+                // 3) Vanilla MC 다운로드
                 _statusMessage.value = "Minecraft ${result.mcVersion} 다운로드 중..."
                 val versionRepo = VersionRepository()
                 val versionUrl = try { versionRepo.fetchVersionJsonUrl(result.mcVersion) } catch (_: Exception) { "" }
-                if (versionUrl.isEmpty()) { _statusMessage.value = "❌ MC ${result.mcVersion} 버전을 찾을 수 없음"; return@launch }
-
+                if (versionUrl.isEmpty()) {
+                    _statusMessage.value = "❌ MC ${result.mcVersion} 을 찾을 수 없음"; return@launch
+                }
                 val mcDownloader = ForgeMinecraftDownloader(
-                    gameDir = instanceDir,   // ← 인스턴스 폴더 안에
+                    gameDir = instanceDir,
                     versionUrl = versionUrl,
                     versionId = result.mcVersion,
                     onProgress = { _progress.value = it }
                 )
                 val assetIndexId = mcDownloader.prepare()
 
-                // 인스턴스 메타 저장
+                // 4) Fabric Loader 설치 (새 FabricInstaller)
+                _statusMessage.value = "Fabric Loader $loaderVersion 설치 중..."
+                val fabricInstaller = kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricInstaller(
+                    instanceDir
+                ) { msg, cur, tot ->
+                    _statusMessage.value = msg
+                    _progress.value = DownloadProgress(
+                        phase = DownloadPhase.DOWNLOADING_LIBRARIES,
+                        current = cur, total = tot, fileName = msg
+                    )
+                }
+                val fabricResult = fabricInstaller.install(result.mcVersion, loaderVersion)
+                if (!fabricResult.success) {
+                    _statusMessage.value = "❌ Fabric 설치 실패: ${fabricResult.error}"
+                    return@launch
+                }
+
+                // 5) 메타 저장
                 val meta = InstanceMeta(
                     id = instanceId,
                     name = mod.name,
                     type = InstanceType.MODPACK,
                     mcVersion = result.mcVersion,
-                    loaderType = loaderType,
+                    loaderType = "fabric",
                     loaderVersion = loaderVersion,
-                    mainClass = mainClass,
-                    extraJars = extraJars,
+                    mainClass = fabricResult.mainClass,
+                    extraJars = fabricResult.extraJars,
                     assetIndexId = assetIndexId,
-                    iconEmoji = "📦"
+                    iconEmoji = "📦",
+                    gameJvmArgs = fabricResult.gameJvmArgs,
+                    gameArgs = fabricResult.gameArgs
                 )
                 InstanceManager.saveMeta(this@ModPackBrowserActivity, meta)
+
                 _installedIds.value = _installedIds.value + mod.id
                 _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
                 _statusMessage.value = "✅ 설치 완료!"
@@ -306,9 +332,7 @@ class ModPackBrowserActivity : BaseActivity() {
                 copyLwjglJar(applicationContext)
                 prePopulateLwjgl(result.mcVersion, applicationContext)
 
-                withContext(Dispatchers.Main) {
-                    launchInstance(meta, instanceDir)
-                }
+                withContext(Dispatchers.Main) { launchInstance(meta, instanceDir) }
             } catch (e: Exception) {
                 Log.e("PING_LAUNCHER", "모드팩 설치 실패: ${e.message}", e)
                 _statusMessage.value = "❌ ${e.message}"

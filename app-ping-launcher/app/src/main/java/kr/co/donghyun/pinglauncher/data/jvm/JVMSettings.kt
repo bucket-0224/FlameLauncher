@@ -44,8 +44,7 @@ data class JvmSettings(
             "-Djava.class.path=$classPath",
             "-Djava.library.path=$libraryPath",
             "-Dorg.lwjgl.librarypath=$libraryPath",
-            "-Dorg.lwjgl.opengl.libname=libng_gl4es.so",
-            "-Dorg.lwjgl.opengles.libname=libng_gl4es.so",
+            "-Dorg.lwjgl.opengl.libname=libOSMesa.so",
             "-Dping.main.class=$mainClass",
             "-Dorg.lwjgl.system.SharedLibraryExtractPath=$libraryPath",
             "-Dorg.lwjgl.system.SharedLibraryExtractDirectory=$libraryPath",
@@ -54,7 +53,6 @@ data class JvmSettings(
             "-Djava.awt.headless=true",
             "-Dfml.earlyprogresswindow=false",
             "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
-            "-Dorg.lwjgl.glfw.libname=libpojavexec.so",
             "-Djava.io.tmpdir=${cacheDirPath}",
         )
         if (disableClouds) args += "-Dminecraft.graphics.disableClouds=true"

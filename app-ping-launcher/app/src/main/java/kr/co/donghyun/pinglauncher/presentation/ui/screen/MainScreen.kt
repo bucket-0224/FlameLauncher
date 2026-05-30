@@ -11,7 +11,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -25,6 +28,7 @@ import kr.co.donghyun.pinglauncher.data.mojang.DownloadPhase
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
 import kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
 import kr.co.donghyun.pinglauncher.presentation.*
+import kr.co.donghyun.pinglauncher.presentation.ui.components.LoaderSelectDialog
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
 import kr.co.donghyun.pinglauncher.presentation.util.isVersionSupported
 
@@ -38,6 +42,7 @@ fun MainScreen(
     onVersionSelect: (VersionEntry) -> Unit,
     onToggleFilter: () -> Unit,
     onDownloadAndPlay: (VersionEntry) -> Unit,
+    onLaunchFabric: (VersionEntry, String) -> Unit,
     onOpenModPacks: () -> Unit,
     onOpenKeySettings: () -> Unit,
     onOpenJVMSettings: () -> Unit,
@@ -53,6 +58,8 @@ fun MainScreen(
     val filtered = if (showOnlyRelease)
         versions.filter { it.type == "release" }
     else versions
+
+    var showLoaderDialog by remember { mutableStateOf(false) }
 
     // 전체를 Box로 감싸서 BottomPanel을 하단에 고정
     Box(
@@ -123,13 +130,28 @@ fun MainScreen(
             selectedVersion = selectedVersion,
             progress = progress,
             isDownloading = isDownloading,
-            onDownloadAndPlay = onDownloadAndPlay,
+            onPlayClick = { showLoaderDialog = true },   // ← 변경
             modifier = Modifier.align(Alignment.BottomCenter),
             username = username,
             isLoggedIn = isLoggedIn,
             onLogin = onLogin,
             loginError = loginError
         )
+
+        if (showLoaderDialog && selectedVersion != null) {
+            LoaderSelectDialog(
+                versionId = selectedVersion.id,
+                onDismiss = { showLoaderDialog = false },
+                onLaunchVanilla = {
+                    showLoaderDialog = false
+                    onDownloadAndPlay(selectedVersion)
+                },
+                onLaunchFabric = { loaderVersion ->
+                    showLoaderDialog = false
+                    onLaunchFabric(selectedVersion, loaderVersion)
+                }
+            )
+        }
     }
 }
 
@@ -166,18 +188,17 @@ fun Header(onOpenModPacks: () -> Unit, onOpenKeySettings: () -> Unit, onOpenJVMS
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // is disabled now;
-//            Box(
-//                modifier = Modifier
-//                    .clip(RoundedCornerShape(8.dp))
-//                    .background(BgSurface)
-//                    .border(1.dp, BgBorder, RoundedCornerShape(8.dp))
-//                    .clickable { onOpenModPacks() }
-//                    .padding(horizontal = 10.dp, vertical = 6.dp),
-//                contentAlignment = Alignment.Center
-//            ) {
-//                Text("📦 모드팩", color = PinkLight, fontSize = 12.sp, fontWeight = FontWeight.Medium)
-//            }
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(BgSurface)
+                    .border(1.dp, BgBorder, RoundedCornerShape(8.dp))
+                    .clickable { onOpenModPacks() }
+                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("📦 모드팩", color = PinkLight, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            }
 
             Box(
                 modifier = Modifier
@@ -298,12 +319,12 @@ fun BottomPanel(
     selectedVersion: VersionEntry?,
     progress: DownloadProgress,
     isDownloading: Boolean,
-    onDownloadAndPlay: (VersionEntry) -> Unit,
+    onPlayClick: () -> Unit,                      // ← 변경
     modifier: Modifier = Modifier,
     isLoggedIn: Boolean,
     username: String?,
     onLogin: () -> Unit,
-    loginError : String?
+    loginError: String?
 ) {
     val isSelectedSupported = selectedVersion?.let { isVersionSupported(it.id) } ?: false
 
@@ -399,59 +420,61 @@ fun BottomPanel(
                 }
             }
 
-            if (!isLoggedIn) {
-                Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.End) {
-                    Button(
-                        onClick = onLogin,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = PinkPrimary,
-                            disabledContainerColor = BgBorder
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.height(44.dp)
-                    ) {
-                        Text(
-                            text = "🔑 로그인",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                    }
-                    if (loginError != null) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "❌ $loginError",
-                            color = Color(0xFFFF6B6B),
-                            fontSize = 12.sp,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
-                        )
-                    }
-                }
-            } else {
-                Button(
-                    onClick = { selectedVersion?.let { onDownloadAndPlay(it) } },
-                    enabled = selectedVersion != null && !isDownloading && isSelectedSupported,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = PinkPrimary,
-                        disabledContainerColor = BgBorder
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.height(44.dp)
-                ) {
-                    if (isDownloading) {
-                        CircularProgressIndicator(
-                            color = Color.White,
-                            modifier = Modifier.size(18.dp),
-                            strokeWidth = 2.dp
-                        )
-                    } else {
-                        Text(
-                            text = "▶  Play",
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
-                        )
-                    }
+//            if (!isLoggedIn) {
+//                Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.End) {
+//                    Button(
+//                        onClick = onLogin,
+//                        colors = ButtonDefaults.buttonColors(
+//                            containerColor = PinkPrimary,
+//                            disabledContainerColor = BgBorder
+//                        ),
+//                        shape = RoundedCornerShape(8.dp),
+//                        modifier = Modifier.height(44.dp)
+//                    ) {
+//                        Text(
+//                            text = "🔑 로그인",
+//                            color = Color.White,
+//                            fontWeight = FontWeight.Bold,
+//                            fontSize = 15.sp
+//                        )
+//                    }
+//                    if (loginError != null) {
+//                        Spacer(modifier = Modifier.height(8.dp))
+//                        Text(
+//                            text = "❌ $loginError",
+//                            color = Color(0xFFFF6B6B),
+//                            fontSize = 12.sp,
+//                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+//                        )
+//                    }
+//                }
+//            } else {
+//
+//            }
+
+            Button(
+                onClick = { selectedVersion?.let { onPlayClick() } },   // ← 변경
+                enabled = selectedVersion != null && !isDownloading && isSelectedSupported,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PinkPrimary,
+                    disabledContainerColor = BgBorder
+                ),
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier.height(44.dp)
+            ) {
+                if (isDownloading) {
+                    CircularProgressIndicator(
+                        color = Color.White,
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp
+                    )
+                } else {
+                    Text(
+                        text = "▶  Play",
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
                 }
             }
         }

@@ -11,6 +11,9 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
@@ -99,6 +102,13 @@ class MinecraftActivity : BaseActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
+        // 내비게이션 바만 숨기기
+        windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
+        // 사용자가 화면을 스와이프했을 때만 잠깐 나타나도록 동작 설정
+        windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
+
         setContent {
             PingLauncherTheme {
                 Box(modifier = Modifier.fillMaxSize()) {
@@ -144,7 +154,8 @@ class MinecraftActivity : BaseActivity() {
                 }
             }
 
-            System.load(File(nativesDir, "libng_gl4es.so").absolutePath)
+            System.loadLibrary("vulkan")   // ← 추가: 시스템 Vulkan loader 강제 로드
+            System.load(File(nativesDir, "libOSMesa.so").absolutePath)   // ← Mesa
             System.load(File(nativesDir, "libopenal.so").absolutePath)
             System.load(File(nativesDir, "libglfw.so").absolutePath)
             System.load(File(nativesDir, "libpojavexec.so").absolutePath)
@@ -461,55 +472,96 @@ class MinecraftActivity : BaseActivity() {
         else -> 0
     }
 
+    fun gaKey(jarPath: String, librariesRoot: String): String? {
+        if (!jarPath.startsWith("$librariesRoot/")) return null
+        val rel = jarPath.removePrefix("$librariesRoot/")
+        val parts = rel.split("/")
+        if (parts.size < 4) return null
+        // [group..., artifact, version, filename]
+        val artifactIdx = parts.size - 3
+        val artifact = parts[artifactIdx]
+        val group = parts.subList(0, artifactIdx).joinToString(".")
+        return "$group:$artifact"
+    }
+
+
     private fun startMinecraft() {
-        val base = applicationContext.filesDir          // natives, JRE (내부)
+        val base = applicationContext.filesDir
         val nativesDir = File(base, "natives")
         val jarList = mutableListOf<String>()
-
-        // instanceDir = 인스턴스 루트 (외부 저장소)
-        // customGameDir = 게임 실행 디렉토리 (saves, screenshots 등)
-        // 모드팩: instanceDir == customGameDir
-        // 바닐라: instanceDir = instances/vanilla_1.21.4, customGameDir = instanceDir
+        val seenGA = mutableSetOf<String>()
 
         val instanceBase = instanceDir?.let { File(it) }
-            ?: customGameDir?.let { File(it) }  // instanceDir 없을 때만 fallback
+            ?: customGameDir?.let { File(it) }
             ?: File(getExternalFilesDir(null), "instances/vanilla_$versionId")
 
         val mcDir = instanceBase.also {
             it.mkdirs()
             File(it, "logs").mkdirs()
+            File(it, "mods").mkdirs()
         }
 
-        Log.d("PING_LAUNCHER", "instanceBase absolute: ${instanceBase.absolutePath}")
-        Log.d("PING_LAUNCHER", "instanceBase canonical: ${instanceBase.canonicalPath}")
-        Log.d("PING_LAUNCHER", "mcDir absolute: ${mcDir.absolutePath}")
+        Log.d("PING_LAUNCHER", "instanceBase: ${instanceBase.absolutePath}")
 
-        // lwjgl jar (내부)
+        // 인스턴스 메타 로드 — Fabric의 gameJvmArgs/gameArgs 가져오기
+        val instanceMeta = kr.co.donghyun.pinglauncher.data.instance.InstanceManager.loadMeta(instanceBase)
+        val isFabric = mainClass.contains("knot", ignoreCase = true)
+                || mainClass.contains("fabric", ignoreCase = true)
+                || instanceMeta?.loaderType == "fabric"
+        Log.d("PING_LAUNCHER", "isFabric=$isFabric, loaderType=${instanceMeta?.loaderType}, mainClass=$mainClass")
+
         File(base, "lwjgl3/lwjgl-glfw-classes.jar").takeIf { it.exists() }
             ?.let { jarList.add(it.absolutePath) }
 
-        // extraJars (Fabric/Forge 로더 jars)
         jarList.addAll(0, extraJars)
 
-        // libraries — instanceDir/libraries 우선, 구버전 호환으로 외부/내부도 확인
         val searchDirs = listOfNotNull(
             instanceBase,
             getExternalFilesDir(null),
             base
         ).distinct()
 
-        searchDirs.forEach { dir ->
-            // 새 구조: libraries/
-            File(dir, "libraries").walkTopDown().forEach { f ->
-                if (f.extension == "jar" && !f.name.contains("natives-linux")
-                    && !jarList.contains(f.absolutePath))
-                    jarList.add(f.absolutePath)
+        // 이미 jarList에 들어있는 extraJars(Fabric 라이브러리)의 GA를 먼저 점유
+        jarList.toList().forEach { jp ->
+            for (rootCandidate in searchDirs) {
+                val libRoot = File(rootCandidate, "libraries").absolutePath
+                val ga = gaKey(jp, libRoot)
+                if (ga != null) { seenGA.add(ga); break }
             }
-            // 구버전 호환: libraries_$versionId/
-            File(dir, "libraries_$versionId").walkTopDown().forEach { f ->
-                if (f.extension == "jar" && !f.name.contains("natives-linux")
-                    && !jarList.contains(f.absolutePath))
+        }
+
+        searchDirs.forEach { dir ->
+            val librariesDir = File(dir, "libraries")
+            if (librariesDir.exists()) {
+                librariesDir.walkTopDown().forEach { f ->
+                    if (!f.isFile || f.extension != "jar") return@forEach
+                    if (f.name.contains("natives-linux")) return@forEach
+                    if (jarList.contains(f.absolutePath)) return@forEach
+
+                    val ga = gaKey(f.absolutePath, librariesDir.absolutePath)
+                    if (ga != null && seenGA.contains(ga)) {
+                        Log.d("PING_LAUNCHER", "중복 라이브러리 스킵: $ga (${f.name})")
+                        return@forEach
+                    }
+                    if (ga != null) seenGA.add(ga)
                     jarList.add(f.absolutePath)
+                }
+            }
+            val legacyDir = File(dir, "libraries_$versionId")
+            if (legacyDir.exists()) {
+                legacyDir.walkTopDown().forEach { f ->
+                    if (!f.isFile || f.extension != "jar") return@forEach
+                    if (f.name.contains("natives-linux")) return@forEach
+                    if (jarList.contains(f.absolutePath)) return@forEach
+
+                    val ga = gaKey(f.absolutePath, legacyDir.absolutePath)
+                    if (ga != null && seenGA.contains(ga)) {
+                        Log.d("PING_LAUNCHER", "중복 라이브러리 스킵: $ga (${f.name})")
+                        return@forEach
+                    }
+                    if (ga != null) seenGA.add(ga)
+                    jarList.add(f.absolutePath)
+                }
             }
         }
 
@@ -517,32 +569,18 @@ class MinecraftActivity : BaseActivity() {
             patchLaunchwrapperIfNeeded(searchDirs)
         }
 
-        // 버전 JAR
         val versionJar = searchDirs
             .map { File(it, "versions/$versionId/$versionId.jar") }
             .firstOrNull { it.exists() }
-
         versionJar?.let {
-            if (!jarList.contains(it.absolutePath)) {
-                jarList.add(it.absolutePath)
-                Log.d("PING_LAUNCHER", "버전 JAR 추가: ${it.absolutePath}")
-            } else {
-                Log.d("PING_LAUNCHER", "버전 JAR 이미 존재: ${it.absolutePath}")
-            }
-        } ?: Log.d("PING_LAUNCHER", "버전 JAR 없음!")
+            if (!jarList.contains(it.absolutePath)) jarList.add(it.absolutePath)
+        }
 
-        Log.d("PING_LAUNCHER", "버전 JAR: ${versionJar?.absolutePath}")
-        Log.d("PING_LAUNCHER", "instanceBase: ${instanceBase.absolutePath}")
-
-        // assetsDir — instanceDir/assets 우선
         val assetsDir = searchDirs
             .map { File(it, "assets") }
             .firstOrNull { File(it, "indexes").exists() && File(it, "indexes").listFiles()?.isNotEmpty() == true }
             ?: File(getExternalFilesDir(null) ?: base, "assets")
 
-        Log.d("PING_LAUNCHER", "assetsDir: ${assetsDir.absolutePath}")
-
-        // iris 비활성화
         val irisConfig = File(mcDir, "config/iris.properties")
         if (!irisConfig.exists()) {
             irisConfig.parentFile?.mkdirs()
@@ -560,7 +598,6 @@ class MinecraftActivity : BaseActivity() {
         }
 
         val libJvmPath = MinecraftJREPreparer.prepareJreAndGetPath(this)
-
         val jvmSettings = JvmSettingsManager.load(this)
 
         val launchWrapperArgs = if (mainClass.contains("launchwrapper")) {
@@ -570,53 +607,40 @@ class MinecraftActivity : BaseActivity() {
                 "--add-opens", "java.base/java.io=ALL-UNNAMED",
                 "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",
                 "--add-exports", "java.base/jdk.internal.loader=ALL-UNNAMED",
-                "--add-opens", "java.base/java.net=ALL-UNNAMED",        // ← 추가
-                "--add-opens", "java.base/java.util=ALL-UNNAMED",       // ← 추가
-                "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",   // ← 추가
-                "--add-opens", "java.base/java.util.zip=ALL-UNNAMED",   // ← 추가
+                "--add-opens", "java.base/java.net=ALL-UNNAMED",
+                "--add-opens", "java.base/java.util=ALL-UNNAMED",
+                "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
+                "--add-opens", "java.base/java.util.zip=ALL-UNNAMED",
             )
         } else emptyArray()
 
+        // ── Fabric 전용 JVM 인자 ──────────────────────────────
+        val fabricJvmArgs = if (isFabric) {
+            arrayOf(
+                // -DFabricMcEmu은 metaJvmArgs에서 자동 주입 (Fabric profile arguments.jvm)
+                "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+                "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
+                "--add-opens", "java.base/java.io=ALL-UNNAMED",
+                "--add-opens", "java.base/java.net=ALL-UNNAMED",
+                "--add-opens", "java.base/java.util=ALL-UNNAMED",
+                "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
+                "--add-opens", "java.base/java.util.zip=ALL-UNNAMED",
+                "--add-opens", "java.base/sun.nio.ch=ALL-UNNAMED",
+                "--add-exports", "java.base/jdk.internal.loader=ALL-UNNAMED",
+            )
+        } else emptyArray()
+
+        // 인스턴스 메타의 추가 JVM 인자 (Fabric profile의 arguments.jvm)
+        val metaJvmArgs = instanceMeta?.gameJvmArgs?.toTypedArray() ?: emptyArray()
 
         val jvmArgs = jvmSettings.toJvmArgArray(
             userDir = mcDir.absolutePath,
             classPath = jarList.joinToString(":"),
             libraryPath = nativesDir.absolutePath,
             mainClass = mainClass
-        ) + launchWrapperArgs
+        ) + launchWrapperArgs + fabricJvmArgs + metaJvmArgs
 
-//        val jvmArgs = arrayOf(
-//            "-Xmx4096M",
-//            "-Xms512M",
-//            "-XX:+UnlockExperimentalVMOptions",  // ← 이걸 먼저 추가
-//            "-XX:+UseG1GC",
-//            "-XX:MaxGCPauseMillis=100",
-//            "-XX:+ParallelRefProcEnabled",
-//            "-XX:G1NewSizePercent=20",
-//            "-XX:G1ReservePercent=20",
-//            "-XX:G1HeapRegionSize=32m",
-//            "-Duser.dir=${mcDir.absolutePath}",
-//            "-Djava.class.path=${jarList.joinToString(":")}",
-//            "-Djava.library.path=${nativesDir.absolutePath}",
-//            "-Dorg.lwjgl.librarypath=${nativesDir.absolutePath}",
-//            "-Dorg.lwjgl.opengl.libname=libng_gl4es.so",
-//            "-Dorg.lwjgl.opengles.libname=libng_gl4es.so",  // 추가
-//            "-Dping.main.class=$mainClass",
-//            "-Dorg.lwjgl.system.SharedLibraryExtractPath=${nativesDir.absolutePath}",
-//            "-Dorg.lwjgl.system.SharedLibraryExtractDirectory=${nativesDir.absolutePath}",
-//            "-Dorg.lwjgl.util.NoChecks=true",
-//            "-Dorg.lwjgl.util.Debug=false",
-//            "-Dfml.earlyprogresswindow=false",
-//            "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
-//            "-Dorg.lwjgl.glfw.libname=libpojavexec.so",
-//            "-Dminecraft.graphics.disableClouds=true",
-//        )
-
-        // 만료 체크 후 갱신
-        // startMinecraft() 내부에서 mcArgs 생성 부분
-
-
-        Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}")
+        Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}, isFabric=$isFabric")
 
         Thread {
             try {
@@ -628,7 +652,7 @@ class MinecraftActivity : BaseActivity() {
                     } catch (_: Exception) { session }
                 } else session
 
-                val mcArgs = if (validSession != null) {
+                val baseMcArgs = if (validSession != null) {
                     arrayOf(
                         "--username", validSession.username,
                         "--version", versionId,
@@ -637,10 +661,10 @@ class MinecraftActivity : BaseActivity() {
                         "--assetIndex", assetIndex,
                         "--uuid", validSession.uuid,
                         "--accessToken", validSession.accessToken,
-                        "--userType", "msa"
+                        "--userType", "msa",
+                        "--versionType", if (isFabric) "Fabric" else "release"
                     )
                 } else {
-                    // 로그인 안 된 경우 오프라인 모드
                     arrayOf(
                         "--username", "Player",
                         "--version", versionId,
@@ -649,23 +673,23 @@ class MinecraftActivity : BaseActivity() {
                         "--assetIndex", assetIndex,
                         "--uuid", "00000000-0000-0000-0000-000000000000",
                         "--accessToken", "0",
-                        "--userType", "mojang"
+                        "--userType", "mojang",
+                        "--versionType", if (isFabric) "Fabric" else "release"
                     )
                 }
+
+                val metaGameArgs = instanceMeta?.gameArgs?.toTypedArray() ?: emptyArray()
+                val mcArgs = baseMcArgs + metaGameArgs
 
                 JavaNativeLauncher().bootMinecraftJVM(libJvmPath, jvmArgs, mcArgs)
             } catch (e: Exception) {
                 Log.e("PING_LAUNCHER", "MC 실행 예외: ${e.message}")
-            }  finally {
+            } finally {
                 val crashDir = File(instanceBase, "crash-reports")
                 val files = crashDir.listFiles()
-                Log.d("PING_LAUNCHER", "크래시 체크: dir=${crashDir.absolutePath}, files=${files?.size}")
-                files?.forEach { Log.d("PING_LAUNCHER", "파일: ${it.name}, age=${System.currentTimeMillis() - it.lastModified()}ms") }
-
                 val hasCrash = files
                     ?.any { it.extension == "txt" &&
-                            System.currentTimeMillis() - it.lastModified() < 60_000 } == true  // 30초 → 60초로 늘리기
-                Log.d("PING_LAUNCHER", "hasCrash=$hasCrash")
+                            System.currentTimeMillis() - it.lastModified() < 60_000 } == true
                 if (hasCrash) {
                     runOnUiThread {
                         CrashReportActivity.start(this, instanceBase.absolutePath)
