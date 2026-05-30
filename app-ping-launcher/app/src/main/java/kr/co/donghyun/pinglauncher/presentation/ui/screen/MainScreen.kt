@@ -57,6 +57,7 @@ fun MainScreen(
     onOpenContents: () -> Unit,
     onOpenKeySettings: () -> Unit,
     onOpenJVMSettings: () -> Unit,
+    uuid: String?,
     isLoggedIn: Boolean,        // ← 추가
     username: String?,          // ← 추가
     onLogin: () -> Unit,        // ← 추가
