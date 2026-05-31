@@ -30,10 +30,10 @@ private const val LONG_PRESS_TIMEOUT = 500L
 
 @Composable
 fun MinecraftSurface(
+    modifier: Modifier = Modifier,
     onSurfaceCreated: (Surface, SurfaceHolder) -> Unit,
     onSurfaceChanged: (Int, Int) -> Unit,
-    onTouch: (MotionEvent) -> Unit,
-    modifier: Modifier = Modifier
+    onSurfaceDestroyed: () -> Unit = {},   // ← 추가
 ) {
     AndroidView(
         factory = { ctx ->
@@ -66,9 +66,13 @@ fun MinecraftSurface(
                 requestFocus()
 
                 holder.addCallback(object : SurfaceHolder.Callback {
-                    override fun surfaceCreated(holder: SurfaceHolder) = onSurfaceCreated(holder.surface, holder)
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) = onSurfaceChanged(w, h)
-                    override fun surfaceDestroyed(holder: SurfaceHolder) {}
+                    override fun surfaceCreated(holder: SurfaceHolder) =
+                        onSurfaceCreated(holder.surface, holder)
+                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) =
+                        onSurfaceChanged(w, h)
+                    override fun surfaceDestroyed(holder: SurfaceHolder) {
+                        onSurfaceDestroyed()
+                    }
                 })
 
                 setOnKeyListener { _, keyCode, event ->

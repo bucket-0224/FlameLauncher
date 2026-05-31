@@ -4,6 +4,7 @@ import android.util.Log
 import com.google.gson.Gson
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadPhase
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
+import kr.co.donghyun.pinglauncher.data.mojang.MCPrepareResult
 import kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
 import kr.co.donghyun.pinglauncher.data.mojang.VersionManifest
 import okhttp3.OkHttpClient
@@ -28,7 +29,7 @@ class MinecraftDownloader(
     private val client = OkHttpClient()
     private val gson = Gson()
 
-    fun prepare(): String {
+    fun prepare(): MCPrepareResult {
         onProgress(DownloadProgress(phase = DownloadPhase.FETCHING_MANIFEST))
         val manifest = fetchManifest(versionEntry.url)
 
@@ -62,7 +63,11 @@ class MinecraftDownloader(
         downloadAssets(assetIndexFile, File(instanceDir, "assets/objects"))
 
         Log.d("PING_LAUNCHER", "✅ MC ${manifest.id} 준비 완료 → ${instanceDir.absolutePath}")
-        return manifest.assetIndex.id
+        return MCPrepareResult(
+            assetIndexId = manifest.assetIndex.id,
+            mainClass = manifest.mainClass,
+            minecraftArguments = manifest.minecraftArguments
+        )
     }
 
     private fun fetchManifest(url: String): VersionManifest {

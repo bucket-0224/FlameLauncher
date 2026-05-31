@@ -9,7 +9,7 @@
  * 
  * - Implements glfwSetCursorPos() to handle grab camera pos correctly.
  */
- 
+
 #include <assert.h>
 #include <dlfcn.h>
 #include <jni.h>
@@ -43,6 +43,11 @@ do {                                                                       \
 
 static void registerFunctions(JNIEnv *env);
 
+// ─── ADDED: forward declaration for RegisterNatives in JNI_OnLoad ─────────
+JNIEXPORT jlong JNICALL
+Java_org_lwjgl_glfw_GLFW_internalGetGamepadDataPointer(JNIEnv *env, jclass clazz);
+// ──────────────────────────────────────────────────────────────────────────
+
 jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
     if (pojav_environ->dalvikJavaVMPtr == NULL) {
         LOGI("Saving DVM environ...");
@@ -70,6 +75,26 @@ jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
         jfieldID field_mouseDownBuffer = (*vmEnv)->GetStaticFieldID(vmEnv, pojav_environ->vmGlfwClass, "mouseDownBuffer", "Ljava/nio/ByteBuffer;");
         jobject mouseDownBufferJ = (*vmEnv)->GetStaticObjectField(vmEnv, pojav_environ->vmGlfwClass, field_mouseDownBuffer);
         pojav_environ->mouseDownBuffer = (*vmEnv)->GetDirectBufferAddress(vmEnv, mouseDownBufferJ);
+
+        // ─── ADDED: GLFW.class의 native들을 RegisterNatives로 명시 등록 ───────
+        // LWJGL이 libglfw.so를 ndlopen으로 직접 dlopen해서 JVM ClassLoader의
+        // NativeLibrary 목록에 등록되지 않은 케이스 대응. 안 하면 UnsatisfiedLinkError.
+        {
+            JNINativeMethod glfwNatives[] = {
+                    {"internalGetGamepadDataPointer", "()J",
+                     (void*)&Java_org_lwjgl_glfw_GLFW_internalGetGamepadDataPointer},
+            };
+            if ((*vmEnv)->RegisterNatives(vmEnv, pojav_environ->vmGlfwClass,
+                                          glfwNatives,
+                                          sizeof(glfwNatives)/sizeof(glfwNatives[0])) != 0) {
+                LOGE("Failed to RegisterNatives for GLFW (gamepad data pointer)");
+                if ((*vmEnv)->ExceptionCheck(vmEnv)) (*vmEnv)->ExceptionClear(vmEnv);
+            } else {
+                LOGI("RegisterNatives OK: GLFW.internalGetGamepadDataPointer");
+            }
+        }
+        // ──────────────────────────────────────────────────────────────────────
+
         hookExec(vmEnv);
         installLwjglDlopenHook(vmEnv);
         installEMUIIteratorMititgation(vmEnv);
@@ -82,7 +107,7 @@ jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
         registerFunctions(env);
     }
     pojav_environ->isGrabbing = JNI_FALSE;
-    
+
     return JNI_VERSION_1_4;
 }
 
@@ -197,7 +222,7 @@ void pojavStopPumping() {
 
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwGetCursorPos(JNIEnv *env, __attribute__((unused)) jclass clazz, __attribute__((unused)) jlong window, jobject xpos,
-                                          jobject ypos) {
+                                           jobject ypos) {
     *(double*)(*env)->GetDirectBufferAddress(env, xpos) = pojav_environ->cursorX;
     *(double*)(*env)->GetDirectBufferAddress(env, ypos) = pojav_environ->cursorY;
 }

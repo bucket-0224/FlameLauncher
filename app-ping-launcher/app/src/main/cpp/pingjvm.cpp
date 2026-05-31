@@ -210,7 +210,8 @@ extern "C" JNIEXPORT jint JNICALL
 Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMinecraftJVM(
         JNIEnv* env, jobject thiz, jstring lib_jvm_path, jobjectArray jvm_args, jobjectArray mc_args) {
 
-    setenv("POJAV_RENDERER", "vulkan_ltw", 1);
+    setenv("POJAV_RENDERER", "vulkan_zink", 1);
+    setenv("MESA_GLSL_CACHE_DIR", "/data/data/kr.co.donghyun.pinglauncher/cache", 1);
     setenv("LIBGL_STRING", "VulkanGL", 1);
     setenv("LIBGL_NAME", "libltw.so", 1);
     setenv("DLOPEN", "libltw.so", 1);
@@ -270,11 +271,6 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
 
     LOGI("자바 핵심 의존성 라이브러리 선행 로드 완료!");
     // =========================================================================
-
-    // ───────── 여기 추가 ─────────
-    unsetenv("POJAV_RENDERER");
-    LOGI("POJAV_RENDERER env 제거됨 (Sodium 시그니처 회피)");
-    // ─────────────────────────────
 
     // 2. OpenJDK의 JNI_CreateJavaVM 함수 포인터 획득
     CreateJavaVM_t createJavaVM = (CreateJavaVM_t)dlsym(handle, "JNI_CreateJavaVM");

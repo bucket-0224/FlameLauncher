@@ -7,7 +7,8 @@ data class VersionManifest(
     val mainClass: String,
     val downloads: Downloads,
     val libraries: List<Library>,
-    val assetIndex: AssetIndex
+    val assetIndex: AssetIndex,
+    val minecraftArguments: String? = null   // ← 1.12 이전 (1.13+은 arguments 객체)
 )
 
 data class Downloads(
@@ -50,6 +51,12 @@ data class DownloadProgress(
     val fraction: Float get() = if (total > 0) current.toFloat() / total else 0f
     val percent: Int get() = (fraction * 100).toInt()
 }
+
+data class MCPrepareResult(
+    val assetIndexId: String,
+    val mainClass: String,
+    val minecraftArguments: String?
+)
 
 enum class DownloadPhase {
     IDLE,

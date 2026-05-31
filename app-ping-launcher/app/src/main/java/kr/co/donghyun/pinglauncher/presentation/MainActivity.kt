@@ -127,32 +127,37 @@ class MainActivity : BaseActivity() {
                     onProgress = { _progress.value = it }
                 )
 
-                val assetIndexId = preparer.prepare()
+                val result = preparer.prepare()
+                val assetIndexId = result.assetIndexId
+                val realMainClass = result.mainClass
+                val legacyGameArgs = result.minecraftArguments
+                    ?.split(" ")
+                    ?.filter { it.isNotBlank() }
+                    ?: emptyList()
 
                 copyNativesFromApkLibDir(nativesDir)
                 copyLwjglJarFromAssets(internalBaseDir)
                 prePopulateLwjglExtractDir(internalBaseDir, nativesDir, version.id)
 
-                // 인스턴스 메타 저장
                 InstanceManager.saveMeta(this@MainActivity, InstanceMeta(
                     id = instanceId,
                     name = version.id,
                     type = InstanceType.VANILLA,
                     mcVersion = version.id,
+                    mainClass = realMainClass,                  // ← 매니페스트 값
                     assetIndexId = assetIndexId,
-                    iconEmoji = "🌿"
+                    iconEmoji = "🌿",
+                    gameArgs = legacyGameArgs                    // ← 1.12 이전 인자 보존
                 ))
 
                 _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
 
                 withContext(Dispatchers.Main) {
-                    val instanceId = InstanceManager.vanillaId(version.id)  // "vanilla_1.21.4"
-                    val instanceDir = InstanceManager.instanceDir(this@MainActivity, instanceId)
-
                     MinecraftActivity.start(
                         this@MainActivity,
                         versionId = version.id,
                         assetIndex = assetIndexId,
+                        mainClass = realMainClass,               // ← 전달
                         instanceDir = instanceDir.absolutePath,
                     )
                 }
@@ -221,8 +226,8 @@ class MainActivity : BaseActivity() {
 
     private fun startFabricDownloadAndPlay(version: VersionEntry, loaderVersion: String) {
         val mcVersion = version.id
-        val instanceId = kr.co.donghyun.pinglauncher.data.instance.InstanceManager.fabricId(mcVersion, loaderVersion)
-        val instanceDir = kr.co.donghyun.pinglauncher.data.instance.InstanceManager.instanceDir(this, instanceId)
+        val instanceId = InstanceManager.fabricId(mcVersion, loaderVersion)
+        val instanceDir = InstanceManager.instanceDir(this, instanceId)
         val internalBaseDir = applicationContext.filesDir
         val nativesDir = File(internalBaseDir, "natives")
 
@@ -231,12 +236,13 @@ class MainActivity : BaseActivity() {
                 _progress.value = DownloadProgress(phase = DownloadPhase.FETCHING_MANIFEST)
 
                 // 1) 바닐라 다운로드 (인스턴스 dir로)
-                val mcPreparer = kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftDownloader(
+                val mcPreparer = MinecraftDownloader(
                     instanceDir = instanceDir,
                     versionEntry = version,
                     onProgress = { _progress.value = it }
                 )
-                val assetIndexId = mcPreparer.prepare()
+
+                val manifest = mcPreparer.prepare()
 
                 // 2) Fabric 라이브러리 같은 인스턴스 dir에 머지
                 val fabricResult = kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricInstaller(
@@ -265,18 +271,18 @@ class MainActivity : BaseActivity() {
                 File(instanceDir, "mods").mkdirs()
 
                 // 5) 인스턴스 메타 저장
-                kr.co.donghyun.pinglauncher.data.instance.InstanceManager.saveMeta(
+                InstanceManager.saveMeta(
                     this@MainActivity,
                     kr.co.donghyun.pinglauncher.data.instance.InstanceMeta(
                         id = instanceId,
                         name = "$mcVersion · Fabric $loaderVersion",
-                        type = kr.co.donghyun.pinglauncher.data.instance.InstanceType.FABRIC,
+                        type = InstanceType.FABRIC,
                         mcVersion = mcVersion,
                         loaderType = "fabric",
                         loaderVersion = loaderVersion,
                         mainClass = fabricResult.mainClass,
                         extraJars = fabricResult.extraJars,
-                        assetIndexId = assetIndexId,
+                        assetIndexId = manifest.assetIndexId,
                         iconEmoji = "🧵",
                         gameJvmArgs = fabricResult.gameJvmArgs,
                         gameArgs = fabricResult.gameArgs
@@ -289,7 +295,7 @@ class MainActivity : BaseActivity() {
                     MinecraftActivity.start(
                         this@MainActivity,
                         versionId = mcVersion,
-                        assetIndex = assetIndexId,
+                        assetIndex = manifest.assetIndexId,
                         extraJars = fabricResult.extraJars,
                         mainClass = fabricResult.mainClass,
                         instanceDir = instanceDir.absolutePath
@@ -304,7 +310,7 @@ class MainActivity : BaseActivity() {
 
     override fun onResume() {
         super.onResume()
-        val prefs = getSharedPreferences("ping_launcher", Context.MODE_PRIVATE)
+        val prefs = getSharedPreferences("ping_launcher", MODE_PRIVATE)
         val pendingCrash = prefs.getString("pending_crash_instance", null)
         if (pendingCrash != null) {
             prefs.edit().remove("pending_crash_instance").apply()

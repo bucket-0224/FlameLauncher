@@ -46,6 +46,9 @@ class MinecraftActivity : BaseActivity() {
     internal val isGrabbing: Boolean
         get() = try { nativeIsGrabbing() } catch (_: Exception) { false }
 
+    private var jvmStarted = false
+    private var javaMajor: Int = 21
+
     companion object {
         private const val EXTRA_VERSION_ID = "version_id"
         private const val EXTRA_ASSET_INDEX = "asset_index"
@@ -115,10 +118,24 @@ class MinecraftActivity : BaseActivity() {
                     MinecraftSurface(
                         onSurfaceCreated = { surface, _ ->
                             currentSurface = surface
-                            setupAndLaunch(surface)
+                            if (!jvmStarted) {
+                                jvmStarted = true
+                                setupAndLaunch(surface)
+                            } else {
+                                try {
+                                    System.loadLibrary("pingjvm")
+                                    nativeSetupBridgeWindow(surface)
+                                    Log.d("PING_LAUNCHER", "✅ Surface 재바인딩 완료 (resume 후)")
+                                } catch (e: Exception) {
+                                    Log.e("PING_LAUNCHER", "Surface 재바인딩 실패: ${e.message}", e)
+                                }
+                            }
                         },
                         onSurfaceChanged = { w, h -> sendScreenSize(w, h) },
-                        onTouch = { }
+                        onSurfaceDestroyed = {
+                            Log.d("PING_LAUNCHER", "Surface destroyed — JVM 유지")
+                            currentSurface = null
+                        },
                     )
                     // GameControllerOverlay() ← 제거
                 }
@@ -136,14 +153,18 @@ class MinecraftActivity : BaseActivity() {
     }
 
     private fun setupAndLaunch(surface: Surface) {
-        // MinecraftJREPreparer 또는 setupAndLaunch에서
-         val nativesDir = File(applicationContext.filesDir, "natives")
+        val nativesDir = File(applicationContext.filesDir, "natives")
+
+        // ★ mcVersion 기반으로 Java major 결정
+        javaMajor = MinecraftJREPreparer.pickJavaMajor(versionId)
+        Log.d("PING_LAUNCHER", "선택된 Java major: $javaMajor (mc=$versionId)")
 
         try {
             System.loadLibrary("pingjvm")
 
-            val jreLibDir = File(applicationContext.filesDir, "jre21_runtime/lib")
-            if (jreLibDir.exists()) {
+            // ★ jre{N}_runtime 의 lib 폴더를 동적으로 찾는다 (8/17/21 모두 대응)
+            val jreLibDir = MinecraftJREPreparer.findJreLibDir(this, versionId)
+            if (jreLibDir != null && jreLibDir.exists()) {
                 listOf("libawt_xawt.so", "libawt_headless.so", "libpojavexec_awt.so").forEach { soName ->
                     val src = File(nativesDir, soName)
                     val dst = File(jreLibDir, soName)
@@ -152,10 +173,12 @@ class MinecraftActivity : BaseActivity() {
                         dst.setExecutable(true, false)
                     }
                 }
+            } else {
+                Log.w("PING_LAUNCHER", "jre lib dir을 못 찾음 — awt_xawt 등은 prepareJre 후 다시 시도")
             }
 
-            System.loadLibrary("vulkan")   // ← 추가: 시스템 Vulkan loader 강제 로드
-            System.load(File(nativesDir, "libOSMesa.so").absolutePath)   // ← Mesa
+            System.loadLibrary("vulkan")
+            System.load(File(nativesDir, "libOSMesa.so").absolutePath)
             System.load(File(nativesDir, "libopenal.so").absolutePath)
             System.load(File(nativesDir, "libglfw.so").absolutePath)
             System.load(File(nativesDir, "libpojavexec.so").absolutePath)
@@ -164,14 +187,13 @@ class MinecraftActivity : BaseActivity() {
         } catch (e: UnsatisfiedLinkError) {
             Log.w("PING_LAUNCHER", "일부 .so 이미 로드됨: ${e.message}")
         }
+
         try {
-            System.loadLibrary("pingjvm")
             nativeSetupBridgeWindow(surface)
             Log.d("PING_LAUNCHER", "✅ setupBridgeWindow 완료")
         } catch (e: Exception) {
             Log.e("PING_LAUNCHER", "setupBridgeWindow 실패: ${e.message}", e)
         }
-
 
         startCrashWatcher()
         startMinecraft()
@@ -597,10 +619,18 @@ class MinecraftActivity : BaseActivity() {
         """.trimIndent())
         }
 
-        val libJvmPath = MinecraftJREPreparer.prepareJreAndGetPath(this)
+        // ★ versionId 전달
+        val libJvmPath = MinecraftJREPreparer.prepareJreAndGetPath(this, versionId)
         val jvmSettings = JvmSettingsManager.load(this)
 
-        val launchWrapperArgs = if (mainClass.contains("launchwrapper")) {
+// ★ JDK 9+ 전용 플래그는 javaMajor>=9 일 때만 부착
+        val isModularJre = javaMajor >= 9
+
+// ★ JDK 8 에서는 미지원 옵션을 무시하도록 (G1NewSizePercent 등이 문제)
+        val jvm8CompatArgs: Array<String> =
+            if (!isModularJre) arrayOf("-XX:+IgnoreUnrecognizedVMOptions") else emptyArray()
+
+        val launchWrapperArgs = if (isModularJre && mainClass.contains("launchwrapper")) {
             arrayOf(
                 "--add-opens", "java.base/java.lang=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
@@ -614,10 +644,8 @@ class MinecraftActivity : BaseActivity() {
             )
         } else emptyArray()
 
-        // ── Fabric 전용 JVM 인자 ──────────────────────────────
-        val fabricJvmArgs = if (isFabric) {
+        val fabricJvmArgs = if (isModularJre && isFabric) {
             arrayOf(
-                // -DFabricMcEmu은 metaJvmArgs에서 자동 주입 (Fabric profile arguments.jvm)
                 "--add-opens", "java.base/java.lang=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.reflect=ALL-UNNAMED",
                 "--add-opens", "java.base/java.io=ALL-UNNAMED",
@@ -630,17 +658,16 @@ class MinecraftActivity : BaseActivity() {
             )
         } else emptyArray()
 
-        // 인스턴스 메타의 추가 JVM 인자 (Fabric profile의 arguments.jvm)
         val metaJvmArgs = instanceMeta?.gameJvmArgs?.toTypedArray() ?: emptyArray()
 
-        val jvmArgs = jvmSettings.toJvmArgArray(
+        val jvmArgs = jvm8CompatArgs + jvmSettings.toJvmArgArray(
             userDir = mcDir.absolutePath,
             classPath = jarList.joinToString(":"),
             libraryPath = nativesDir.absolutePath,
             mainClass = mainClass
         ) + launchWrapperArgs + fabricJvmArgs + metaJvmArgs
 
-        Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}, isFabric=$isFabric")
+        Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}, isFabric=$isFabric, javaMajor=$javaMajor")
 
         Thread {
             try {
@@ -652,34 +679,56 @@ class MinecraftActivity : BaseActivity() {
                     } catch (_: Exception) { session }
                 } else session
 
-                val baseMcArgs = if (validSession != null) {
-                    arrayOf(
-                        "--username", validSession.username,
-                        "--version", versionId,
-                        "--gameDir", mcDir.absolutePath,
-                        "--assetsDir", assetsDir.absolutePath,
-                        "--assetIndex", assetIndex,
-                        "--uuid", validSession.uuid,
-                        "--accessToken", validSession.accessToken,
-                        "--userType", "msa",
-                        "--versionType", if (isFabric) "Fabric" else "release"
-                    )
-                } else {
-                    arrayOf(
-                        "--username", "Player",
-                        "--version", versionId,
-                        "--gameDir", mcDir.absolutePath,
-                        "--assetsDir", assetsDir.absolutePath,
-                        "--assetIndex", assetIndex,
-                        "--uuid", "00000000-0000-0000-0000-000000000000",
-                        "--accessToken", "0",
-                        "--userType", "mojang",
-                        "--versionType", if (isFabric) "Fabric" else "release"
-                    )
-                }
+                val username    = validSession?.username    ?: "Player"
+                val uuid        = validSession?.uuid        ?: "00000000-0000-0000-0000-000000000000"
+                val accessToken = validSession?.accessToken ?: "0"
+                val userType    = if (validSession != null) "msa" else "mojang"
 
-                val metaGameArgs = instanceMeta?.gameArgs?.toTypedArray() ?: emptyArray()
-                val mcArgs = baseMcArgs + metaGameArgs
+                // 매니페스트가 minecraftArguments(=공백 구분 단일 문자열)를 줬다면 그게 1.12 이하 레거시 포맷이다.
+                // gameArgs 안에 ${...} placeholder가 있다는 사실 자체가 그 시그널.
+                val legacyArgs = instanceMeta?.gameArgs.orEmpty()
+                val isLegacyArgs = legacyArgs.any { it.contains("\${") }
+
+                val mcArgs: Array<String> = if (isLegacyArgs) {
+                    // ── 1.12 이하: placeholder 치환만 해서 그대로 사용 ──
+                    val placeholders = mapOf(
+                        "\${auth_player_name}"  to username,
+                        "\${auth_session}"      to "token:$accessToken:$uuid", // 1.5.x 시절 단일 토큰 포맷
+                        "\${auth_uuid}"         to uuid,
+                        "\${auth_access_token}" to accessToken,
+                        "\${version_name}"      to versionId,
+                        "\${game_directory}"    to mcDir.absolutePath,
+                        "\${game_assets}"       to assetsDir.absolutePath,    // pre-1.6 legacy assets
+                        "\${assets_root}"       to assetsDir.absolutePath,
+                        "\${assets_index_name}" to assetIndex,
+                        "\${user_type}"         to userType,
+                        "\${version_type}"      to if (isFabric) "Fabric" else "release",
+                        "\${user_properties}"   to "{}",
+                        "\${profile_name}"      to username,
+                        "\${launcher_name}"     to "PingLauncher",
+                        "\${launcher_version}"  to "1.0"
+                    )
+                    val resolved = legacyArgs.map { arg ->
+                        placeholders.entries.fold(arg) { acc, (k, v) -> acc.replace(k, v) }
+                    }
+                    Log.d("PING_LAUNCHER", "legacy mcArgs (${resolved.size}): $resolved")
+                    resolved.toTypedArray()
+                } else {
+                    // ── 1.13+ (또는 Fabric/모드팩): 기존 하드코딩 + 메타 추가 인자 ──
+                    val baseMcArgs = arrayOf(
+                        "--username",   username,
+                        "--version",    versionId,
+                        "--gameDir",    mcDir.absolutePath,
+                        "--assetsDir",  assetsDir.absolutePath,
+                        "--assetIndex", assetIndex,
+                        "--uuid",       uuid,
+                        "--accessToken",accessToken,
+                        "--userType",   userType,
+                        "--versionType",if (isFabric) "Fabric" else "release"
+                    )
+                    val metaGameArgs = legacyArgs.toTypedArray() // placeholder 없는 추가 인자만 들어옴
+                    baseMcArgs + metaGameArgs
+                }
 
                 JavaNativeLauncher().bootMinecraftJVM(libJvmPath, jvmArgs, mcArgs)
             } catch (e: Exception) {
@@ -691,9 +740,7 @@ class MinecraftActivity : BaseActivity() {
                     ?.any { it.extension == "txt" &&
                             System.currentTimeMillis() - it.lastModified() < 60_000 } == true
                 if (hasCrash) {
-                    runOnUiThread {
-                        CrashReportActivity.start(this, instanceBase.absolutePath)
-                    }
+                    runOnUiThread { CrashReportActivity.start(this, instanceBase.absolutePath) }
                 }
             }
         }.start()
@@ -764,14 +811,6 @@ class MinecraftActivity : BaseActivity() {
     override fun onResume() {
         super.onResume()
         window.decorView.requestFocus()
-
-        currentSurface?.let { surface ->
-            if (surface.isValid) {
-                try {
-                    nativeSetupBridgeWindow(surface)
-                } catch (_: Exception) {}
-            }
-        }
     }
 
     override fun onDestroy() {
