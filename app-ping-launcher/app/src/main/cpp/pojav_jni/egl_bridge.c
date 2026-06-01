@@ -168,9 +168,11 @@ int pojavInitOpenGL() {
     }
     printf("OpenGL: renderer = %s\n", renderer);
 
+    // ── 렌더러별 bridge table 설정 ─────────────────────────────
     if (strncmp("opengles", renderer, 8) == 0) {
         pojav_environ->config_renderer = RENDERER_GL4ES;
         set_gl_bridge_tbl();
+        printf("OpenGL: set_gl_bridge_tbl() done (GL4ES path)\n");
     } else if (strcmp(renderer, "vulkan_zink") == 0) {
         pojav_environ->config_renderer = RENDERER_VK_ZINK;
         load_vulkan();
@@ -180,16 +182,40 @@ int pojavInitOpenGL() {
         if (!getenv("MESA_GLSL_VERSION_OVERRIDE"))   setenv("MESA_GLSL_VERSION_OVERRIDE", "460", 1);
         if (!getenv("force_glsl_extensions_warn"))   setenv("force_glsl_extensions_warn", "true", 1);
         if (!getenv("allow_higher_compat_version"))  setenv("allow_higher_compat_version", "true", 1);
-        if (!getenv("allow_glsl_extension_directive_midshader")) setenv("allow_glsl_extension_directive_midshader", "true", 1);
+        if (!getenv("allow_glsl_extension_directive_midshader"))
+            setenv("allow_glsl_extension_directive_midshader", "true", 1);
         if (!getenv("MESA_LOADER_DRIVER_OVERRIDE"))  setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
         set_osm_bridge_tbl();
+        printf("OpenGL: set_osm_bridge_tbl() done (Zink path)\n");
     } else {
-        printf("Unknown renderer '%s', defaulting to vulkan_zink\n", renderer);
+        printf("OpenGL: unknown renderer '%s', defaulting to vulkan_zink\n", renderer);
         pojav_environ->config_renderer = RENDERER_VK_ZINK;
         load_vulkan();
         setenv("GALLIUM_DRIVER", "zink", 1);
         set_osm_bridge_tbl();
+        printf("OpenGL: set_osm_bridge_tbl() done (fallback path)\n");
     }
+
+    // ── bridge table 채워졌는지 검증 ───────────────────────────
+    if (br_init == NULL || br_init_context == NULL ||
+        br_make_current == NULL || br_swap_buffers == NULL) {
+        printf("OpenGL: FATAL — bridge_tbl not populated! "
+               "br_init=%p br_init_context=%p br_make_current=%p br_swap_buffers=%p\n",
+               (void*)br_init, (void*)br_init_context,
+               (void*)br_make_current, (void*)br_swap_buffers);
+        return -1;
+    }
+    printf("OpenGL: bridge_tbl OK — br_init=%p br_init_context=%p br_make_current=%p\n",
+           (void*)br_init, (void*)br_init_context, (void*)br_make_current);
+
+    // ── 실제 렌더 백엔드 초기화 (EGL or OSMesa) ───────────────
+    printf("OpenGL: calling br_init() ...\n");
+    if (!br_init()) {
+        printf("OpenGL: br_init() FAILED — EGL/OSMesa 초기화 실패\n");
+        return -1;
+    }
+    printf("OpenGL: br_init() succeeded\n");
+
     return 0;
 }
 
@@ -204,9 +230,16 @@ EXTERNAL_API int pojavInit() {
     ANativeWindow_acquire(pojav_environ->pojavWindow);
     pojav_environ->savedWidth = ANativeWindow_getWidth(pojav_environ->pojavWindow);
     pojav_environ->savedHeight = ANativeWindow_getHeight(pojav_environ->pojavWindow);
-    ANativeWindow_setBuffersGeometry(pojav_environ->pojavWindow,pojav_environ->savedWidth,pojav_environ->savedHeight,AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM);
+    ANativeWindow_setBuffersGeometry(
+            pojav_environ->pojavWindow,
+            pojav_environ->savedWidth, pojav_environ->savedHeight,
+            AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM);
     updateMonitorSize(pojav_environ->savedWidth, pojav_environ->savedHeight);
-    pojavInitOpenGL();
+
+    if (pojavInitOpenGL() != 0) {
+        printf("pojavInit: pojavInitOpenGL() failed\n");
+        return 0;   // LWJGL에 실패 알림
+    }
     return 1;
 }
 
@@ -234,14 +267,28 @@ EXTERNAL_API void pojavSwapBuffers() {
 
 
 EXTERNAL_API void pojavMakeCurrent(void* window) {
+    printf("pojavMakeCurrent called: window=%p br_make_current=%p\n",
+           window, (void*)br_make_current);
+    if (br_make_current == NULL) {
+        printf("pojavMakeCurrent: br_make_current is NULL!\n");
+        return;
+    }
     br_make_current((basic_render_window_t*)window);
 }
 
 EXTERNAL_API void* pojavCreateContext(void* contextSrc) {
+    printf("pojavCreateContext called: contextSrc=%p br_init_context=%p\n",
+           contextSrc, (void*)br_init_context);
     if (pojav_environ->config_renderer == RENDERER_VULKAN) {
         return (void *) pojav_environ->pojavWindow;
     }
-    return br_init_context((basic_render_window_t*)contextSrc);
+    if (br_init_context == NULL) {
+        printf("pojavCreateContext: br_init_context is NULL!\n");
+        return NULL;
+    }
+    void* result = br_init_context((basic_render_window_t*)contextSrc);
+    printf("pojavCreateContext returned %p\n", result);
+    return result;
 }
 
 void* maybe_load_vulkan() {

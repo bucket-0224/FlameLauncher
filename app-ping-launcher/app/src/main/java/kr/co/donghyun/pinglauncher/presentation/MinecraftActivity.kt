@@ -537,14 +537,25 @@ class MinecraftActivity : BaseActivity() {
         // PojavLauncher 패치 LWJGL은 모든 MC 버전에 필요 (libglfw.so가 pojavInit 라우팅을 가정함)
         copyLwjglJars(base)
         val lwjgl3Dir = File(base, "lwjgl3")
-        lwjgl3Dir.listFiles()
+        // 수정 — patched GLFW를 무조건 0번 인덱스에
+        val lwjglJars = lwjgl3Dir.listFiles()
             ?.filter { it.extension == "jar" }
-            ?.sortedBy { it.name }   // lwjgl-3.3.3.jar(core)가 먼저 오도록
-            ?.forEach { jar ->
-                jarList.add(jar.absolutePath)
-                Log.d("PING_LAUNCHER", "🔧 LWJGL jar 주입: ${jar.name}")
-            }
+            ?.toMutableList() ?: mutableListOf()
 
+        // patched glfw를 분리해서 맨 앞으로
+        val patchedGlfw = lwjglJars.find { it.name.contains("glfw-classes") }
+        lwjglJars.remove(patchedGlfw)
+        lwjglJars.sortBy { it.name }
+
+        if (patchedGlfw != null) {
+            jarList.add(patchedGlfw.absolutePath)  // 0번 인덱스
+            Log.d("PING_LAUNCHER", "🔧 patched GLFW 우선 주입: ${patchedGlfw.name}")
+        }
+
+        lwjglJars.forEach { jar ->
+            jarList.add(jar.absolutePath)
+            Log.d("PING_LAUNCHER", "🔧 LWJGL jar 주입: ${jar.name}")
+        }
         jarList.addAll(0, extraJars)
 
         val searchDirs = listOfNotNull(
@@ -573,11 +584,11 @@ class MinecraftActivity : BaseActivity() {
                     // PojavLauncher 패치 GLFW만 제외. core/opengl/openal 등 다른 LWJGL 모듈은
                     // 1.14 번들 그대로 쓰는 게 호환성 안전.
                     val lowerName = f.name.lowercase()
-                        // MC 번들 LWJGL은 모두 제외 (lwjgl-3.x.jar, lwjgl-glfw-3.x.jar, lwjgl-opengl-3.x.jar, ...)
-                        // PojavLauncher patched 3.3.3 풀 패키지를 위에서 주입했으므로 버전 충돌 방지
-                    val lwjglBundlePattern = Regex("^lwjgl(-[a-z]+)?-\\d.*\\.jar$")
-                    if (lwjglBundlePattern.matches(lowerName)) {
-                        Log.d("PING_LAUNCHER", "번들 LWJGL 제외 (PojavLauncher 3.3.3 사용): ${f.name}")
+
+                    // 변경 → glfw-classes 동명 클래스 충돌 방지를 위해 lwjgl-glfw-*만 제외
+                    val lwjglGlfwPattern = Regex("^lwjgl-glfw-\\d.*\\.jar$")
+                    if (lwjglGlfwPattern.matches(lowerName)) {
+                        Log.d("PING_LAUNCHER", "번들 lwjgl-glfw 제외 (PojavLauncher patched 사용): ${f.name}")
                         return@forEach
                     }
 
@@ -599,10 +610,10 @@ class MinecraftActivity : BaseActivity() {
                     if (jarList.contains(f.absolutePath)) return@forEach
 
                     val lowerName = f.name.lowercase()
-                    // GLFW만 PojavLauncher stub으로 대체. core/opengl/openal/stb 등은 MC 번들 유지.
-                    val lwjglPattern = Regex("lwjgl(-[a-z]+)?-\\d.*\\.jar")
-                    if (lwjglPattern.matches(lowerName)) {
-                        Log.d("PING_LAUNCHER", "번들 LWJGL 제외 (PojavLauncher patched 사용): ${f.name}")
+                    // 변경
+                    val lwjglGlfwPattern = Regex("^lwjgl-glfw-\\d.*\\.jar$")
+                    if (lwjglGlfwPattern.matches(lowerName)) {
+                        Log.d("PING_LAUNCHER", "번들 lwjgl-glfw 제외 (PojavLauncher patched 사용): ${f.name}")
                         return@forEach
                     }
 
@@ -690,7 +701,17 @@ class MinecraftActivity : BaseActivity() {
 
         val metaJvmArgs = instanceMeta?.gameJvmArgs?.toTypedArray() ?: emptyArray()
 
+        val renderer = RendererManager.load(this@MinecraftActivity)
+        val glLibName = when (renderer.id) {
+            "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
+            "zink" -> "libOSMesa.so"
+            else -> "libgl4es_114.so"
+        }
+
+        Log.i("PingLauncherJVM", "🎨 Selected glLibName=$glLibName (renderer=${renderer.id})")
+
         val jvmArgs = jvm8CompatArgs + jvmSettings.toJvmArgArray(
+            context = this,
             userDir = mcDir.absolutePath,
             classPath = jarList.joinToString(":"),
             libraryPath = nativesDir.absolutePath,

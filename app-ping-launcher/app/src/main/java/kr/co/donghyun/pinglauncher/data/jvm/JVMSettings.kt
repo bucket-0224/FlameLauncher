@@ -2,6 +2,7 @@ package kr.co.donghyun.pinglauncher.data.jvm
 
 import android.content.Context
 import com.google.gson.Gson
+import kr.co.donghyun.pinglauncher.data.renderer.RendererManager
 import java.io.File
 
 data class JvmSettings(
@@ -19,6 +20,7 @@ data class JvmSettings(
     val cacheDirPath: String = ""
 ) {
     fun toJvmArgArray(
+        context: Context,
         userDir: String,
         classPath: String,
         libraryPath: String,
@@ -39,18 +41,27 @@ data class JvmSettings(
                 "-XX:G1HeapRegionSize=${heapRegionSizeMb}m",
             )
         }
+
+        val renderer = RendererManager.load(context)
+        val glLibName = when (renderer.id) {
+            "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
+            "zink" -> "libOSMesa.so"   // zink는 OSMesa가 GL 심볼 공급
+            else -> "libgl4es_114.so"
+        }
+
         args += listOf(
             "-Duser.dir=$userDir",
             "-Djava.class.path=$classPath",
             "-Djava.library.path=$libraryPath",
+            "-Dorg.lwjgl.opengl.libname=${glLibName}",
             "-Dorg.lwjgl.librarypath=$libraryPath",
-            "-Dorg.lwjgl.opengl.libname=libOSMesa.so",
             "-Dping.main.class=$mainClass",
             "-Dorg.lwjgl.system.SharedLibraryExtractPath=$libraryPath",
             "-Dorg.lwjgl.system.SharedLibraryExtractDirectory=$libraryPath",
-            "-Dorg.lwjgl.util.NoChecks=true",
-            "-Dorg.lwjgl.util.Debug=false",
             "-Djava.awt.headless=true",
+            "-Dorg.lwjgl.util.NoChecks=true",
+            "-Dorg.lwjgl.util.Debug=true",
+            "-Dorg.lwjgl.util.DebugLoader=true",
             "-Dfml.earlyprogresswindow=false",
             "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
             "-Djava.io.tmpdir=${cacheDirPath}",

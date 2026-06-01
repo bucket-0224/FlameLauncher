@@ -30,7 +30,7 @@ enum class Renderer(
             "allow_glsl_extension_directive_midshader" to "true",
             "MESA_LOADER_DRIVER_OVERRIDE" to "zink",
             "GALLIUM_DRIVER" to "zink",
-            "POJAV_LOAD_TURNIP" to "1"  // Adreno면 Turnip 시도
+//            "POJAV_LOAD_TURNIP" to "1"  // Adreno면 Turnip 시도
         )
     ),
     HOLY_GL4ES(

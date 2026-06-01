@@ -115,6 +115,8 @@ static void registerGLFWGamepadNative(JNIEnv* customEnv) {
         LOGE("  ❌ org/lwjgl/glfw/GLFW 클래스 못 찾음 (아직 classpath에 미로드)");
         return;
     }
+
+
     LOGI("  ✅ GLFW 클래스 찾음");
 
     // 우리가 빌드한 libglfw.so 우선, 그 다음 libpojavexec.so 폴백
@@ -400,7 +402,7 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
     }
     LOGI("내장 JVM 부팅 성공!");
     installGrabbingHook();
-    registerGLFWGamepadNative(customEnv);  // ← 이 줄 추가
+//    registerGLFWGamepadNative(customEnv);  // ← 이 줄 추가
 
     // ==========================================================
     // 🔥 [핵심 수정 구간] 이제부터는 무조건 customEnv만 사용해야 합니다!
