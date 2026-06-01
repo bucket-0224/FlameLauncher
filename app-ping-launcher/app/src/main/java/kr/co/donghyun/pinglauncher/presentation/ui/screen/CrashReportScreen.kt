@@ -12,8 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -36,7 +40,7 @@ import kr.co.donghyun.pinglauncher.presentation.ModEntry
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgBorder
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgDark
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgSurface
-
+import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 
 @Composable
 fun CrashReportScreen(
@@ -45,96 +49,88 @@ fun CrashReportScreen(
     isLoading: Boolean,
     onToggleMod: (ModEntry) -> Unit,
     onBack: () -> Unit,
-    onRelaunch: () -> Unit
+    onRelaunch: () -> Unit,
 ) {
+    val tablet = isTablet()
     val Pink = Color(0xFFE91E8C)
+    val Red = Color(0xFFFF4444)
     val TextMain = Color(0xFFFCE4EC)
     val TextSub = Color(0xFFBB86A0)
-    val Red = Color(0xFFFF6B6B)
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(BgDark)
-            .systemBarsPadding()
-    ) {
-        // 툴바
+    Column(modifier = Modifier.fillMaxSize().background(BgDark).systemBarsPadding()) {
+        // 툴바 반응형 처리
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(BgSurface)
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .border(1.dp, BgBorder, RoundedCornerShape(0.dp))
+                .padding(horizontal = if (tablet) 16.dp else 10.dp, vertical = if (tablet) 10.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             TextButton(onClick = onBack) {
-                Text("← 뒤로", color = TextSub, fontSize = 14.sp)
+                Text("뒤로", color = TextSub, fontSize = if (tablet) 14.sp else 11.sp)
             }
             Text(
-                "모드 관리",
+                text = "크래시 복구 센터",
                 color = TextMain,
-                fontSize = 16.sp,
+                fontSize = if (tablet) 18.sp else 14.sp,
                 fontWeight = FontWeight.Bold
             )
-            Button(
-                onClick = onRelaunch,
-                colors = ButtonDefaults.buttonColors(containerColor = Pink),
-                shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
-            ) {
-                Text("▶ 재실행", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-            }
         }
 
-        // 크래시 요약
-        if (crashSummary.isNotEmpty()) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF2D0A0A))
-                    .border(1.dp, Red.copy(alpha = 0.4f))
-                    .padding(12.dp)
-            ) {
-                Text("⚠️ 크래시 발생", color = Red, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(crashSummary, color = Red.copy(alpha = 0.8f), fontSize = 11.sp, lineHeight = 16.sp)
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(if (tablet) 16.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // 요약 섹션
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("⚠️ 최근 게임 분석 결과", color = Red, fontSize = if (tablet) 15.sp else 12.sp, fontWeight = FontWeight.Bold)
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(BgSurface, RoundedCornerShape(10.dp))
+                            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+                            .padding(if (tablet) 14.dp else 10.dp)
+                    ) {
+                        Text(
+                            text = crashSummary.ifEmpty { "최근 감지된 오류 로그가 없거나 정상 종료되었습니다." },
+                            color = TextMain,
+                            fontSize = if (tablet) 13.sp else 11.sp,
+                            lineHeight = if (tablet) 18.sp else 14.sp
+                        )
+                    }
+                }
             }
-        }
 
-        // 의심 모드 안내
-        val suspectedCount = mods.count { it.isSuspected }
-        if (suspectedCount > 0) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF2D1A0A))
-                    .padding(12.dp)
-            ) {
-                Text(
-                    "🔍 크래시 원인으로 의심되는 모드 ${suspectedCount}개가 있습니다. 비활성화 후 재실행해보세요.",
-                    color = Color(0xFFFFB74D),
-                    fontSize = 12.sp
-                )
-            }
-        }
+            // 모드 관리 섹션 (반응형 그리드 구성 배치)
+            item {
+                Text("🛠️ 설치된 모드 토글 활성화/비활성화", color = TextMain, fontSize = if (tablet) 15.sp else 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(6.dp))
 
-        if (isLoading) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = Pink)
-            }
-        } else {
-            LazyColumn(
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                items(mods, key = { it.fileName }) { mod ->
-                    ModToggleItem(
-                        mod = mod,
-                        onToggle = { onToggleMod(mod) }
-                    )
+                if (isLoading) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = Pink)
+                    }
+                } else {
+                    // 태블릿은 2열, 폰은 1열로 바인딩 처리
+                    val chunks = mods.chunked(if (tablet) 2 else 1)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        chunks.forEach { chunk ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                                chunk.forEach { mod ->
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        ModToggleItem(mod = mod, onToggle = { onToggleMod(mod) }, tablet = tablet)
+                                    }
+                                }
+                                if (chunk.size < (if (tablet) 2 else 1)) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -142,30 +138,19 @@ fun CrashReportScreen(
 }
 
 @Composable
-fun ModToggleItem(mod: ModEntry, onToggle: () -> Unit) {
+fun ModToggleItem(mod: ModEntry, onToggle: () -> Unit, tablet: Boolean) {
     val Pink = Color(0xFFE91E8C)
+    val Red = Color(0xFFFF4444)
     val TextMain = Color(0xFFFCE4EC)
     val TextSub = Color(0xFFBB86A0)
-    val Red = Color(0xFFFF6B6B)
-
-    val borderColor = when {
-        mod.isSuspected && mod.enabled -> Red.copy(alpha = 0.6f)
-        mod.isSuspected -> Red.copy(alpha = 0.3f)
-        else -> BgBorder
-    }
-    val bgColor = when {
-        mod.isSuspected -> Color(0xFF2D0A0A).copy(alpha = 0.5f)
-        !mod.enabled -> BgSurface.copy(alpha = 0.5f)
-        else -> BgSurface
-    }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
-            .background(bgColor)
-            .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .background(BgSurface)
+            .border(1.dp, if (mod.isSuspected) Red.copy(alpha = 0.6f) else BgBorder, RoundedCornerShape(8.dp))
+            .padding(horizontal = if (tablet) 12.dp else 10.dp, vertical = if (tablet) 10.dp else 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
@@ -175,12 +160,12 @@ fun ModToggleItem(mod: ModEntry, onToggle: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (mod.isSuspected) {
-                    Text("⚠️", fontSize = 12.sp)
+                    Text("⚠️", fontSize = if (tablet) 12.sp else 10.sp)
                 }
                 Text(
                     text = mod.modId,
                     color = if (mod.enabled) TextMain else TextSub,
-                    fontSize = 13.sp,
+                    fontSize = if (tablet) 13.sp else 11.sp,
                     fontWeight = if (mod.isSuspected) FontWeight.Bold else FontWeight.Normal,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -189,7 +174,7 @@ fun ModToggleItem(mod: ModEntry, onToggle: () -> Unit) {
             Text(
                 text = mod.fileName,
                 color = TextSub.copy(alpha = 0.6f),
-                fontSize = 10.sp,
+                fontSize = if (tablet) 10.sp else 8.sp,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
@@ -203,7 +188,8 @@ fun ModToggleItem(mod: ModEntry, onToggle: () -> Unit) {
                 checkedTrackColor = if (mod.isSuspected) Red else Pink,
                 uncheckedThumbColor = TextSub,
                 uncheckedTrackColor = BgBorder
-            )
+            ),
+            modifier = Modifier.size(if (tablet) 48.dp else 40.dp)
         )
     }
 }

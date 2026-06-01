@@ -287,6 +287,13 @@ EXTERNAL_API void* pojavCreateContext(void* contextSrc) {
         return NULL;
     }
     void* result = br_init_context((basic_render_window_t*)contextSrc);
+    if (result == NULL) {
+        // ★ 추가: zink/osmesa가 context 생성에 실패한 케이스
+        printf("pojavCreateContext: br_init_context returned NULL — "
+               "renderer=%d, likely Vulkan device incompatible with zink "
+               "(no suitable physical device / missing extensions)\n",
+               pojav_environ->config_renderer);
+    }
     printf("pojavCreateContext returned %p\n", result);
     return result;
 }

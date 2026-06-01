@@ -12,12 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -37,10 +32,10 @@ import kr.co.donghyun.pinglauncher.BuildConfig
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadPhase
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
 import kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
-import kr.co.donghyun.pinglauncher.presentation.*
 import kr.co.donghyun.pinglauncher.presentation.ui.components.LoaderSelectDialog
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
 import kr.co.donghyun.pinglauncher.presentation.util.isVersionSupported
+import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 import java.net.URL
 
 @Composable
@@ -59,78 +54,53 @@ fun MainScreen(
     onOpenJVMSettings: () -> Unit,
     onOpenRendererSettings: () -> Unit,
     uuid: String?,
-    isLoggedIn: Boolean,        // ← 추가
-    username: String?,          // ← 추가
-    onLogin: () -> Unit,        // ← 추가
+    isLoggedIn: Boolean,
+    username: String?,
+    onLogin: () -> Unit,
     loginError: String? = null,
 ) {
     val isDownloading = progress.phase != DownloadPhase.IDLE &&
             progress.phase != DownloadPhase.DONE &&
             progress.phase != DownloadPhase.ERROR
 
-    val filtered = if (showOnlyRelease)
-        versions.filter { it.type == "release" }
-    else versions
-
+    val filtered = if (showOnlyRelease) versions.filter { it.type == "release" } else versions
     var showLoaderDialog by remember { mutableStateOf(false) }
+    val tablet = isTablet()
 
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(BgDark)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(bottom = 120.dp)
-        ) {
-            // 상단 프로필 헤더
+    Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
+        Column(modifier = Modifier.fillMaxSize().padding(bottom = if (tablet) 120.dp else 40.dp)) {
             ProfileHeader(
-                isLoggedIn = isLoggedIn,
-                username = username,
-                uuid = uuid,
-                onLogin = onLogin,
-                onOpenContents = onOpenContents,
-                onOpenKeySettings = onOpenKeySettings,
-                onOpenJVMSettings = onOpenJVMSettings,
-                onOpenRendererSettings = onOpenRendererSettings
+                isLoggedIn, username, uuid, onLogin,
+                onOpenContents, onOpenKeySettings, onOpenJVMSettings, onOpenRendererSettings
             )
 
-            // 필터
+            // 필터 칩
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 FilterChip(
                     selected = showOnlyRelease,
                     onClick = { if (!showOnlyRelease) onToggleFilter() },
-                    label = { Text("정식 출시", color = TextPrimary, fontSize = 13.sp) },
+                    label = { Text("정식 출시", color = TextPrimary, fontSize = if(tablet) 12.sp else 8.sp) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = PinkDark,
-                        containerColor = BgSurface
+                        selectedContainerColor = PinkDark, containerColor = BgSurface
                     ),
                     border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = showOnlyRelease,
-                        borderColor = BgBorder,
-                        selectedBorderColor = PinkPrimary
+                        enabled = true, selected = showOnlyRelease,
+                        borderColor = BgBorder, selectedBorderColor = PinkPrimary
                     )
                 )
                 FilterChip(
                     selected = !showOnlyRelease,
                     onClick = { if (showOnlyRelease) onToggleFilter() },
-                    label = { Text("전체", color = TextPrimary, fontSize = 13.sp) },
+                    label = { Text("전체", color = TextPrimary, fontSize = if(tablet) 12.sp else 8.sp) },
                     colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = PinkDark,
-                        containerColor = BgSurface
+                        selectedContainerColor = PinkDark, containerColor = BgSurface
                     ),
                     border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = !showOnlyRelease,
-                        borderColor = BgBorder,
-                        selectedBorderColor = PinkPrimary
+                        enabled = true, selected = !showOnlyRelease,
+                        borderColor = BgBorder, selectedBorderColor = PinkPrimary
                     )
                 )
             }
@@ -139,35 +109,66 @@ fun MainScreen(
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = PinkPrimary)
                 }
+            } else if (tablet) {
+                // ── 태블릿 2-pane ──────────────────────────────
+                Row(modifier = Modifier.fillMaxSize().weight(1f)) {
+                    LazyColumn(
+                        modifier = Modifier.weight(0.62f).fillMaxHeight(),
+                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        items(filtered) { v ->
+                            VersionItem(v, selectedVersion?.id == v.id) { onVersionSelect(v) }
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(0.38f)
+                            .fillMaxHeight()
+                            .background(BgSurface)
+                            .border(1.dp, BgBorder)
+                            .padding(20.dp),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        SidePlayPanel(
+                            selectedVersion = selectedVersion,
+                            progress = progress,
+                            isDownloading = isDownloading,
+                            isLoggedIn = isLoggedIn,
+                            onPlayClick = { showLoaderDialog = true },
+                            onLogin = onLogin
+                        )
+                    }
+                }
             } else {
+                // ── 폰 1-pane ─────────────────────────────────
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    items(filtered) { version ->
-                        VersionItem(
-                            version = version,
-                            isSelected = selectedVersion?.id == version.id,
-                            onClick = { onVersionSelect(version) }
-                        )
+                    items(filtered) { v ->
+                        VersionItem(v, selectedVersion?.id == v.id) { onVersionSelect(v) }
                     }
                     item { Box(modifier = Modifier.height(64.dp)) }
                 }
             }
         }
 
-        BottomPanel(
-            selectedVersion = selectedVersion,
-            progress = progress,
-            isDownloading = isDownloading,
-            onPlayClick = { showLoaderDialog = true },
-            modifier = Modifier.align(Alignment.BottomCenter),
-            username = username,
-            isLoggedIn = isLoggedIn,
-            onLogin = onLogin,
-            loginError = loginError
-        )
+        // 폰: 하단 고정 패널
+        if (!tablet) {
+            BottomPanel(
+                selectedVersion = selectedVersion,
+                progress = progress,
+                isDownloading = isDownloading,
+                onPlayClick = { showLoaderDialog = true },
+                modifier = Modifier.align(Alignment.BottomCenter),
+                username = username,
+                isLoggedIn = isLoggedIn,
+                onLogin = onLogin,
+                loginError = loginError
+            )
+        }
 
         if (showLoaderDialog && selectedVersion != null) {
             LoaderSelectDialog(
@@ -186,6 +187,115 @@ fun MainScreen(
     }
 }
 
+/** 태블릿 우측 패널 — 큰 Play 버튼과 진행률을 한 곳에. */
+@Composable
+private fun SidePlayPanel(
+    selectedVersion: VersionEntry?,
+    progress: DownloadProgress,
+    isDownloading: Boolean,
+    isLoggedIn: Boolean,
+    onPlayClick: () -> Unit,
+    onLogin: () -> Unit
+) {
+    val isSupported = selectedVersion?.let { isVersionSupported(it.id) } ?: false
+    val tablet = isTablet()
+
+    // 💡 전체 요소를 Column으로 감싸줍니다.
+    // 여기에 modifier = Modifier.fillMaxHeight() 등을 추가하여 높이를 꽉 채워야 Spacer가 정상 작동합니다.
+    Column(modifier = Modifier.fillMaxHeight()) {
+
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("선택된 버전", color = TextSecondary, fontSize = 12.sp)
+            Text(
+                text = selectedVersion?.id ?: "버전을 선택하세요",
+                color = if (selectedVersion != null) TextPrimary else TextSecondary,
+                fontSize = if(tablet) 28.sp else 24.sp,
+                fontWeight = FontWeight.Bold
+            )
+            if (selectedVersion != null) {
+                Text(
+                    text = if (isSupported) selectedVersion.type else "${selectedVersion.type} · 미지원",
+                    color = if (isSupported) TextSecondary else Color(0xFFFF6B6B),
+                    fontSize = 13.sp
+                )
+            }
+        }
+
+        AnimatedVisibility(visible = isDownloading || progress.phase == DownloadPhase.ERROR) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = when (progress.phase) {
+                            DownloadPhase.FETCHING_MANIFEST -> "버전 정보 가져오는 중..."
+                            DownloadPhase.DOWNLOADING_CLIENT -> "클라이언트 다운로드 중..."
+                            DownloadPhase.DOWNLOADING_LIBRARIES -> "라이브러리 (${progress.current}/${progress.total})"
+                            DownloadPhase.DOWNLOADING_ASSETS -> "에셋 (${progress.current}/${progress.total})"
+                            DownloadPhase.ERROR -> "❌ ${progress.error ?: "오류"}"
+                            else -> ""
+                        },
+                        color = if (progress.phase == DownloadPhase.ERROR) Color(0xFFFF6B6B) else TextSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f) // Row 내부이므로 정상 작동
+                    )
+                    if (isDownloading) {
+                        Text("${progress.percent}%", color = PinkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                if (isDownloading) {
+                    LinearProgressIndicator(
+                        progress = { progress.fraction },
+                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                        color = PinkPrimary,
+                        trackColor = BgBorder,
+                    )
+                }
+            }
+        }
+
+        // 💡 이제 ColumnScope 내부이므로 weight가 올바르게 인식됩니다.
+        Spacer(modifier = Modifier.weight(1f, fill = true))
+
+        Button(
+            onClick = onPlayClick,
+            enabled = selectedVersion != null && !isDownloading && isSupported && (BuildConfig.DEBUG || isLoggedIn),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = PinkPrimary,
+                disabledContainerColor = BgBorder
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth().height(60.dp)
+        ) {
+            if (isDownloading) {
+                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+            } else {
+                Text("▶  Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+            }
+        }
+
+        if (!isLoggedIn && !BuildConfig.DEBUG) {
+            // 버튼 간의 간격이 필요하다면 여기에 Spacer나 패딩을 추가할 수 있습니다.
+            Spacer(modifier = Modifier.height(12.dp))
+            Button(
+                onClick = onLogin,
+                colors = ButtonDefaults.buttonColors(containerColor = PinkDark),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth().height(44.dp)
+            ) {
+                Text("🔑 로그인 필요", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            }
+        }
+    }
+}
+
+
+// ProfileHeader, VersionItem, BottomPanel, loadSkinFace 는 기존 코드 그대로 유지
+// (위에서 import만 추가했고 컴포저블 본문은 손대지 않았습니다)
+
 @Composable
 fun ProfileHeader(
     isLoggedIn: Boolean,
@@ -196,109 +306,61 @@ fun ProfileHeader(
     onOpenKeySettings: () -> Unit,
     onOpenJVMSettings: () -> Unit,
     onOpenRendererSettings: () -> Unit,
-
-    ) {
-    // 스킨 얼굴 이미지 로드
+) {
+    // ── 이하 기존 ProfileHeader 본문 그대로 ──
     var skinFace by remember { mutableStateOf<ImageBitmap?>(null) }
-    LaunchedEffect(uuid) {
-        skinFace = loadSkinFace(uuid)
-    }
+    LaunchedEffect(uuid) { skinFace = loadSkinFace(uuid) }
+    val tablet = isTablet()
 
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(
-                Brush.verticalGradient(
-                    colors = listOf(Color(0xFF2D0A20), BgDark)
-                )
-            )
-            .padding(top = 48.dp, bottom = 12.dp, start = 16.dp, end = 16.dp)
+        modifier = Modifier.fillMaxWidth().background(
+            Brush.verticalGradient(colors = listOf(Color(0xFF2D0A20), BgDark))
+        ).padding(top = if(tablet) 48.dp else 24.dp, bottom = if(tablet) 12.dp else 0.dp, start = 16.dp, end = 16.dp)
     ) {
         Column {
-            // 프로필 행
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    // 스킨 얼굴
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Box(
-                        modifier = Modifier
-                            .size(48.dp)
-                            .clip(RoundedCornerShape(8.dp))
+                        modifier = Modifier.size(if(tablet) 48.dp else 36.dp).clip(RoundedCornerShape(8.dp))
                             .background(Color(0xFF1A0A14))
                             .border(1.5.dp, PinkDark, RoundedCornerShape(8.dp)),
                         contentAlignment = Alignment.Center
                     ) {
                         if (skinFace != null) {
-                            Image(
-                                bitmap = skinFace!!,
-                                contentDescription = "스킨",
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.FillBounds
-                            )
+                            Image(bitmap = skinFace!!, contentDescription = "스킨",
+                                modifier = Modifier.fillMaxSize(), contentScale = ContentScale.FillBounds)
                         } else {
-                            Text(
-                                text = if (isLoggedIn) username?.take(1)?.uppercase() ?: "?" else "?",
-                                color = PinkLight,
-                                fontSize = 20.sp,
-                                fontWeight = FontWeight.Bold,
-                                fontFamily = FontFamily.Monospace
-                            )
+                            Text(if (isLoggedIn) username?.take(1)?.uppercase() ?: "?" else "?",
+                                color = PinkLight, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+                                fontFamily = FontFamily.Monospace)
                         }
                     }
-
                     Column {
-                        Text(
-                            text = "🌸 PingLauncher",
-                            color = PinkLight,
-                            fontSize = 18.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.5.sp
-                        )
+                        Text("🌸 PingLauncher", color = PinkLight, fontSize = if (tablet) 18.sp else 14.sp,
+                            fontWeight = FontWeight.Bold, letterSpacing = 0.5.sp)
                         if (isLoggedIn && username != null) {
-                            Text(
-                                text = username,
-                                color = PinkPrimary,
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Medium
-                            )
+                            Text(username, color = PinkPrimary, fontSize = if (tablet) 13.sp else 11.sp, fontWeight = FontWeight.Medium)
                         } else {
-                            Text(
-                                text = "로그인 필요",
-                                color = TextSecondary,
-                                fontSize = 12.sp
-                            )
+                            Text("로그인 필요", color = TextSecondary, fontSize = if (tablet) 12.sp else 8.sp,)
                         }
                     }
                 }
-
-                // 로그인 버튼 (미로그인 시)
                 if (!isLoggedIn) {
                     Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                        modifier = Modifier.clip(RoundedCornerShape(8.dp))
                             .background(PinkDark)
                             .border(1.dp, PinkPrimary, RoundedCornerShape(8.dp))
                             .clickable { onLogin() }
                             .padding(horizontal = 12.dp, vertical = 6.dp)
-                    ) {
-                        Text("🔑 로그인", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    }
+                    ) { Text("🔑 로그인", color = Color.White, fontSize = if (tablet) 12.sp else 8.sp, fontWeight = FontWeight.Bold) }
                 }
             }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // 버튼 행
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+            Spacer(modifier = Modifier.height(if(tablet) 12.dp else 8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 listOf(
                     "📦 추가 컨텐츠" to onOpenContents,
                     "🎮 키 설정" to onOpenKeySettings,
@@ -306,16 +368,13 @@ fun ProfileHeader(
                     "⚙️ JVM" to onOpenJVMSettings,
                 ).forEach { (label, action) ->
                     Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                        modifier = Modifier.clip(RoundedCornerShape(8.dp))
                             .background(BgSurface)
                             .border(1.dp, BgBorder, RoundedCornerShape(8.dp))
                             .clickable { action() }
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                            .padding(horizontal = 8.dp, vertical = if(tablet) 6.dp else 4.dp),
                         contentAlignment = Alignment.Center
-                    ) {
-                        Text(label, color = PinkLight, fontSize = 11.sp, fontWeight = FontWeight.Medium)
-                    }
+                    ) { Text(label, color = PinkLight, fontSize = if (tablet) 11.sp else 7.sp, fontWeight = FontWeight.Medium) }
                 }
             }
         }
@@ -324,32 +383,15 @@ fun ProfileHeader(
 
 private suspend fun loadSkinFace(uuid: String?, size: Int = 64): ImageBitmap? = withContext(Dispatchers.IO) {
     try {
-        // uuid가 null이거나 비어있다면 공식 스티브(Steve) UUID를 사용합니다.
-        val cleanUuid = if (!uuid.isNullOrBlank()) {
-            uuid.replace("-", "")
-        } else {
-            "MHF_Alex" // 모장 공식 알렉스 고유 닉네임 입력
-        }
-
-        // MC-Heads API 활용
-        val urlString = "https://mc-heads.net/avatar/$cleanUuid/$size"
-        val url = URL(urlString)
-        val stream = url.openStream()
-        val bitmap = BitmapFactory.decodeStream(stream)
-
-        bitmap?.asImageBitmap()
-    } catch (e: Exception) {
-        e.printStackTrace()
-        null
-    }
+        val cleanUuid = if (!uuid.isNullOrBlank()) uuid.replace("-", "") else "MHF_Alex"
+        val url = URL("https://mc-heads.net/avatar/$cleanUuid/$size")
+        BitmapFactory.decodeStream(url.openStream())?.asImageBitmap()
+    } catch (e: Exception) { e.printStackTrace(); null }
 }
 
 @Composable
-fun VersionItem(
-    version: VersionEntry,
-    isSelected: Boolean,
-    onClick: () -> Unit
-) {
+fun VersionItem(version: VersionEntry, isSelected: Boolean, onClick: () -> Unit) {
+    val tablet = isTablet()
     val typeColor = when (version.type) {
         "release" -> TagRelease
         "snapshot" -> TagSnapshot
@@ -361,8 +403,18 @@ fun VersionItem(
         "old_beta" -> "Beta"
         else -> "Alpha"
     }
-
     val isSupported = remember(version.id) { isVersionSupported(version.id) }
+
+    // ── 폰/태블릿 별 디멘션 ─────────────────────────────────
+    val idSize       = if (tablet) 14.sp else 10.sp
+    val subSize      = if (tablet)  11.sp else 7.sp
+    val typeBadgeSize= if (tablet)  11.sp else 7.sp
+    val checkSize    = if (tablet) 18.sp else 14.sp
+    val padH         = if (tablet) 14.dp else 10.dp
+    val padV         = if (tablet)  10.dp else 6.dp
+    val rowGap       = if (tablet)  12.dp else 8.dp
+    val badgePadH    = if (tablet)  10.dp else  8.dp
+    val badgePadV    = if (tablet)  3.dp else  0.dp
 
     Row(
         modifier = Modifier
@@ -378,42 +430,44 @@ fun VersionItem(
                 shape = RoundedCornerShape(8.dp)
             )
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = padH, vertical = padV),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(rowGap)
         ) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(4.dp))
                     .background(typeColor.copy(alpha = 0.15f))
                     .border(1.dp, typeColor.copy(alpha = 0.4f), RoundedCornerShape(4.dp))
-                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                    .padding(horizontal = badgePadH, vertical = badgePadV)
             ) {
-                Text(text = typeLabel, color = typeColor, fontSize = 11.sp, fontWeight = FontWeight.Medium)
+                Text(typeLabel, color = typeColor,
+                    fontSize = typeBadgeSize, fontWeight = FontWeight.Medium)
             }
-
-            Column {
+            Column(verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.Start) {
                 Text(
                     text = version.id,
                     color = if (isSupported) TextPrimary else TextSecondary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold
+                    fontSize = idSize,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(text = version.releaseTime.take(10), color = TextSecondary, fontSize = 11.sp)
+                    Text(version.releaseTime.take(10),
+                        color = TextSecondary, fontSize = subSize)
                     if (!isSupported) {
-                        Text(text = "⚠ 미지원", color = Color(0xFFFF6B6B), fontSize = 11.sp)
+                        Text("⚠ 미지원", color = Color(0xFFFF6B6B), fontSize = subSize)
                     }
                 }
             }
         }
-
         if (isSelected) {
-            Text("✓", color = PinkPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            Text("✓", color = PinkPrimary, fontSize = checkSize, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -430,103 +484,72 @@ fun BottomPanel(
     onLogin: () -> Unit,
     loginError: String?
 ) {
+    // ── 기존 BottomPanel 본문 그대로 ──
     val isSelectedSupported = selectedVersion?.let { isVersionSupported(it.id) } ?: false
-
     Column(
-        modifier = modifier
-            .fillMaxWidth()
-            .background(BgSurface)
-            .border(width = 1.dp, color = BgBorder, shape = RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
-            .navigationBarsPadding()
-            .padding(16.dp),
+        modifier = modifier.fillMaxWidth().background(BgSurface)
+            .border(1.dp, BgBorder, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+            .navigationBarsPadding().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         AnimatedVisibility(visible = isDownloading || progress.phase == DownloadPhase.ERROR) {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(
                         text = when (progress.phase) {
                             DownloadPhase.FETCHING_MANIFEST -> "버전 정보 가져오는 중..."
                             DownloadPhase.DOWNLOADING_CLIENT -> "클라이언트 다운로드 중..."
-                            DownloadPhase.DOWNLOADING_LIBRARIES -> "라이브러리 다운로드 중... (${progress.current}/${progress.total})"
-                            DownloadPhase.DOWNLOADING_ASSETS -> "에셋 다운로드 중... (${progress.current}/${progress.total})"
-                            DownloadPhase.ERROR -> "❌ ${progress.error ?: "오류 발생"}"
+                            DownloadPhase.DOWNLOADING_LIBRARIES -> "라이브러리 (${progress.current}/${progress.total})"
+                            DownloadPhase.DOWNLOADING_ASSETS -> "에셋 (${progress.current}/${progress.total})"
+                            DownloadPhase.ERROR -> "❌ ${progress.error ?: "오류"}"
                             else -> ""
                         },
                         color = if (progress.phase == DownloadPhase.ERROR) Color(0xFFFF6B6B) else TextSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                        fontSize = if (isTablet()) 12.sp else 8.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f)
                     )
                     if (isDownloading) {
-                        Text(
-                            text = "${progress.percent}%",
-                            color = PinkPrimary,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text("${progress.percent}%", color = PinkPrimary,  fontSize = if (isTablet()) 12.sp else 8.sp, fontWeight = FontWeight.Bold)
                     }
                 }
-
                 if (isDownloading) {
                     LinearProgressIndicator(
                         progress = { progress.fraction },
                         modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                        color = PinkPrimary,
-                        trackColor = BgBorder,
+                        color = PinkPrimary, trackColor = BgBorder,
                     )
                     if (progress.fileName.isNotEmpty()) {
-                        Text(
-                            text = progress.fileName,
-                            color = TextSecondary,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(progress.fileName, color = TextSecondary,  fontSize = if (isTablet()) 11.sp else 7.sp,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
         }
-
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
-                Text(
-                    text = selectedVersion?.id ?: "버전을 선택하세요",
+                Text(selectedVersion?.id ?: "버전을 선택하세요",
                     color = if (selectedVersion != null) TextPrimary else TextSecondary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+                    fontSize = if (isTablet()) 15.sp else 11.sp, fontWeight = FontWeight.SemiBold)
                 if (selectedVersion != null) {
-                    Text(
-                        text = if (isSelectedSupported) selectedVersion.type else "${selectedVersion.type} · 미지원",
-                        color = if (isSelectedSupported) TextSecondary else Color(0xFFFF6B6B),
-                        fontSize = 12.sp
-                    )
+                    Text(if (isSelectedSupported) selectedVersion.type else "${selectedVersion.type} · 미지원",
+                        color = if (isSelectedSupported) TextSecondary else Color(0xFFFF6B6B),  fontSize = if (isTablet()) 12.sp else 8.sp)
                 }
             }
-
             Button(
                 onClick = { selectedVersion?.let { onPlayClick() } },
                 enabled = selectedVersion != null && !isDownloading && isSelectedSupported && (BuildConfig.DEBUG || isLoggedIn),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = PinkPrimary,
-                    disabledContainerColor = BgBorder
-                ),
+                colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary, disabledContainerColor = BgBorder),
                 shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.height(44.dp)
+                modifier = Modifier.height(if(isTablet()) 44.dp else 36.dp)
             ) {
                 if (isDownloading) {
                     CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
                 } else {
-                    Text("▶  Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                    Text("▶  Play", color = Color.White, fontWeight = FontWeight.Bold,  fontSize = if (isTablet()) 15.sp else 11.sp)
                 }
             }
         }

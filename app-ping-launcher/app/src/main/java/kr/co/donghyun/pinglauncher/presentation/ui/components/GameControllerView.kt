@@ -18,51 +18,50 @@ private const val GLFW_PRESS = 1
 private const val GLFW_RELEASE = 0
 
 class GameControllerView(context: Context) : View(context) {
-
     private val activity = context as MinecraftActivity
     private val buttons: List<KeyButton> = KeyLayoutManager.load(context)
-
-    // 각 버튼의 화면 좌표 (픽셀)
     private val buttonRects = mutableMapOf<String, RectF>()
-    // 현재 눌린 버튼 id → pointerId
     private val pressedButtons = mutableMapOf<String, Int>()
 
+    /** 폰 landscape(~800dp 가로)를 기준으로 한 버튼 크기 배율. */
+    private var buttonScale: Float = 1f
+
+    // (기존 paint 들 그대로) ...
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(217, 26, 10, 20)
-        style = Paint.Style.FILL
+        color = Color.argb(217, 26, 10, 20); style = Paint.Style.FILL
     }
     private val bgAccentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(217, 107, 0, 64)
-        style = Paint.Style.FILL
+        color = Color.argb(217, 107, 0, 64); style = Paint.Style.FILL
     }
     private val bgPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(255, 156, 16, 96)
-        style = Paint.Style.FILL
+        color = Color.argb(255, 156, 16, 96); style = Paint.Style.FILL
     }
     private val bgAccentPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(255, 233, 30, 140)
-        style = Paint.Style.FILL
+        color = Color.argb(255, 233, 30, 140); style = Paint.Style.FILL
     }
     private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(178, 122, 40, 85)
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
+        color = Color.argb(178, 122, 40, 85); style = Paint.Style.STROKE; strokeWidth = 3f
     }
     private val borderAccentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.argb(178, 255, 107, 181)
-        style = Paint.Style.STROKE
-        strokeWidth = 3f
+        color = Color.argb(178, 255, 107, 181); style = Paint.Style.STROKE; strokeWidth = 3f
     }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
-        textAlign = Paint.Align.CENTER
-        isFakeBoldText = true
+        color = Color.WHITE; textAlign = Paint.Align.CENTER; isFakeBoldText = true
     }
     private val cornerRadius = 20f
 
+    /** 폰 기준 화면(800dp)을 1.0 으로 두고, 더 넓은 화면에서는 비율만큼 키운다. */
+    private fun computeButtonScale(widthPx: Int): Float {
+        val density = resources.displayMetrics.density
+        val widthDp = widthPx / density
+        return (widthDp / 800f).coerceIn(1f, 2f)
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        Log.d("PING_LAUNCHER", "GameControllerView 크기: ${w}x${h}")
+        buttonScale = computeButtonScale(w)
+        Log.d("PING_LAUNCHER",
+            "GameControllerView 크기: ${w}x${h}, buttonScale=$buttonScale")
         recalcRects(w, h)
     }
 
@@ -70,13 +69,17 @@ class GameControllerView(context: Context) : View(context) {
         buttonRects.clear()
         val density = resources.displayMetrics.density
         buttons.forEach { button ->
-            val x = button.x * w
-            val y = button.y * h
-            val bw = button.width * density
-            val bh = button.height * density
+            val bw = button.width  * density * buttonScale
+            val bh = button.height * density * buttonScale
+            // 위치는 0~1 비율 기준이지만, 커진 버튼이 화면 밖으로 나가지 않게 클램프.
+            val rawX = button.x * w
+            val rawY = button.y * h
+            val x = rawX.coerceIn(0f, (w - bw).coerceAtLeast(0f))
+            val y = rawY.coerceIn(0f, (h - bh).coerceAtLeast(0f))
             buttonRects[button.id] = RectF(x, y, x + bw, y + bh)
         }
     }
+
 
 
     override fun onDraw(canvas: Canvas) {
@@ -95,8 +98,11 @@ class GameControllerView(context: Context) : View(context) {
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, fill)
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, border)
 
-            val fontSize = minOf(rect.width(), rect.height()) * 0.28f
+            // 💡 기존 0.28f에서 0.21f로 축소하여 휴대폰 화면에 맞게 폰트 크기를 줄입니다.
+            val fontSize = minOf(rect.width(), rect.height()) * 0.21f
             textPaint.textSize = fontSize
+
+            // 텍스트가 수직 중앙에 잘 위치하도록 보정값(fontSize * 0.35f)을 유지하거나 미세 조정합니다.
             canvas.drawText(
                 button.label,
                 rect.centerX(),

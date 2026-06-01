@@ -45,6 +45,7 @@ import kr.co.donghyun.pinglauncher.presentation.ModDetail
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgBorder
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgDark
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgSurface
+import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 
 @Composable
 fun ModPackDetailScreen(
@@ -61,6 +62,7 @@ fun ModPackDetailScreen(
     onLaunch: () -> Unit,
     onImageClick: (Int) -> Unit
 ) {
+    val tablet = isTablet()
     val Pink = Color(0xFFE91E8C)
     val TextMain = Color(0xFFFCE4EC)
     val TextSub = Color(0xFFBB86A0)
@@ -71,23 +73,23 @@ fun ModPackDetailScreen(
             .background(BgDark)
             .systemBarsPadding()
     ) {
-        // 툴바
+        // 툴바 (태블릿 유무에 맞춰 상하 여백 조절)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(BgSurface)
                 .border(1.dp, BgBorder, RoundedCornerShape(0.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
+                .padding(horizontal = 12.dp, vertical = if (tablet) 10.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             TextButton(onClick = onBack) {
-                Text("뒤로", color = TextSub, fontSize = 14.sp)
+                Text("뒤로", color = TextSub, fontSize = if (tablet) 14.sp else 11.sp)
             }
             Text(
                 text = modName,
                 color = TextMain,
-                fontSize = 15.sp,
+                fontSize = if (tablet) 15.sp else 12.sp,
                 fontWeight = FontWeight.Bold,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -98,27 +100,32 @@ fun ModPackDetailScreen(
                     onClick = onLaunch,
                     colors = ButtonDefaults.buttonColors(containerColor = Pink),
                     shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = if (tablet) 6.dp else 4.dp),
+                    modifier = Modifier.height(if (tablet) 36.dp else 30.dp)
                 ) {
-                    Text("▶ 열기", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("▶ 열기", color = Color.White, fontSize = if (tablet) 12.sp else 10.sp, fontWeight = FontWeight.Bold)
                 }
             } else {
                 Button(
                     onClick = onInstall,
                     colors = ButtonDefaults.buttonColors(containerColor = Pink),
                     shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = if (tablet) 6.dp else 4.dp),
+                    modifier = Modifier.height(if (tablet) 36.dp else 30.dp)
                 ) {
-                    Text("설치", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Text("설치", color = Color.White, fontSize = if (tablet) 12.sp else 10.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
 
         LazyColumn(modifier = Modifier.fillMaxSize()) {
-            // 헤더
+            // 헤더 배너 (태블릿/폰 높이 차등화 및 로고 크기 대응)
             item {
                 Box(
-                    modifier = Modifier.fillMaxWidth().height(200.dp).background(Color(0xFF1A0A14))
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(if (tablet) 200.dp else 140.dp)
+                        .background(Color(0xFF1A0A14))
                 ) {
                     if (modLogo != null) {
                         AsyncImage(
@@ -130,7 +137,9 @@ fun ModPackDetailScreen(
                         )
                     }
                     Row(
-                        modifier = Modifier.align(Alignment.BottomStart).padding(16.dp),
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(if (tablet) 16.dp else 12.dp),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -138,28 +147,44 @@ fun ModPackDetailScreen(
                             AsyncImage(
                                 model = modLogo,
                                 contentDescription = null,
-                                modifier = Modifier.size(72.dp).clip(RoundedCornerShape(12.dp)),
+                                modifier = Modifier
+                                    .size(if (tablet) 72.dp else 52.dp)
+                                    .clip(RoundedCornerShape(12.dp)),
                                 contentScale = ContentScale.Crop
                             )
                         }
                         Column {
-                            Text(modName, color = TextMain, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                            Text("⬇ ${formatCount(modDownloads)}", color = TextSub, fontSize = 12.sp)
+                            Text(
+                                text = modName,
+                                color = TextMain,
+                                fontSize = if (tablet) 20.sp else 15.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "⬇ ${formatCount(modDownloads)}",
+                                color = TextSub,
+                                fontSize = if (tablet) 12.sp else 10.sp
+                            )
                             if (isInstalled) {
-                                Text("✅ 설치됨", color = Pink, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    text = "✅ 설치됨",
+                                    color = Pink,
+                                    fontSize = if (tablet) 12.sp else 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
                             }
                         }
                     }
                 }
             }
 
-            // 요약
+            // 요약 설명
             item {
                 Text(
                     text = modSummary,
                     color = TextSub,
-                    fontSize = 13.sp,
-                    modifier = Modifier.padding(16.dp)
+                    fontSize = if (tablet) 13.sp else 11.sp,
+                    modifier = Modifier.padding(if (tablet) 16.dp else 12.dp)
                 )
             }
 
@@ -173,40 +198,38 @@ fun ModPackDetailScreen(
                     }
                 }
             } else {
-                // 스크린샷
+                // 스크린샷 섹션
                 val screenshots = detail?.screenshots ?: emptyList()
                 if (screenshots.isNotEmpty()) {
                     item {
                         Text(
-                            "스크린샷",
+                            text = "스크린샷",
                             color = TextMain,
-                            fontSize = 15.sp,
+                            fontSize = if (tablet) 15.sp else 12.sp,
                             fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                            modifier = Modifier.padding(horizontal = if (tablet) 16.dp else 12.dp, vertical = 8.dp)
                         )
                     }
                     item {
                         LazyRow(
-                            contentPadding = PaddingValues(horizontal = 16.dp),
+                            contentPadding = PaddingValues(horizontal = if (tablet) 16.dp else 12.dp),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
                             itemsIndexed(screenshots) { page, screenshot ->
                                 Box(
                                     modifier = Modifier
-                                        .width(240.dp)
-                                        .height(135.dp)
+                                        .width(if (tablet) 240.dp else 180.dp)
+                                        .height(if (tablet) 135.dp else 101.dp)
                                         .clip(RoundedCornerShape(10.dp))
                                         .background(BgSurface)
                                         .clickable { onImageClick(page) }
                                 ) {
-                                    // 썸네일 (저용량)
                                     AsyncImage(
                                         model = screenshot.thumbnailUrl,
                                         contentDescription = null,
                                         modifier = Modifier.fillMaxSize(),
                                         contentScale = ContentScale.Crop
                                     )
-                                    // 확대 힌트
                                     Box(
                                         modifier = Modifier
                                             .align(Alignment.BottomEnd)
@@ -215,7 +238,7 @@ fun ModPackDetailScreen(
                                             .background(Color.Black.copy(alpha = 0.6f))
                                             .padding(horizontal = 6.dp, vertical = 2.dp)
                                     ) {
-                                        Text("🔍", fontSize = 12.sp)
+                                        Text("🔍", fontSize = if (tablet) 12.sp else 9.sp)
                                     }
                                 }
                             }
@@ -224,14 +247,14 @@ fun ModPackDetailScreen(
                     }
                 }
 
-                // 설명 부분을 WebView로 교체
+                // 상세 설명 (WebView 포함)
                 item {
                     Text(
-                        "설명",
+                        text = "설명",
                         color = TextMain,
-                        fontSize = 15.sp,
+                        fontSize = if (tablet) 15.sp else 12.sp,
                         fontWeight = FontWeight.Bold,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        modifier = Modifier.padding(horizontal = if (tablet) 16.dp else 12.dp, vertical = 8.dp)
                     )
 
                     var webViewHeight by remember { mutableIntStateOf(1000) }
@@ -250,7 +273,6 @@ fun ModPackDetailScreen(
 
                                 webViewClient = object : android.webkit.WebViewClient() {
                                     override fun onPageFinished(view: android.webkit.WebView?, url: String?) {
-                                        // 페이지 로드 완료 후 실제 높이 측정
                                         view?.evaluateJavascript(
                                             "(function() { return document.body.scrollHeight; })();"
                                         ) { height ->
@@ -262,6 +284,8 @@ fun ModPackDetailScreen(
                             }
                         },
                         update = { webView ->
+                            // WebView 내부 기본 글씨 크기도 기기 유형(tablet)에 맞춰 반응형 스타일링 적용
+                            val baseFontSize = if (tablet) "14px" else "12px"
                             val styledHtml = """
                                 <html>
                                 <head>
@@ -271,7 +295,7 @@ fun ModPackDetailScreen(
                                     body {
                                         background: transparent;
                                         color: #BB86A0;
-                                        font-size: 14px;
+                                        font-size: $baseFontSize;
                                         font-family: sans-serif;
                                         padding: 0 16px;
                                         margin: 0;
@@ -300,7 +324,7 @@ fun ModPackDetailScreen(
                         },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(webViewHeight.dp)  // 동적 높이
+                            .height(webViewHeight.dp)
                             .padding(horizontal = 8.dp)
                     )
                     Spacer(modifier = Modifier.height(40.dp))

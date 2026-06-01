@@ -1,13 +1,12 @@
 package kr.co.donghyun.pinglauncher.presentation.ui.screen
 
-
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,17 +19,21 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kr.co.donghyun.pinglauncher.data.renderer.Renderer
 import kr.co.donghyun.pinglauncher.data.renderer.RendererManager
-import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
-
-private val Pink = Color(0xFFE91E8C)
-private val TextMain = Color(0xFFFCE4EC)
-private val TextSub = Color(0xFFBB86A0)
+import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 
 @Composable
 fun RendererSettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     var selected by remember { mutableStateOf(RendererManager.load(context)) }
     var saved by remember { mutableStateOf(false) }
+    val tablet = isTablet()
+
+    val Pink = Color(0xFFE91E8C)
+    val BgDark = Color(0xFF120B10)
+    val BgSurface = Color(0xFF1E0E1A)
+    val BgBorder = Color(0xFF3D1A32)
+    val TextMain = Color(0xFFFCE4EC)
+    val TextSub = Color(0xFFBB86A0)
 
     Column(
         modifier = Modifier
@@ -38,20 +41,25 @@ fun RendererSettingsScreen(onBack: () -> Unit) {
             .background(BgDark)
             .systemBarsPadding()
     ) {
-        // 툴바
+        // 툴바 반응형 조정
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(BgSurface)
                 .border(1.dp, BgBorder, RoundedCornerShape(0.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = if (tablet) 16.dp else 10.dp, vertical = if (tablet) 10.dp else 6.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = onBack) {
-                Text("← 뒤로", color = TextSub, fontSize = 14.sp)
+                Text("뒤로", color = TextSub, fontSize = if (tablet) 14.sp else 11.sp)
             }
-            Text("🎨 렌더러 설정", color = TextMain, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(
+                text = "렌더러 설정",
+                color = TextMain,
+                fontSize = if (tablet) 18.sp else 14.sp,
+                fontWeight = FontWeight.Bold
+            )
             Button(
                 onClick = {
                     RendererManager.save(context, selected)
@@ -59,114 +67,79 @@ fun RendererSettingsScreen(onBack: () -> Unit) {
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Pink),
                 shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                modifier = Modifier.height(if (tablet) 36.dp else 30.dp)
             ) {
-                Text("저장", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text("저장", color = Color.White, fontSize = if (tablet) 13.sp else 11.sp, fontWeight = FontWeight.Bold)
             }
-        }
-
-        if (saved) {
-            Text(
-                "✅ 저장됨 — 다음 실행부터 적용됩니다",
-                color = Color(0xFF69DB7C),
-                fontSize = 12.sp,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color(0xFF0A2010))
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-            )
         }
 
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+                .padding(if (tablet) 20.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(if (tablet) 12.dp else 8.dp)
         ) {
             Text(
-                "마인크래프트를 그릴 그래픽 백엔드를 고르세요. " +
-                        "기기 GPU·버전·모드에 따라 적합한 렌더러가 달라요.",
+                text = "마인크래프트를 그릴 그래픽 엔진 엔진 파이프라인을 선택하세요. 기기와 모드팩 버전에 따라 성능 차이가 발생할 수 있습니다.",
                 color = TextSub,
-                fontSize = 12.sp,
-                lineHeight = 18.sp
+                fontSize = if (tablet) 13.sp else 11.sp,
+                modifier = Modifier.padding(bottom = 8.dp)
             )
-            Spacer(modifier = Modifier.height(4.dp))
 
-            Renderer.entries.forEach { renderer ->
-                RendererCard(
-                    renderer = renderer,
-                    isSelected = selected == renderer,
-                    onClick = {
-                        selected = renderer
-                        saved = false
-                    }
+            if (saved) {
+                Text(
+                    text = "✅ 저장됨 — 다음 실행부터 적용됩니다",
+                    color = Pink,
+                    fontSize = if (tablet) 13.sp else 11.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(bottom = 4.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-
-            // 디버그용 env 미리보기
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(BgSurface, RoundedCornerShape(8.dp))
-                    .border(1.dp, BgBorder, RoundedCornerShape(8.dp))
-                    .padding(12.dp)
-            ) {
-                Text("📋 환경변수 미리보기 (${selected.displayName})", color = Pink, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(6.dp))
-                val env = selected.buildEnv(
-                    cacheDir = context.cacheDir.absolutePath,
-                    nativeDir = context.applicationInfo.nativeLibraryDir
-                )
-                env.forEach { (k, v) ->
-                    Text("$k=$v", color = TextSub, fontSize = 10.sp)
+            Renderer.values().forEach { renderer ->
+                val isSelected = selected == renderer
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isSelected) Color(0xFF2D0A20) else BgSurface)
+                        .border(
+                            width = if (isSelected) 2.dp else 1.dp,
+                            color = if (isSelected) Pink else BgBorder,
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        .clickable { selected = renderer }
+                        .padding(if (tablet) 16.dp else 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(renderer.emoji, fontSize = if (tablet) 22.sp else 18.sp)
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Text(
+                                text = renderer.displayName,
+                                color = if (isSelected) Pink else TextMain,
+                                fontSize = if (tablet) 15.sp else 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        if (isSelected) {
+                            Text("✓", color = Pink, fontSize = if (tablet) 18.sp else 14.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                    Text(
+                        text = renderer.description,
+                        color = TextSub,
+                        fontSize = if (tablet) 12.sp else 10.sp,
+                        lineHeight = if (tablet) 16.sp else 13.sp
+                    )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun RendererCard(
-    renderer: Renderer,
-    isSelected: Boolean,
-    onClick: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (isSelected) Color(0xFF2D0A20) else BgSurface)
-            .border(
-                width = if (isSelected) 2.dp else 1.dp,
-                color = if (isSelected) Pink else BgBorder,
-                shape = RoundedCornerShape(12.dp)
-            )
-            .clickable(onClick = onClick)
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(renderer.emoji, fontSize = 22.sp)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                    renderer.displayName,
-                    color = if (isSelected) Pink else TextMain,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            if (isSelected) {
-                Text("✓", color = Pink, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            }
-        }
-        Text(renderer.description, color = TextSub, fontSize = 12.sp, lineHeight = 16.sp)
     }
 }

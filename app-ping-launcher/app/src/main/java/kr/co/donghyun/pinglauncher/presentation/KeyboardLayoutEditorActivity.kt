@@ -54,7 +54,6 @@ class KeyboardLayoutEditorActivity : BaseActivity() {
         setContent {
             PingLauncherTheme {
                 KeyboardLayoutEditorScreen(
-                    onSave = { finish() },
                     onBack = { finish() }
                 )
             }

@@ -71,8 +71,7 @@ class ModPackDetailActivity : BaseActivity() {
         const val EXTRA_MOD_LOGO = "mod_logo"
         const val EXTRA_MOD_DOWNLOADS = "mod_downloads"
 
-        fun start(context: Context, modId: Int, modName: String, modSummary: String,
-                  modLogo: String?, modDownloads: Long) {
+        fun start(context: Context, modId: Int, modName: String, modSummary: String, modLogo: String?, modDownloads: Long) {
             context.startActivity(
                 Intent(context, ModPackDetailActivity::class.java).apply {
                     putExtra(EXTRA_MOD_ID, modId)
