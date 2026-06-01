@@ -46,7 +46,12 @@ enum class Renderer(
             "LIBGL_MIPMAP" to "3",
             "LIBGL_NORMALIZE" to "1",
             "LIBGL_VSYNC" to "1",
-            "LIBGL_NOINTOVLHACK" to "1"
+            "LIBGL_NOINTOVLHACK" to "1",
+            "LIBGL_FB" to "2",              // FBO 강제 경로
+            "LIBGL_FBOFORCETEX" to "1",     // FBO color attachment 텍스처 강제
+            "LIBGL_FORCE16BITS" to "0",
+            "LIBGL_GL" to "21",             // GL 2.1로 명시 → LWJGL이 3.0 진입점 매핑 안 시도
+            "LIBGL_ES" to "2"
         )
     ),
     GL4ES_DESKTOP(
