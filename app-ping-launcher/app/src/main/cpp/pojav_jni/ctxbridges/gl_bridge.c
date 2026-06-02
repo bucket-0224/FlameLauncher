@@ -76,16 +76,28 @@ gl_render_window_t* gl_init_context(gl_render_window_t *share) {
     eglGetConfigAttrib_p(g_EglDisplay, bundle->config, EGL_NATIVE_VISUAL_ID, &bundle->format);
 
     {
+        // gl_bridge.c — gl_init_context 안
         EGLBoolean bindResult;
         const char* renderer = getenv("POJAV_RENDERER");
-        if (renderer && strncmp(renderer, "opengles3_desktopgl", 19) == 0) {
-            printf("EGLBridge: Binding to desktop OpenGL\n");
+        bool wantDesktopGL = (renderer && strncmp(renderer, "opengles3_desktopgl", 19) == 0);
+
+        if (wantDesktopGL) {
             bindResult = eglBindAPI_p(EGL_OPENGL_API);
+            if (!bindResult) {
+                LOGW("Desktop GL bind 실패(0x%x) — ES 바인딩으로 폴백", eglGetError_p());
+                bindResult = eglBindAPI_p(EGL_OPENGL_ES_API);
+                // ★ 폴백한 사실을 환경변수에도 기록해서 LIBGL_GL 같은 후속 설정이
+                //   "데스크톱 GL인 척"하지 않도록 한다
+                setenv("POJAV_RENDERER", "opengles2", 1);
+            }
         } else {
-            printf("EGLBridge: Binding to OpenGL ES\n");
             bindResult = eglBindAPI_p(EGL_OPENGL_ES_API);
         }
-        if (!bindResult) printf("EGLBridge: bind failed: %p\n", eglGetError_p());
+        if (!bindResult) {
+            LOGE("eglBindAPI 완전 실패: 0x%x", eglGetError_p());
+            free(bundle);
+            return NULL;   // ← 지금은 그냥 진행하는데 여기서 끊어야 합니다
+        }
     }
 
     const char* libgl_es_env = getenv("LIBGL_ES");

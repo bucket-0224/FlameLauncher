@@ -68,7 +68,7 @@ fun MainScreen(
     val tablet = isTablet()
 
     Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
-        Column(modifier = Modifier.fillMaxSize().padding(bottom = if (tablet) 120.dp else 40.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(bottom = if (tablet) 0.dp else 40.dp)) {
             ProfileHeader(
                 isLoggedIn, username, uuid, onLogin,
                 onOpenContents, onOpenKeySettings, onOpenJVMSettings, onOpenRendererSettings
@@ -139,6 +139,7 @@ fun MainScreen(
                             onLogin = onLogin
                         )
                     }
+                    Spacer(modifier = Modifier.width(20.dp))
                 }
             } else {
                 // ── 폰 1-pane ─────────────────────────────────
@@ -195,7 +196,7 @@ private fun SidePlayPanel(
     isDownloading: Boolean,
     isLoggedIn: Boolean,
     onPlayClick: () -> Unit,
-    onLogin: () -> Unit
+    onLogin: () -> Unit,
 ) {
     val isSupported = selectedVersion?.let { isVersionSupported(it.id) } ?: false
     val tablet = isTablet()

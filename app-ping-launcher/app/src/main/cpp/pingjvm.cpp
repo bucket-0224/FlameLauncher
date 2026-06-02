@@ -62,18 +62,43 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeGetGuiScal
 void hookedSetGrabbing(JNIEnv* env, jclass clazz, jboolean grabbing) {
     g_isGrabbing = grabbing;
     LOGI("🎯 GrabState: %d", grabbing);
-    // g_originalSetGrabbing 호출 제거 — 원본이 패치됐으므로 무한루프 발생
 
-    // libpojavexec.so의 내부 grabbing 처리를 직접 호출
-    // nativeSetGrabbing의 실제 동작: grabbing 상태 저장 + CallbackBridge.onGrabStateChanged 호출
-    // onGrabStateChanged는 jre_lwjgl3glfw에서 처리하므로 JVM에서 직접 호출
-    if (env) {
-        jclass cbClass = env->FindClass("org/lwjgl/glfw/CallbackBridge");
-        if (cbClass) {
-            jmethodID onGrab = env->GetStaticMethodID(cbClass, "onGrabStateChanged", "(Z)V");
-            if (onGrab) env->CallStaticVoidMethod(cbClass, onGrab, grabbing);
-        }
+    if (!env) return;
+
+    jclass cbClass = env->FindClass("org/lwjgl/glfw/CallbackBridge");
+    if (env->ExceptionCheck()) {
+        LOGE("FindClass(CallbackBridge) threw, clearing");
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        return;
     }
+    if (!cbClass) {
+        LOGE("CallbackBridge class not found (no exception?)");
+        return;
+    }
+
+    jmethodID onGrab = env->GetStaticMethodID(cbClass, "onGrabStateChanged", "(Z)V");
+    if (env->ExceptionCheck()) {
+        LOGE("GetStaticMethodID(onGrabStateChanged) threw, clearing");
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+        env->DeleteLocalRef(cbClass);
+        return;
+    }
+    if (!onGrab) {
+        LOGE("onGrabStateChanged method not found");
+        env->DeleteLocalRef(cbClass);
+        return;
+    }
+
+    env->CallStaticVoidMethod(cbClass, onGrab, grabbing);
+    if (env->ExceptionCheck()) {
+        LOGE("CallStaticVoidMethod(onGrabStateChanged) threw, clearing");
+        env->ExceptionDescribe();
+        env->ExceptionClear();
+    }
+
+    env->DeleteLocalRef(cbClass);
 }
 
 // JVM 생성 후 후킹 설치
@@ -343,6 +368,37 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
     dlopen(zip_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
     dlopen(net_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
     dlopen(nio_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+
+    dlopen(java_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    dlopen(zip_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    dlopen(net_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    dlopen(nio_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+
+    // ====== Legacy AWT 라이브러리 선행 로드 (1.5.2 ~ 1.12.2 호환) ======
+    std::string jre_lib_dir = java_path.substr(0, java_path.find_last_of('/'));
+
+    auto preload = [](const std::string& path, const char* label) {
+        if (dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL)) {
+            LOGI("  ✅ AWT 선행 로드: %s", path.c_str());
+        } else {
+            LOGE("  ❌ AWT 선행 로드 실패 (%s): %s", label, dlerror());
+        }
+    };
+
+    // (1) libawt.so
+    preload(jre_lib_dir + "/libawt.so", "libawt.so");
+
+    // (2) libawt_xawt.so
+    preload(jre_lib_dir + "/libawt_xawt.so", "libawt_xawt.so (JRE)");
+    if (const char* apk_lib_dir = getenv("POJAV_NATIVEDIR")) {
+        preload(std::string(apk_lib_dir) + "/libawt_xawt.so", "libawt_xawt.so (APK)");
+    }
+
+    // (3) libawt_headless.so
+    preload(jre_lib_dir + "/libawt_headless.so", "libawt_headless.so");
+
+    // (4) libfontmanager.so — 추가
+    preload(jre_lib_dir + "/libfontmanager.so", "libfontmanager.so");
 
     LOGI("자바 핵심 의존성 라이브러리 선행 로드 완료!");
     // =========================================================================

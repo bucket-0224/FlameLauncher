@@ -16,9 +16,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettingsManager
+import kr.co.donghyun.pinglauncher.data.jvm.isLegacyVersion
+import kr.co.donghyun.pinglauncher.data.renderer.Renderer
 import kr.co.donghyun.pinglauncher.data.renderer.RendererManager
 import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
-import kr.co.donghyun.pinglauncher.presentation.ui.components.GameControllerOverlay
 import kr.co.donghyun.pinglauncher.presentation.ui.components.GameControllerView
 import kr.co.donghyun.pinglauncher.presentation.ui.components.MinecraftSurface
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.PingLauncherTheme
@@ -154,7 +155,7 @@ class MinecraftActivity : BaseActivity() {
         try {
             System.loadLibrary("pingjvm")
 
-            // ★ jre{N}_runtime 의 lib 폴더를 동적으로 찾는다 (8/17/21 모두 대응)
+            // 기존 jre lib 복사 블록은 그대로 두기
             val jreLibDir = MinecraftJREPreparer.findJreLibDir(this, versionId)
             if (jreLibDir != null && jreLibDir.exists()) {
                 listOf("libawt_xawt.so", "libawt_headless.so", "libpojavexec_awt.so").forEach { soName ->
@@ -165,12 +166,36 @@ class MinecraftActivity : BaseActivity() {
                         dst.setExecutable(true, false)
                     }
                 }
-            } else {
-                Log.w("PING_LAUNCHER", "jre lib dir을 못 찾음 — awt_xawt 등은 prepareJre 후 다시 시도")
             }
 
-            System.loadLibrary("vulkan")
-            System.load(File(nativesDir, "libOSMesa.so").absolutePath)
+            // ── 렌더러별 .so 우선 로딩 ──────────────────────────
+            val renderer = RendererManager.load(this)
+            when (renderer.id) {
+                "mobileglues" -> {
+                    // info_getter 가 먼저! libmobileglues.so 의 의존성임
+                    val ig = File(nativesDir, "libmobileglues_info_getter.so")
+                    val mg = File(nativesDir, "libmobileglues.so")
+                    if (ig.exists()) System.load(ig.absolutePath)
+                    if (mg.exists()) {
+                        System.load(mg.absolutePath)
+                        Log.d("PING_LAUNCHER", "✅ 렌더러: MobileGlues")
+                    } else {
+                        Log.w("PING_LAUNCHER", "⚠️ libmobileglues.so 없음 — RendererManager 선택만 됐고 .so 미배포")
+                    }
+                }
+                "zink" -> {
+                    try { System.loadLibrary("vulkan") } catch (_: Throwable) {}
+                    System.load(File(nativesDir, "libOSMesa.so").absolutePath)
+                    Log.d("PING_LAUNCHER", "✅ 렌더러: Zink")
+                }
+                else -> {
+                    // gl4es / gl4es_desktop
+                    System.load(File(nativesDir, "libgl4es_114.so").absolutePath)
+                    Log.d("PING_LAUNCHER", "✅ 렌더러: GL4ES")
+                }
+            }
+
+            // 공통 .so
             System.load(File(nativesDir, "libopenal.so").absolutePath)
             System.load(File(nativesDir, "libglfw.so").absolutePath)
             System.load(File(nativesDir, "libpojavexec.so").absolutePath)
@@ -691,9 +716,20 @@ class MinecraftActivity : BaseActivity() {
 
         val metaJvmArgs = instanceMeta?.gameJvmArgs?.toTypedArray() ?: emptyArray()
 
-        val renderer = RendererManager.load(this@MinecraftActivity)
+        val rendererPreference = RendererManager.load(this@MinecraftActivity)
+        val isLegacy = isLegacyVersion(versionId)
+
+        // Legacy MC 는 fixed-function GL 필요 — MobileGlues 로 불가
+        val renderer = if (isLegacy && rendererPreference.id == "mobileglues") {
+            Log.w("PingLauncherJVM", "Legacy $versionId — forcing GL4ES instead of MobileGlues")
+            Renderer.fromId("holy_gl4es")  // 또는 "gl4es" / "gl4es_desktop" 중 enum 에 있는 것
+        } else {
+            rendererPreference
+        }
+
         val glLibName = when (renderer.id) {
-            "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
+            "mobileglues" -> "libmobileglues.so"
+            "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
             else -> "libgl4es_114.so"
         }
@@ -705,7 +741,8 @@ class MinecraftActivity : BaseActivity() {
             userDir = mcDir.absolutePath,
             classPath = jarList.joinToString(":"),
             libraryPath = nativesDir.absolutePath,
-            mainClass = mainClass
+            mainClass = mainClass,
+            versionId = versionId
         ) + launchWrapperArgs + fabricJvmArgs + metaJvmArgs
 
         Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}, isFabric=$isFabric, javaMajor=$javaMajor")

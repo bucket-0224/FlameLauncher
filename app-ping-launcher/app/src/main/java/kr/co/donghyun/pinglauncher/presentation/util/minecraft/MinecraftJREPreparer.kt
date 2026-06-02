@@ -76,6 +76,27 @@ class MinecraftJREPreparer {
                 Log.i(TAG, "✅ JRE $major 압축 해제 완료!")
             }
 
+
+            if (major == 8) {
+                val cacioDir = File(context.filesDir, "caciocavallo")
+                cacioDir.mkdirs()
+
+                val cacioJars = listOf(
+                    "cacio-shared-1.10-SNAPSHOT.jar",
+                    "cacio-androidnw-1.10-SNAPSHOT.jar",
+                    "ResConfHack.jar"
+                )
+
+                val needsCopy = cacioJars.any { !File(cacioDir, it).exists() }
+                if (needsCopy) {
+                    Log.i(TAG, "📦 Caciocavallo 복사 시작...")
+                    for (jar in cacioJars) {
+                        copyAsset(context, "caciocavallo/$jar", File(cacioDir, jar))
+                    }
+                    Log.i(TAG, "✅ Caciocavallo 복사 완료 (${cacioJars.size}개)")
+                }
+            }
+
             val libJvm = targetDir.walkTopDown().firstOrNull { it.name == "libjvm.so" }
                 ?: throw Exception("❌ jre${major}_runtime 안에 libjvm.so 없음")
             libJvm.setExecutable(true, false)
@@ -94,6 +115,14 @@ class MinecraftJREPreparer {
                 if (libJava != null) return libJava.parentFile
             }
             return null
+        }
+
+        private fun copyAsset(context: Context, assetPath: String, outFile: File) {
+            context.assets.open(assetPath).use { input ->
+                FileOutputStream(outFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
         }
     }
 }

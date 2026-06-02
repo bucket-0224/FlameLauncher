@@ -10,17 +10,17 @@ object MinecraftActivityBridge {
 
     @JvmStatic
     fun onGrabStateChanged(grabbed: Boolean) {
-        if (grabbed) {
-            // 가장 최근 수정된 saves 폴더 찾기
-            try {
-                val instanceDir = MinecraftActivity.currentInstance?.instanceDir ?: return
-                val savesDir = File(instanceDir, "saves")
-                val latestWorld = savesDir.listFiles()
-                    ?.filter { it.isDirectory }
-                    ?.maxByOrNull { it.lastModified() }
-                    ?.name ?: "default"
-                currentWorldName = latestWorld
-            } catch (_: Exception) {}
-        }
+//        if (grabbed) {
+//            // 가장 최근 수정된 saves 폴더 찾기
+//            try {
+//                val instanceDir = MinecraftActivity.currentInstance?.instanceDir ?: return
+//                val savesDir = File(instanceDir, "saves")
+//                val latestWorld = savesDir.listFiles()
+//                    ?.filter { it.isDirectory }
+//                    ?.maxByOrNull { it.lastModified() }
+//                    ?.name ?: "default"
+//                currentWorldName = latestWorld
+//            } catch (_: Exception) {}
+//        }
     }
 }

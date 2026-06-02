@@ -19,12 +19,14 @@ data class JvmSettings(
     val graphicsMode: Int = 0,       // 0=fast, 1=fancy, 2=fabulous
     val cacheDirPath: String = ""
 ) {
+
     fun toJvmArgArray(
         context: Context,
         userDir: String,
         classPath: String,
         libraryPath: String,
-        mainClass: String
+        mainClass: String,
+        versionId : String
     ): Array<String> {
         val args = mutableListOf(
             "-Xmx${maxHeapMb}M",
@@ -43,9 +45,11 @@ data class JvmSettings(
         }
 
         val renderer = RendererManager.load(context)
+
         val glLibName = when (renderer.id) {
+            "mobileglues" -> "libmobileglues.so"
             "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
-            "zink" -> "libOSMesa.so"   // zink는 OSMesa가 GL 심볼 공급
+            "zink" -> "libOSMesa.so"
             else -> "libgl4es_114.so"
         }
 
@@ -54,11 +58,12 @@ data class JvmSettings(
             "-Djava.class.path=$classPath",
             "-Djava.library.path=$libraryPath",
             "-Dorg.lwjgl.opengl.libname=${glLibName}",
+            // MobileGlues 는 opengles 쪽도 같은 .so 로 묶어줘야 함
+            "-Dorg.lwjgl.opengles.libname=${glLibName}",
             "-Dorg.lwjgl.librarypath=$libraryPath",
             "-Dping.main.class=$mainClass",
             "-Dorg.lwjgl.system.SharedLibraryExtractPath=$libraryPath",
             "-Dorg.lwjgl.system.SharedLibraryExtractDirectory=$libraryPath",
-            "-Djava.awt.headless=true",
             "-Dorg.lwjgl.util.NoChecks=true",
             "-Dorg.lwjgl.util.Debug=true",
             "-Dorg.lwjgl.util.DebugLoader=true",
@@ -66,7 +71,38 @@ data class JvmSettings(
             "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
             "-Djava.io.tmpdir=${cacheDirPath}",
         )
-        if (disableClouds) args += "-Dminecraft.graphics.disableClouds=true"
+
+        val isLegacy = isLegacyVersion(versionId)  // 1.12.2 이하 = legacy
+
+        if (isLegacy) {
+            // Cacio bootclasspath
+            val cacioDir = "${context.filesDir}/caciocavallo"
+            val cacioJars = listOf(
+                "$cacioDir/ResConfHack.jar",
+                "$cacioDir/cacio-androidnw-1.10-SNAPSHOT.jar",
+                "$cacioDir/cacio-shared-1.10-SNAPSHOT.jar"
+            ).joinToString(":")
+
+            args += "-Xbootclasspath/p:$cacioJars"
+            args += "-Djava.awt.headless=false"
+            args += "-Dcacio.managed.screensize=854x480"  // 또는 본인 윈도우 사이즈
+            args += "-Dcacio.font.fontmanager=sun.awt.X11FontManager"
+            args += "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler"
+            args += "-Dswing.defaultlaf=javax.swing.plaf.metal.MetalLookAndFeel"
+            args += "-Dawt.toolkit=net.java.openjdk.cacio.ctc.CTCToolkit"
+            args += "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment"
+        } else {
+            // 모던: AWT 안 씀
+            args += "-Djava.awt.headless=true"
+        }
+
+    // MobileGlues 사용 시 Sodium 자체 검증 우회 (1.21+ 셰이더 호환)
+        if (renderer.id == "mobileglues") {
+            args += listOf(
+                "-Dnet.caffeinemc.sodium.checks.skip=true",
+                "-Dsodium.checks.issue2561=false"
+            )
+        }
 
         // 커스텀 인자
         extraJvmArgs.lines()
@@ -108,4 +144,12 @@ object JvmSettingsManager {
         save(context, default)
         return default
     }
+}
+
+fun isLegacyVersion(versionId: String): Boolean {
+    // 1.12.2 이하: legacy (AWT 필요)
+    // 1.13+: modern (LWJGL3, AWT 불필요)
+    val parts = versionId.removePrefix("1.").split(".")
+    val major = parts.getOrNull(0)?.toIntOrNull() ?: return false
+    return major <= 12
 }
