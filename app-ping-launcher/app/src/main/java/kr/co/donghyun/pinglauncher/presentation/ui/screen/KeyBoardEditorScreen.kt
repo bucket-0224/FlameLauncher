@@ -1,5 +1,6 @@
 package kr.co.donghyun.pinglauncher.presentation.ui.screen
 
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -72,6 +73,7 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     // 우측 인벤토리 / 슬롯
     69  to (0.96f to 0.55f),  // E (인벤토리)
     -4  to (0.88f to 0.55f),  // 이전 슬롯
+    -7 to (0.8f to 0.55f),
     -5  to (0.88f to 0.28f),  // 다음 슬롯
 
     // 점프/슬쩍/달리기 (우측 하단)
@@ -227,27 +229,11 @@ fun KeyboardLayoutEditorScreen(onBack: () -> Unit) {
                 Text("취소", color = TextSub, fontSize = if (tablet) 16.sp else 13.sp)
             }
             Text("가상 키패드 편집", color = TextMain, fontSize = if (tablet) 18.sp else 14.sp, fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = {
-                    buttons = applyPresetLayout(buttons, canvasSize, tablet, density.density)
-                    selectedButtonId = null
-                }) {
-                    Text("정렬", color = Color(0xFF4CAF50), fontSize = if (tablet) 14.sp else 11.sp)
-                }
-                TextButton(onClick = {
-                    val reset = normalizeButtons(KeyLayoutManager.reset(context))
-                    buttons = if (hasOverlap(reset, canvasSize, tablet, density.density))
-                        applyPresetLayout(reset, canvasSize, tablet, density.density)
-                    else reset
-                    selectedButtonId = null
-                }) {
-                    Text("초기화", color = Color(0xFFFF6B6B), fontSize = if (tablet) 14.sp else 11.sp)
-                }
+            Row {
                 Button(
                     onClick = { KeyLayoutManager.save(context, buttons); onBack() },
                     colors = ButtonDefaults.buttonColors(containerColor = Pink),
                     shape = RoundedCornerShape(8.dp),
-                    modifier = Modifier.height(if (tablet) 36.dp else 30.dp)
                 ) {
                     Text("적용", color = Color.White, fontSize = if (tablet) 13.sp else 11.sp)
                 }
@@ -274,6 +260,7 @@ fun KeyboardLayoutEditorScreen(onBack: () -> Unit) {
                             if (it.id == btn.id) {
                                 val nx = (it.x + dx).coerceIn(0.05f, 0.95f)
                                 val ny = (it.y + dy).coerceIn(0.05f, 0.95f)
+
                                 it.copy(x = nx, y = ny)
                             } else it
                         }

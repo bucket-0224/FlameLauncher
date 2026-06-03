@@ -67,7 +67,6 @@ fun RendererSettingsScreen(onBack: () -> Unit) {
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = Pink),
                 shape = RoundedCornerShape(8.dp),
-                modifier = Modifier.height(if (tablet) 36.dp else 30.dp)
             ) {
                 Text("저장", color = Color.White, fontSize = if (tablet) 13.sp else 11.sp, fontWeight = FontWeight.Bold)
             }

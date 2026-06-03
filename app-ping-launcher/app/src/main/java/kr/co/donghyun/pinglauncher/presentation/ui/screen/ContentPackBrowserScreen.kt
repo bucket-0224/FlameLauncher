@@ -131,10 +131,9 @@ fun ContentPackBrowserScreen(
                     cursorBrush = SolidColor(Pink),
                     modifier = Modifier
                         .weight(1f)
-                        .height(if (tablet) 38.dp else 32.dp)
                         .background(BgDark, RoundedCornerShape(20.dp))
                         .border(1.dp, BgBorder, RoundedCornerShape(20.dp))
-                        .padding(horizontal = 14.dp, vertical = if (tablet) 8.dp else 6.dp)
+                        .padding(horizontal = 14.dp, vertical = 10.dp)
                 )
             }
 

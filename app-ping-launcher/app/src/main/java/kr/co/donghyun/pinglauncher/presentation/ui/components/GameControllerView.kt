@@ -43,6 +43,7 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     340 to (0.76f to 0.78f),  // shift = sneak
     341 to (0.84f to 0.78f),  // ctrl  = sprint
     32  to (0.92f to 0.78f),  // space = jump
+    -7 to (0.8f to 0.55f),
 )
 
 class GameControllerView(context: Context) : View(context) {
