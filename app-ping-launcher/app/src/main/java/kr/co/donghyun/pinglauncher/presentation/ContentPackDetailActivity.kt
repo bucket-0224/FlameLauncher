@@ -40,6 +40,7 @@ import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
 import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.screen.ContentType
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
+import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
@@ -232,6 +233,7 @@ class ContentPackDetailActivity : BaseActivity() {
                     if (showInstallDialog) {
                         InstallTargetDialog(
                             contentType = contentType,
+                            allowVanilla = !contentType.requiresModLoader,
                             existingInstances = loaderInstances,
                             onDismiss = { _showInstallTargetDialog.value = false },
                             onUseExisting = { instance ->
@@ -247,14 +249,13 @@ class ContentPackDetailActivity : BaseActivity() {
                             },
                             onCreateNew = { version, loader ->
                                 _showInstallTargetDialog.value = false
-                                setResult(
-                                    RESULT_OK,
-                                    Intent()
-                                        .putExtra(EXTRA_MOD_ID, modId)
-                                        .putExtra("action", "install")
-                                        .putExtra(EXTRA_TARGET_VERSION, version)
-                                        .putExtra(EXTRA_TARGET_LOADER, loader.name)
-                                )
+                                val intent = Intent()
+                                    .putExtra(EXTRA_MOD_ID, modId)
+                                    .putExtra("action", "install")
+                                    .putExtra(EXTRA_TARGET_VERSION, version)
+                                // 바닐라(null)이면 EXTRA_TARGET_LOADER 생략 → 수신 측에서 null 처리
+                                if (loader != null) intent.putExtra(EXTRA_TARGET_LOADER, loader.name)
+                                setResult(RESULT_OK, intent)
                                 finish()
                             }
                         )
@@ -276,43 +277,35 @@ class ContentPackDetailActivity : BaseActivity() {
         }
     }
 
-    /**
-     * 설치 버튼이 눌렸을 때 처리.
-     * - 모드팩/텍스처팩/쉐이더팩: 그대로 설치 진행 (로더 무관 또는 모드팩이 자체 로더 포함)
-     * - 모드: 기존 인스턴스 중 모드 로더가 있는 게 있는지 검사
-     *   * 있으면 → 다이얼로그에서 "기존 인스턴스에 추가" or "새 인스턴스 만들기" 선택
-     *   * 없으면 → 다이얼로그에서 "새 인스턴스 만들기"만 강제 노출 (버전+로더 선택)
-     */
     private fun handleInstallRequest(modId: Int, contentType: ContentType) {
-        if (!contentType.requiresLoader) {
-            // 로더 체크 불필요 - 그대로 진행
+        if (!contentType.needsTargetInstance) {
+            // 모드팩: 그대로 진행
             setResult(RESULT_OK, Intent().putExtra(EXTRA_MOD_ID, modId).putExtra("action", "install"))
             finish()
             return
         }
-
-        // 모드인 경우: 기존 로더 인스턴스 조회 후 다이얼로그 표시
+        // 모드 / 텍스처팩 / 쉐이더팩 — 타겟 선택 다이얼로그
         lifecycleScope.launch(Dispatchers.IO) {
-            val instances = scanLoaderInstances()
-            _loaderInstances.value = instances
+            // 텍스처/쉐이더는 바닐라 인스턴스도 후보로 OK
+            val includeVanilla = !contentType.requiresModLoader
+            _loaderInstances.value = scanInstances(includeVanilla)
             _showInstallTargetDialog.value = true
         }
     }
 
     /**
-     * 설치된 인스턴스 중 모드 로더가 적용된 것만 반환.
-     * InstanceManager.listInstances() + InstanceMeta.loaderType("fabric"/"forge"/"neoforge") 사용.
+     * 설치된 인스턴스 목록. [includeVanilla]=true면 로더 없는 바닐라도 포함.
      */
-    private fun scanLoaderInstances(): List<InstanceSummary> {
+    private fun scanInstances(includeVanilla: Boolean): List<InstanceSummary> {
         return try {
             InstanceManager.listInstances(this).mapNotNull { meta ->
                 val loader = when (meta.loaderType?.lowercase()) {
-                    "fabric" -> ModLoader.FABRIC
-                    "forge" -> ModLoader.FORGE
+                    "fabric"   -> ModLoader.FABRIC
+                    "forge"    -> ModLoader.FORGE
                     "neoforge" -> ModLoader.NEOFORGE
-                    else -> null  // 바닐라/기타는 제외
-                } ?: return@mapNotNull null
-
+                    else       -> null   // 바닐라
+                }
+                if (loader == null && !includeVanilla) return@mapNotNull null
                 InstanceSummary(
                     id = meta.id,
                     name = meta.name,
@@ -395,11 +388,15 @@ class ContentPackDetailActivity : BaseActivity() {
 @Composable
 private fun InstallTargetDialog(
     contentType: ContentType,
+    allowVanilla: Boolean,
     existingInstances: List<InstanceSummary>,
     onDismiss: () -> Unit,
     onUseExisting: (InstanceSummary) -> Unit,
-    onCreateNew: (version: String, loader: ModLoader) -> Unit
+    onCreateNew: (version: String, loader: ModLoader?) -> Unit
 ) {
+    val tablet = isTablet()
+
+    // ── 색상 / 디멘션은 이전과 동일 ──
     val Pink = Color(0xFFE91E8C)
     val BgDark = Color(0xFF120B10)
     val BgSurface = Color(0xFF1E0E1A)
@@ -407,9 +404,34 @@ private fun InstallTargetDialog(
     val TextMain = Color(0xFFFCE4EC)
     val TextSub = Color(0xFFBB86A0)
 
+    val titleSize       = if (tablet) 18.sp else 14.sp
+    val sectionSize     = if (tablet) 15.sp else 12.sp
+    val descSize        = if (tablet) 13.sp else 11.sp
+    val labelSize       = if (tablet) 13.sp else 11.sp
+    val itemTitleSize   = if (tablet) 14.sp else 11.sp
+    val itemSubSize     = if (tablet) 12.sp else 9.sp
+    val chipSize        = if (tablet) 13.sp else 11.sp
+    val buttonSize      = if (tablet) 13.sp else 11.sp
+    val pickerLabelSize = if (tablet) 13.sp else 11.sp
+
+    val dialogWidthRatio  = if (tablet) 0.7f else 0.95f
+    val outerPad          = if (tablet) 22.dp else 16.dp
+    val verticalGap       = if (tablet) 16.dp else 12.dp
+    val sectionGap        = if (tablet) 10.dp else 6.dp
+    val listItemPadH      = if (tablet) 14.dp else 10.dp
+    val listItemPadV      = if (tablet) 12.dp else 9.dp
+    val chipPadH          = if (tablet) 12.dp else 9.dp
+    val chipPadV          = if (tablet) 7.dp else 5.dp
+    val loaderRowPadV     = if (tablet) 12.dp else 8.dp
+    val actionButtonH     = if (tablet) 44.dp else 38.dp
+    val maxExistingHeight = if (tablet) 220.dp else 160.dp
+
     val supportedVersions = listOf("1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
     var selectedVersion by remember { mutableStateOf(supportedVersions.first()) }
-    var selectedLoader by remember { mutableStateOf(ModLoader.FABRIC) }
+    // 바닐라 허용이면 기본은 바닐라(null), 아니면 Fabric
+    var selectedLoader by remember {
+        mutableStateOf<ModLoader?>(if (allowVanilla) null else ModLoader.FABRIC)
+    }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Box(
@@ -421,34 +443,29 @@ private fun InstallTargetDialog(
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth(0.92f)
+                    .fillMaxWidth(dialogWidthRatio)
                     .clip(RoundedCornerShape(14.dp))
                     .background(BgSurface)
                     .border(1.dp, BgBorder, RoundedCornerShape(14.dp))
-                    .clickable(enabled = false) {} // 내부 클릭 차단
-                    .padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .clickable(enabled = false) {}
+                    .padding(outerPad),
+                verticalArrangement = Arrangement.spacedBy(verticalGap)
             ) {
-                Text(
-                    text = "${contentType.label} 설치 대상 선택",
-                    color = TextMain,
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
-                )
+                Text("${contentType.label} 설치 대상 선택",
+                    color = TextMain, fontSize = titleSize, fontWeight = FontWeight.Bold)
                 Text(
                     text = if (existingInstances.isEmpty())
-                        "호환되는 인스턴스가 없습니다. 새 인스턴스를 생성합니다."
+                        "호환 인스턴스 없음 — 새로 만듭니다."
                     else "기존 인스턴스에 추가하거나, 새로 만들 수 있습니다.",
-                    color = TextSub,
-                    fontSize = 11.sp
+                    color = TextSub, fontSize = descSize
                 )
 
-                // 기존 인스턴스 목록
+                // ── 기존 인스턴스 ─────────────────────────────
                 if (existingInstances.isNotEmpty()) {
-                    Text("기존 인스턴스", color = TextMain, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("기존 인스턴스", color = TextMain, fontSize = sectionSize, fontWeight = FontWeight.Bold)
                     LazyColumn(
-                        modifier = Modifier.heightIn(max = 180.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        modifier = Modifier.heightIn(max = maxExistingHeight),
+                        verticalArrangement = Arrangement.spacedBy(sectionGap)
                     ) {
                         items(existingInstances, key = { it.id }) { inst ->
                             Row(
@@ -458,62 +475,76 @@ private fun InstallTargetDialog(
                                     .background(BgDark)
                                     .border(1.dp, BgBorder, RoundedCornerShape(8.dp))
                                     .clickable { onUseExisting(inst) }
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                    .padding(horizontal = listItemPadH, vertical = listItemPadV),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(inst.name, color = TextMain, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text(inst.name, color = TextMain,
+                                        fontSize = itemTitleSize, fontWeight = FontWeight.Bold)
                                     Text(
-                                        text = "MC ${inst.gameVersion} · ${inst.loader?.displayName ?: "Vanilla"}",
-                                        color = TextSub,
-                                        fontSize = 10.sp
+                                        "MC ${inst.gameVersion} · ${inst.loader?.displayName ?: "Vanilla"}",
+                                        color = TextSub, fontSize = itemSubSize
                                     )
                                 }
-                                Text("선택", color = Pink, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                Text("선택", color = Pink, fontSize = labelSize, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
                     HorizontalDivider(color = BgBorder)
                 }
 
-                // 새 인스턴스 생성
-                Text("새 인스턴스 만들기", color = TextMain, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                // ── 새 인스턴스 만들기 ────────────────────────
+                Text("새 인스턴스 만들기", color = TextMain, fontSize = sectionSize, fontWeight = FontWeight.Bold)
 
-                Text("버전", color = TextSub, fontSize = 11.sp)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Text("버전", color = TextSub, fontSize = pickerLabelSize)
+                androidx.compose.foundation.lazy.LazyRow(
+                    horizontalArrangement = Arrangement.spacedBy(sectionGap)
                 ) {
-                    // 한 줄로 보여주기엔 좁을 수 있어 LazyRow 대안도 좋음. 여기선 Wrap으로 두 줄까지 허용.
-                    androidx.compose.foundation.lazy.LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(supportedVersions) { v ->
-                            val sel = v == selectedVersion
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(14.dp))
-                                    .background(if (sel) Pink else BgDark)
-                                    .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(14.dp))
-                                    .clickable { selectedVersion = v }
-                                    .padding(horizontal = 10.dp, vertical = 5.dp)
-                            ) {
-                                Text(
-                                    v,
-                                    color = if (sel) Color.White else TextSub,
-                                    fontSize = 11.sp,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
-                                )
-                            }
+                    items(supportedVersions) { v ->
+                        val sel = v == selectedVersion
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (sel) Pink else BgDark)
+                                .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(16.dp))
+                                .clickable { selectedVersion = v }
+                                .padding(horizontal = chipPadH, vertical = chipPadV)
+                        ) {
+                            Text(v,
+                                color = if (sel) Color.White else TextSub,
+                                fontSize = chipSize,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
                         }
                     }
                 }
 
-                Text("모드 로더", color = TextSub, fontSize = 11.sp)
+                Text(
+                    if (allowVanilla) "타입" else "모드 로더",
+                    color = TextSub, fontSize = pickerLabelSize
+                )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(sectionGap)
                 ) {
+                    // 바닐라 칩 (allowVanilla 일 때만)
+                    if (allowVanilla) {
+                        val sel = selectedLoader == null
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (sel) Pink else BgDark)
+                                .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
+                                .clickable { selectedLoader = null }
+                                .padding(vertical = loaderRowPadV),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("Vanilla",
+                                color = if (sel) Color.White else TextSub,
+                                fontSize = chipSize,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
+                        }
+                    }
                     ModLoader.entries.forEach { loader ->
                         val sel = loader == selectedLoader
                         Box(
@@ -523,38 +554,35 @@ private fun InstallTargetDialog(
                                 .background(if (sel) Pink else BgDark)
                                 .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
                                 .clickable { selectedLoader = loader }
-                                .padding(vertical = 8.dp),
+                                .padding(vertical = loaderRowPadV),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text(
-                                loader.displayName,
+                            Text(loader.displayName,
                                 color = if (sel) Color.White else TextSub,
-                                fontSize = 11.sp,
-                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal
-                            )
+                                fontSize = chipSize,
+                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
                         }
                     }
                 }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(sectionGap)
                 ) {
                     OutlinedButton(
                         onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).height(actionButtonH),
                         shape = RoundedCornerShape(8.dp),
                         colors = ButtonDefaults.outlinedButtonColors(contentColor = TextSub)
-                    ) {
-                        Text("취소", fontSize = 12.sp)
-                    }
+                    ) { Text("취소", fontSize = buttonSize) }
                     Button(
                         onClick = { onCreateNew(selectedVersion, selectedLoader) },
-                        modifier = Modifier.weight(1f),
+                        modifier = Modifier.weight(1f).height(actionButtonH),
                         colors = ButtonDefaults.buttonColors(containerColor = Pink),
                         shape = RoundedCornerShape(8.dp)
                     ) {
-                        Text("새로 만들고 설치", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("새로 만들고 설치",
+                            color = Color.White, fontSize = buttonSize, fontWeight = FontWeight.Bold)
                     }
                 }
             }

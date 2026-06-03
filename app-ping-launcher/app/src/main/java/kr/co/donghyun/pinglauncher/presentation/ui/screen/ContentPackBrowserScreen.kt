@@ -42,16 +42,22 @@ import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
  * - SHADER_PACK: 6552
  */
 enum class ContentType(val classId: Int, val label: String) {
-    MODPACK(4471, "모드팩"),
-    MOD(6, "모드"),
-    TEXTURE_PACK(12, "텍스처팩"),
-    SHADER_PACK(6552, "쉐이더팩");
+    MODPACK(4471, "🗂️ 모드팩"),
+    MOD(6, "📂 모드"),
+    TEXTURE_PACK(12, "🎨 텍스처팩"),
+    SHADER_PACK(6552, "📋 쉐이더팩");
 
-    /** 모드 로더가 필요한 타입인지 (true면 설치 시 인스턴스 로더 호환성 체크 필요) */
-    val requiresLoader: Boolean
+    /** 설치 시 사용자가 타겟 인스턴스를 골라야 하는 타입. 모드팩만 자체 인스턴스를 만듦. */
+    val needsTargetInstance: Boolean
+        get() = this != MODPACK
+
+    /** 새 인스턴스를 만들 때 Fabric/Forge 같은 모드 로더가 반드시 필요한지. */
+    val requiresModLoader: Boolean
         get() = this == MOD
-    // 모드팩은 자체적으로 로더 정보를 포함하므로 별도 체크 불필요.
-    // 텍스처팩/쉐이더팩은 바닐라에서도 동작.
+
+    /** 하위호환 — 기존 코드에서 호출하던 이름 유지 */
+    @Deprecated("requiresModLoader 사용", ReplaceWith("requiresModLoader"))
+    val requiresLoader: Boolean get() = requiresModLoader
 }
 
 @Composable

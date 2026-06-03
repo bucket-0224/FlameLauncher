@@ -34,7 +34,6 @@ import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
 import kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
 import kr.co.donghyun.pinglauncher.presentation.ui.components.LoaderSelectDialog
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
-import kr.co.donghyun.pinglauncher.presentation.util.curseforge.ForgeInstaller
 import kr.co.donghyun.pinglauncher.presentation.util.isVersionSupported
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 import java.net.URL

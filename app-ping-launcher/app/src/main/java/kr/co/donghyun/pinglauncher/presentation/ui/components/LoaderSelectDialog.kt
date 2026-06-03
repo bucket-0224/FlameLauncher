@@ -26,6 +26,7 @@ import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricLoaderEntry
 import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricMetaAPI
 import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeLoaderEntry
 import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeMetaAPI
+import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 
 private val Pink     = Color(0xFFE91E8C)
 private val TextMain = Color(0xFFFCE4EC)
@@ -41,6 +42,7 @@ fun LoaderSelectDialog(
     onLaunchForge:  (forgeVersion: String) -> Unit,
 ) {
     var choice by remember { mutableStateOf("vanilla") }
+    val tablet = isTablet()
 
     // ─── Fabric ───
     var fabricList     by remember { mutableStateOf<List<FabricLoaderEntry>>(emptyList()) }
@@ -106,7 +108,7 @@ fun LoaderSelectDialog(
                 .padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
-            Text("로더 선택 — $versionId", color = TextMain, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text("로더 선택 — $versionId", color = TextMain, fontSize = if(tablet) 17.sp else 13.sp, fontWeight = FontWeight.Bold)
 
             // ─── 3탭 ───
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -136,19 +138,19 @@ fun LoaderSelectDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("로더 버전", color = TextSub, fontSize = 12.sp)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("스냅샷 포함", color = TextSub, fontSize = 14.sp)
-                            Spacer(modifier = Modifier.padding(start = 12.dp))
-                            Switch(
-                                checked = showSnapshots,
-                                onCheckedChange = { showSnapshots = it },
-                                colors = SwitchDefaults.colors(
-                                    checkedTrackColor = Pink,
-                                    uncheckedTrackColor = BgBorder
-                                )
-                            )
-                        }
+                        Text("로더 버전", color = TextSub, fontSize = if(tablet) 12.sp else 8.sp)
+//                        Row(verticalAlignment = Alignment.CenterVertically) {
+//                            Text("스냅샷 포함", color = TextSub, fontSize = if(tablet) 14.sp else 10.sp)
+//                            Spacer(modifier = Modifier.padding(start = 12.dp))
+//                            Switch(
+//                                checked = showSnapshots,
+//                                onCheckedChange = { showSnapshots = it },
+//                                colors = SwitchDefaults.colors(
+//                                    checkedTrackColor = Pink,
+//                                    uncheckedTrackColor = BgBorder
+//                                )
+//                            )
+//                        }
                     }
                     when {
                         loading -> CenterSpinner(Pink)
@@ -183,19 +185,19 @@ fun LoaderSelectDialog(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Forge 빌드", color = TextSub, fontSize = 12.sp)
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("전체 표시", color = TextSub, fontSize = 14.sp)
-                            Spacer(modifier = Modifier.padding(start = 12.dp))
-                            Switch(
-                                checked = showAllForge,
-                                onCheckedChange = { showAllForge = it },
-                                colors = SwitchDefaults.colors(
-                                    checkedTrackColor = Orange,
-                                    uncheckedTrackColor = BgBorder
-                                )
-                            )
-                        }
+                        Text("Forge 빌드", color = TextSub, fontSize = if(tablet) 14.sp else 10.sp)
+//                        Row(verticalAlignment = Alignment.CenterVertically) {
+//                            Text("전체 표시", color = TextSub, fontSize = if(tablet) 12.sp else 8.sp)
+//                            Spacer(modifier = Modifier.padding(start = 12.dp))
+//                            Switch(
+//                                checked = showAllForge,
+//                                onCheckedChange = { showAllForge = it },
+//                                colors = SwitchDefaults.colors(
+//                                    checkedTrackColor = Orange,
+//                                    uncheckedTrackColor = BgBorder
+//                                )
+//                            )
+//                        }
                     }
                     when {
                         loading -> CenterSpinner(Orange)
@@ -238,7 +240,7 @@ fun LoaderSelectDialog(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
             ) {
-                TextButton(onClick = onDismiss) { Text("취소", color = TextSub, fontSize = 13.sp) }
+                TextButton(onClick = onDismiss) { Text("취소", color = TextSub, fontSize = if(tablet) 13.sp else 9.sp) }
                 val canRun = when (choice) {
                     "vanilla" -> true
                     "fabric"  -> selectedLoader != null
@@ -260,7 +262,7 @@ fun LoaderSelectDialog(
                     ),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Text("▶ 실행", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("▶ 실행", color = Color.White, fontSize = if(tablet) 13.sp else 9.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -275,6 +277,8 @@ private fun LoaderTab(
     accent: Color = Pink,
     onClick: () -> Unit,
 ) {
+    val tablet = isTablet()
+
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
@@ -285,13 +289,13 @@ private fun LoaderTab(
                 RoundedCornerShape(10.dp)
             )
             .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
+            .padding(vertical = if(tablet) 12.dp else 8.dp),
         contentAlignment = Alignment.Center
     ) {
         Text(
             label,
             color = if (selected) Color.White else TextSub,
-            fontSize = 13.sp,
+            fontSize = if(tablet) 13.sp else 9.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
         )
     }
@@ -306,6 +310,8 @@ private fun LoaderRow(
     accent: Color,
     onClick: () -> Unit,
 ) {
+    val tablet = isTablet()
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -322,11 +328,11 @@ private fun LoaderRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(
-            version, color = TextMain, fontSize = 13.sp,
+            version, color = TextMain, fontSize = if(tablet) 13.sp else 9.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
         )
         if (rightLabel.isNotEmpty()) {
-            Text(rightLabel, color = rightColor, fontSize = 10.sp)
+            Text(rightLabel, color = rightColor, fontSize = if(tablet) 10.sp else 6.sp)
         }
     }
 }

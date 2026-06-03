@@ -29,12 +29,20 @@ import kr.co.donghyun.pinglauncher.data.instance.InstanceMeta
 import kr.co.donghyun.pinglauncher.data.instance.InstanceType
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadPhase
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
+import kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
 import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.screen.ContentPackBrowserScreen
 import kr.co.donghyun.pinglauncher.presentation.ui.screen.ContentType
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricInstaller
+import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricMetaAPI
+import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeInstaller
+import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeMetaAPI
+import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftDownloader
+import kr.co.donghyun.pinglauncher.presentation.util.minecraft.VersionRepository
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
 
 /**
  * 컨텐츠(모드팩/모드/텍스처팩/쉐이더팩) 브라우저 액티비티.
@@ -95,11 +103,22 @@ class ContentPackBrowserActivity : BaseActivity() {
                     ?.let { runCatching { ModLoader.valueOf(it) }.getOrNull() }
 
                 val contentType = _selectedContentType.value
+                Log.d("PING_LAUNCHER",
+                    "install request: mod=${mod.name} type=$contentType " +
+                            "targetInstance=$targetInstanceId targetVersion=$targetVersion targetLoader=$targetLoader")
+
                 when {
-                    targetInstanceId != null -> installToExistingInstance(mod, targetInstanceId, contentType)
-                    targetVersion != null && targetLoader != null ->
+                    // 기존 인스턴스 선택
+                    targetInstanceId != null ->
+                        installToExistingInstance(mod, targetInstanceId, contentType)
+
+                    // 새 인스턴스 — loader 가 null 이어도 Vanilla 로 진행되어야 함 (★ 수정 포인트)
+                    targetVersion != null ->
                         installToNewInstance(mod, targetVersion, targetLoader, contentType)
-                    else -> installDirect(mod, contentType)
+
+                    // 그 외 (모드팩 등 — 타겟 선택 없이 바로 설치)
+                    else ->
+                        installDirect(mod, contentType)
                 }
             }
             "launch" -> {
@@ -263,23 +282,160 @@ class ContentPackBrowserActivity : BaseActivity() {
             try {
                 when (contentType) {
                     ContentType.MODPACK -> installModpack(mod)
-                    ContentType.TEXTURE_PACK -> installResourceArtifact(mod, contentType)
-                    ContentType.SHADER_PACK -> installResourceArtifact(mod, contentType)
-                    ContentType.MOD -> {
-                        // requiresLoader=true이므로 이 경로로 오면 안 됨
-                        Log.w("PING_LAUNCHER", "MOD는 installDirect 경로로 오면 안 됨")
+                    else -> {
+                        // ★ 여기 도달했다는 건 detailLauncher 분기에 버그가 있다는 뜻
+                        Log.e("PING_LAUNCHER",
+                            "❌ $contentType 가 installDirect 로 들어옴 — " +
+                                    "detailLauncher 분기 확인 필요 (targetVersion/InstanceId 누락?)")
+                        _statusMessage.value = "내부 오류: 설치 타겟이 지정되지 않음"
                     }
                 }
                 refreshInstalledIds()
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "설치 실패: ${e.message}")
+                Log.e("PING_LAUNCHER", "설치 실패: ${e.message}", e)
             } finally {
                 endInstall()
             }
         }
     }
 
-    /** 기존 인스턴스에 모드 추가 설치 */
+    /**
+     * 인스턴스 디렉토리에 모드/리소스/쉐이더 파일 하나를 다운로드한다.
+     * UI 상태(beginInstall/endInstall)는 만지지 않음 — 호출 측 책임.
+     *
+     * 경로 규칙:
+     *  - legacy(1.12 이하) : <instance>/.minecraft/<subDir>/
+     *  - modern(1.13+)     : <instance>/<subDir>/
+     */
+    private suspend fun addContentToInstance(
+        mod: CurseForgeMod,
+        instanceId: String,
+        contentType: ContentType
+    ): Boolean {
+        val instanceDir = InstanceManager.instanceDir(this, instanceId)
+        val meta = InstanceManager.loadMeta(instanceDir)
+            ?: throw IllegalStateException("인스턴스 메타 없음: $instanceId")
+
+        val loaderFilter = if (contentType == ContentType.MOD) meta.loaderType else null
+        Log.d("PING_LAUNCHER",
+            "addContentToInstance: mod=${mod.id} type=$contentType " +
+                    "instance=$instanceId mc=${meta.mcVersion} loaderFilter=$loaderFilter")
+
+        val file = withContext(Dispatchers.IO) {
+            fetchLatestFileForVersion(mod.id, meta.mcVersion, loaderFilter)
+        } ?: run {
+            Log.w("PING_LAUNCHER", "❌ CurseForge 에서 호환 파일 못 찾음 ...")
+            _statusMessage.value = "${mod.name} — MC ${meta.mcVersion} 호환 파일 없음"
+            return false
+        }
+
+// ★ 이전: null 이면 return false. 이제는 fallback 으로 항상 해결.
+        val downloadUrl = resolveDownloadUrl(file)
+
+        val subDir = when (contentType) {
+            ContentType.MOD          -> "mods"
+            ContentType.TEXTURE_PACK -> "resourcepacks"
+            ContentType.SHADER_PACK  -> "shaderpacks"
+            ContentType.MODPACK      -> "mods"
+        }
+        val baseDir = if (isLegacyVersion(meta.mcVersion))
+            instanceDir.resolve(".minecraft") else instanceDir
+        val outDir = baseDir.resolve(subDir).also { it.mkdirs() }
+        val outFile = outDir.resolve(file.fileName)
+
+        Log.d("PING_LAUNCHER",
+            "⬇ ${file.fileName} (${file.fileLength}B) → ${outFile.absolutePath}")
+        withContext(Dispatchers.IO) {
+            downloadFile(downloadUrl, outFile, file.fileName)
+        }
+
+        if (!outFile.exists() || outFile.length() == 0L) {
+            Log.e("PING_LAUNCHER", "❌ 다운로드 후 검증 실패: ${outFile.absolutePath}")
+            return false
+        }
+        Log.d("PING_LAUNCHER",
+            "✅ ${contentType.label} 설치: ${outFile.absolutePath} (${outFile.length()}B)")
+
+        withContext(Dispatchers.IO) {
+            when (contentType) {
+                ContentType.TEXTURE_PACK -> enableResourcePack(baseDir, meta.mcVersion, file.fileName)
+                ContentType.SHADER_PACK  -> enableShaderPack(baseDir, file.fileName)
+                else -> { }
+            }
+        }
+        return true
+    }
+
+    // ContentPackBrowserActivity.kt 의 private 멤버로 추가
+
+    /**
+     * options.txt 의 resourcePacks 항목에 [packFileName] 을 등록한다.
+     * - 1.13+ 는 "file/" 접두사 필요, 1.12 이하는 파일명 그대로.
+     * - 이미 존재하면 추가하지 않음.
+     * - options.txt 없으면 기본값으로 새로 만든다.
+     */
+    private fun enableResourcePack(baseDir: File, mcVersion: String, packFileName: String) {
+        val optionsFile = File(baseDir, "options.txt")
+        val packToken = if (isLegacyVersion(mcVersion)) packFileName else "file/$packFileName"
+
+        val lines: MutableList<String> = if (optionsFile.exists())
+            optionsFile.readLines().toMutableList()
+        else mutableListOf("renderDistance:8", "graphicsMode:0")
+
+        val idx = lines.indexOfFirst { it.startsWith("resourcePacks:") }
+        if (idx >= 0) {
+            val raw = lines[idx].substringAfter("resourcePacks:")
+            val current = parseRpList(raw).toMutableList()
+            if (packToken !in current) current.add(packToken)        // 맨 뒤 = 우선순위 최상
+            lines[idx] = "resourcePacks:" + serializeRpList(current)
+        } else {
+            lines.add("resourcePacks:" + serializeRpList(listOf("vanilla", packToken)))
+        }
+        if (lines.none { it.startsWith("incompatibleResourcePacks:") }) {
+            lines.add("incompatibleResourcePacks:[]")
+        }
+
+        optionsFile.writeText(lines.joinToString("\n"))
+        Log.d("PING_LAUNCHER", "📝 options.txt 갱신: $packToken (${optionsFile.absolutePath})")
+    }
+
+    /**
+     * Iris/Oculus 의 config/iris.properties 에 [shaderFileName] 을 셋한다.
+     * Iris/Oculus 가 설치되지 않은 인스턴스에서는 단순히 무시되는 hint 일 뿐 — 해는 없음.
+     */
+    private fun enableShaderPack(baseDir: File, shaderFileName: String) {
+        val irisConfig = File(baseDir, "config/iris.properties")
+        irisConfig.parentFile?.mkdirs()
+
+        val survivors = if (irisConfig.exists())
+            irisConfig.readLines().filter {
+                !it.startsWith("shaderPack=") && !it.startsWith("shaders.enabled=")
+            }
+        else emptyList()
+
+        val merged = survivors + listOf(
+            "shaders.enabled=true",
+            "shaderPack=$shaderFileName"
+        )
+        irisConfig.writeText(merged.joinToString("\n"))
+        Log.d("PING_LAUNCHER", "📝 iris.properties 갱신: $shaderFileName")
+    }
+
+// ── options.txt 의 resourcePacks 값 파싱/직렬화 ──
+//   resourcePacks:["vanilla","file/Faithful.zip"]   <- 이런 포맷
+
+    private fun parseRpList(raw: String): List<String> {
+        val t = raw.trim()
+        if (!t.startsWith("[") || !t.endsWith("]")) return emptyList()
+        val inner = t.substring(1, t.length - 1).trim()
+        if (inner.isEmpty()) return emptyList()
+        // "a","b" → [a, b]. 단순 split — 항목 안에 쉼표 들어갈 일 없음.
+        return inner.split(",").map { it.trim().trim('"') }.filter { it.isNotEmpty() }
+    }
+
+    private fun serializeRpList(items: List<String>): String =
+        items.joinToString(prefix = "[", postfix = "]", separator = ",") { "\"$it\"" }
+
     private fun installToExistingInstance(
         mod: CurseForgeMod,
         instanceId: String,
@@ -288,82 +444,231 @@ class ContentPackBrowserActivity : BaseActivity() {
         lifecycleScope.launch {
             beginInstall(mod, "${mod.name} → 인스턴스($instanceId) 설치 중...")
             try {
-                val meta = InstanceManager.loadMeta(InstanceManager.instanceDir(this@ContentPackBrowserActivity, instanceId))
-                    ?: throw IllegalStateException("인스턴스 메타를 찾을 수 없음: $instanceId")
-
-                val targetDir = InstanceManager.instanceDir(this@ContentPackBrowserActivity, instanceId)
-                val file = withContext(Dispatchers.IO) {
-                    fetchLatestFileForVersion(mod.id, meta.mcVersion, meta.loaderType)
-                }
-                if (file == null) {
-                    Log.w("PING_LAUNCHER", "호환되는 파일을 찾지 못함: mod=${mod.id}, mc=${meta.mcVersion}, loader=${meta.loaderType}")
-                    return@launch
-                }
-                val downloadUrl = file.downloadUrl
-                if (downloadUrl.isNullOrBlank()) {
-                    Log.w("PING_LAUNCHER", "다운로드 URL이 없음 (배포 차단된 파일일 수 있음): mod=${mod.id}, file=${file.id}")
-                    return@launch
-                }
-
-                val subDir = when (contentType) {
-                    ContentType.MOD -> "mods"
-                    ContentType.TEXTURE_PACK -> "resourcepacks"
-                    ContentType.SHADER_PACK -> "shaderpacks"
-                    ContentType.MODPACK -> "mods" // 사실상 여기로 오진 않음
-                }
-                val outDir = targetDir.resolve(".minecraft").resolve(subDir).also { it.mkdirs() }
-                withContext(Dispatchers.IO) {
-                    downloadFile(downloadUrl, outDir.resolve(file.fileName), file.fileName)
-                }
+                addContentToInstance(mod, instanceId, contentType)
                 refreshInstalledIds()
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "기존 인스턴스 설치 실패: ${e.message}")
+                Log.e("PING_LAUNCHER", "기존 인스턴스 설치 실패: ${e.message}", e)
             } finally {
                 endInstall()
             }
         }
     }
 
-    /** 새 인스턴스(버전+로더) 생성 후 설치 */
     private fun installToNewInstance(
         mod: CurseForgeMod,
         mcVersion: String,
-        loader: ModLoader,
+        loader: ModLoader?,                 // ← null 이면 바닐라
         contentType: ContentType
     ) {
         lifecycleScope.launch {
-            beginInstall(mod, "${loader.displayName} $mcVersion 인스턴스 생성 후 설치 중...")
+            val loaderName = loader?.displayName ?: "Vanilla"
+            beginInstall(mod, "$loaderName $mcVersion 인스턴스 준비 중...")
             try {
-                val loaderType = when (loader) {
-                    ModLoader.FABRIC -> "fabric"
-                    ModLoader.FORGE -> "forge"
-                    ModLoader.NEOFORGE -> "neoforge"
+                val versionEntry = withContext(Dispatchers.IO) {
+                    VersionRepository().fetchVersionList().firstOrNull { it.id == mcVersion }
+                } ?: run {
+                    Log.e("PING_LAUNCHER", "MC $mcVersion manifest 못 찾음")
+                    _statusMessage.value = "MC $mcVersion 를 찾을 수 없습니다."
+                    return@launch
                 }
 
-                // 인스턴스 ID는 fabric인 경우 InstanceManager.fabricId 사용, 그 외엔 동일 패턴으로 생성
-                val instanceId = when (loader) {
-                    ModLoader.FABRIC -> InstanceManager.fabricId(mcVersion, "latest")
-                    ModLoader.FORGE -> "forge_${mcVersion.replace('.', '_')}"
-                    ModLoader.NEOFORGE -> "neoforge_${mcVersion.replace('.', '_')}"
+                val instanceId: String = when (loader) {
+                    null               -> setupVanillaInstance(mcVersion, versionEntry) ?: return@launch
+                    ModLoader.FABRIC   -> setupFabricInstance(mcVersion, versionEntry)  ?: return@launch
+                    ModLoader.FORGE    -> setupForgeInstance(mcVersion, versionEntry, isNeoForge = false) ?: return@launch
+                    ModLoader.NEOFORGE -> setupForgeInstance(mcVersion, versionEntry, isNeoForge = true)  ?: return@launch
                 }
 
-                // 인스턴스 메타 저장 (loader별 실제 셋업은 별도 인스톨러 모듈에서 진행되어야 함)
-                val meta = InstanceMeta(
-                    id = instanceId,
-                    name = "${loader.displayName} $mcVersion",
-                    type = if (loader == ModLoader.FABRIC) InstanceType.FABRIC else InstanceType.MODPACK,
-                    mcVersion = mcVersion,
-                    loaderType = loaderType
-                )
-                InstanceManager.saveMeta(this@ContentPackBrowserActivity, meta)
-
-                // 새 인스턴스에 컨텐츠 설치
-                installToExistingInstance(mod, instanceId, contentType)
+                _statusMessage.value = "${mod.name} 다운로드 중..."
+                addContentToInstance(mod, instanceId, contentType)
+                refreshInstalledIds()
+                _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "신규 인스턴스 설치 실패: ${e.message}")
+                Log.e("PING_LAUNCHER", "신규 인스턴스 설치 실패: ${e.message}", e)
+                _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = e.message)
+            } finally {
                 endInstall()
             }
         }
+    }
+
+    /** 바닐라 인스턴스 생성 또는 재사용. 실패 시 null. */
+    private suspend fun setupVanillaInstance(
+        mcVersion: String,
+        versionEntry: kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
+    ): String? {
+        val instanceId = InstanceManager.vanillaId(mcVersion)
+        val instanceDir = InstanceManager.instanceDir(this, instanceId)
+        if (InstanceManager.loadMeta(instanceDir) != null) {
+            Log.d("PING_LAUNCHER", "ℹ️ Vanilla 인스턴스 재사용: $instanceId")
+            return instanceId
+        }
+
+        _progress.value = DownloadProgress(phase = DownloadPhase.FETCHING_MANIFEST)
+        _statusMessage.value = "MC $mcVersion 다운로드 중..."
+        val mcResult = withContext(Dispatchers.IO) {
+            MinecraftDownloader(instanceDir, versionEntry) { _progress.value = it }.prepare()
+        }
+
+        // 빈 폴더 미리 생성 — 텍스처/쉐이더 떨어뜨릴 곳
+        File(instanceDir, "mods").mkdirs()
+        File(instanceDir, "resourcepacks").mkdirs()
+        File(instanceDir, "shaderpacks").mkdirs()
+
+        val legacyArgs = mcResult.minecraftArguments
+            ?.split(" ")?.filter { it.isNotBlank() } ?: emptyList()
+
+        InstanceManager.saveMeta(this, InstanceMeta(
+            id = instanceId,
+            name = mcVersion,
+            type = InstanceType.VANILLA,
+            mcVersion = mcVersion,
+            mainClass = mcResult.mainClass,
+            assetIndexId = mcResult.assetIndexId,
+            iconEmoji = "🌿",
+            gameArgs = legacyArgs
+        ))
+        return instanceId
+    }
+
+    /** 새 Fabric 인스턴스를 만들거나 기존 것 반환. 실패 시 null. */
+    private suspend fun setupFabricInstance(
+        mcVersion: String,
+        versionEntry: VersionEntry
+    ): String? {
+        val fabricApi = FabricMetaAPI()
+        val loaderList = withContext(Dispatchers.IO) { fabricApi.listLoaders(mcVersion) }
+        val loaderVersion = loaderList.firstOrNull { it.loader.stable }?.loader?.version
+            ?: loaderList.firstOrNull()?.loader?.version
+            ?: run {
+                Log.e("PING_LAUNCHER", "Fabric loader 후보 없음 mc=$mcVersion")
+                return null
+            }
+
+        val instanceId = InstanceManager.fabricId(mcVersion, loaderVersion)
+        val instanceDir = InstanceManager.instanceDir(this, instanceId)
+        if (InstanceManager.loadMeta(instanceDir) != null) {
+            Log.d("PING_LAUNCHER", "ℹ️ Fabric 인스턴스 재사용: $instanceId")
+            return instanceId
+        }
+
+        _progress.value = DownloadProgress(phase = DownloadPhase.FETCHING_MANIFEST)
+        _statusMessage.value = "MC $mcVersion 다운로드 중..."
+        val mcResult = withContext(Dispatchers.IO) {
+            MinecraftDownloader(instanceDir, versionEntry) { _progress.value = it }.prepare()
+        }
+
+        _statusMessage.value = "Fabric $loaderVersion 설치 중..."
+        val fr = withContext(Dispatchers.IO) {
+            FabricInstaller(instanceDir) { msg, cur, tot ->
+                _progress.value = DownloadProgress(
+                    phase = DownloadPhase.DOWNLOADING_LIBRARIES,
+                    current = cur, total = tot, fileName = msg
+                )
+            }.install(mcVersion, loaderVersion)
+        }
+        if (!fr.success) {
+            Log.e("PING_LAUNCHER", "Fabric 설치 실패: ${fr.error}")
+            return null
+        }
+        File(instanceDir, "mods").mkdirs()
+
+        InstanceManager.saveMeta(this, InstanceMeta(
+            id = instanceId,
+            name = "$mcVersion · Fabric $loaderVersion",
+            type = InstanceType.FABRIC,
+            mcVersion = mcVersion,
+            loaderType = "fabric",
+            loaderVersion = loaderVersion,
+            mainClass = fr.mainClass,
+            extraJars = fr.extraJars,
+            assetIndexId = mcResult.assetIndexId,
+            iconEmoji = "🧵",
+            gameJvmArgs = fr.gameJvmArgs,
+            gameArgs = fr.gameArgs
+        ))
+        return instanceId
+    }
+
+    /**
+     * 새 Forge/NeoForge 인스턴스 셋업. recommended → latest 순으로 자동 선택.
+     *
+     * 1.13+ 는 install_profile.json 의 processors 단계가 따로 있어
+     * 실제 부팅 시 실패할 수 있음 — requiresProcessors 가 true 면 로그로 경고하고
+     * 상태 메시지에도 표시.
+     */
+    private suspend fun setupForgeInstance(
+        mcVersion: String,
+        versionEntry: VersionEntry,
+        isNeoForge: Boolean
+    ): String? {
+        val forgeApi = ForgeMetaAPI()
+        val loaderList = withContext(Dispatchers.IO) {
+            runCatching { forgeApi.listLoaders(mcVersion) }.getOrDefault(emptyList())
+        }
+        if (loaderList.isEmpty()) {
+            Log.e("PING_LAUNCHER", "Forge 후보 없음 mc=$mcVersion")
+            _statusMessage.value = "$mcVersion 용 Forge 빌드가 없습니다."
+            return null
+        }
+        val forgeVersion = loaderList.firstOrNull { it.recommended }?.forgeVersion
+            ?: loaderList.firstOrNull { it.latest }?.forgeVersion
+            ?: loaderList.first().forgeVersion
+
+        val loaderType = if (isNeoForge) "neoforge" else "forge"
+        val instanceId = "${loaderType}_${mcVersion.replace('.', '_')}_${forgeVersion.replace('.', '_')}"
+        val instanceDir = InstanceManager.instanceDir(this, instanceId)
+        if (InstanceManager.loadMeta(instanceDir) != null) {
+            Log.d("PING_LAUNCHER", "ℹ️ $loaderType 인스턴스 재사용: $instanceId")
+            return instanceId
+        }
+
+        // 1) MC 다운로드
+        _progress.value = DownloadProgress(phase = DownloadPhase.FETCHING_MANIFEST)
+        _statusMessage.value = "MC $mcVersion 다운로드 중..."
+        val mcResult = withContext(Dispatchers.IO) {
+            MinecraftDownloader(instanceDir, versionEntry) { _progress.value = it }.prepare()
+        }
+
+        // 2) Forge / NeoForge 설치
+        _statusMessage.value = "${if (isNeoForge) "NeoForge" else "Forge"} $forgeVersion 설치 중..."
+        val fr = withContext(Dispatchers.IO) {
+            ForgeInstaller(instanceDir) { msg, cur, tot ->
+                _progress.value = DownloadProgress(
+                    phase = DownloadPhase.DOWNLOADING_LIBRARIES,
+                    current = cur, total = tot, fileName = msg
+                )
+            }.install(this@ContentPackBrowserActivity, mcVersion, forgeVersion, isNeoForge = isNeoForge)
+        }
+        if (!fr.success) {
+            Log.e("PING_LAUNCHER", "Forge 설치 실패: ${fr.error}")
+            _statusMessage.value = "Forge 설치 실패: ${fr.error}"
+            return null
+        }
+
+        if (fr.requiresProcessors) {
+            Log.i("PING_LAUNCHER",
+                "Forge 1.13+ — ProcessorLauncher 경유로 부팅합니다. " +
+                        "최초 실행 시 BinaryPatcher 등이 돌아가서 시간이 걸릴 수 있습니다.")
+            _statusMessage.value = "Modern Forge — 최초 실행 시 client jar 패칭이 수행됩니다."
+        }
+        File(instanceDir, "mods").mkdirs()
+
+        InstanceManager.saveMeta(this, InstanceMeta(
+            id = instanceId,
+            name = "$mcVersion · ${if (isNeoForge) "NeoForge" else "Forge"} $forgeVersion",
+            type = InstanceType.MODPACK,         // FABRIC 외엔 MODPACK 으로 분류해두는 듯
+            mcVersion = mcVersion,
+            loaderType = loaderType,
+            loaderVersion = forgeVersion,
+            mainClass = fr.mainClass,
+            extraJars = fr.extraJars,
+            assetIndexId = mcResult.assetIndexId,
+            iconEmoji = if (isNeoForge) "🟢" else "🔥",
+            gameJvmArgs = fr.gameJvmArgs,
+            gameArgs = fr.gameArgs
+        ))
+        return instanceId
     }
 
     /** 모드팩 설치 (자체 인스턴스 생성). zip 추출/매니페스트 처리는 별도 인스톨러로 위임. */
@@ -372,8 +677,8 @@ class ContentPackBrowserActivity : BaseActivity() {
         val file = withContext(Dispatchers.IO) {
             fetchLatestFileForVersion(mod.id, gameVersion = null, loaderType = null)
         } ?: return
-        val downloadUrl = file.downloadUrl
-        if (downloadUrl.isNullOrBlank()) {
+        val downloadUrl = resolveDownloadUrl(file)
+        if (downloadUrl.isBlank()) {
             Log.w("PING_LAUNCHER", "모드팩 다운로드 URL 없음: mod=${mod.id}")
             return
         }
@@ -555,4 +860,26 @@ class ContentPackBrowserActivity : BaseActivity() {
             context.startActivity(Intent(context, ContentPackBrowserActivity::class.java))
         }
     }
+
+    fun isLegacyVersion(versionId: String): Boolean {
+        // 1.12.2 이하: legacy (AWT 필요)
+        // 1.13+: modern (LWJGL3, AWT 불필요)
+        val parts = versionId.removePrefix("1.").split(".")
+        val major = parts.getOrNull(0)?.toIntOrNull() ?: return false
+        return major <= 12
+    }
+
+    private fun resolveDownloadUrl(file: CurseForgeFile): String {
+        val direct = file.downloadUrl
+        if (!direct.isNullOrBlank()) return direct
+
+        val part1 = file.id / 1000
+        val part2 = file.id % 1000
+        val safeName = file.fileName.replace(" ", "%20")
+        return "https://edge.forgecdn.net/files/$part1/$part2/$safeName".also {
+            Log.i("PING_LAUNCHER",
+                "🔁 downloadUrl=null → CDN fallback: mod=${file.id} → $it")
+        }
+    }
+
 }

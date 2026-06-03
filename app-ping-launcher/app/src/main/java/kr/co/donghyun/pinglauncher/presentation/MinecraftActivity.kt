@@ -700,7 +700,7 @@ class MinecraftActivity : BaseActivity() {
             ?: File(getExternalFilesDir(null) ?: base, "assets")
 
         val irisConfig = File(mcDir, "config/iris.properties")
-        if (!irisConfig.exists()) {
+        if (!irisConfig.exists()) {                       // ← 이미 존재하면 손대지 않음 (지금도 이 조건은 있음)
             irisConfig.parentFile?.mkdirs()
             irisConfig.writeText("shaders.enabled=false\n")
         }

@@ -77,7 +77,7 @@ fun ContentPackDetailScreen(
                     .clickable { onBack() }
                     .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
-                Text("←", color = TextMain, fontSize = if (tablet) 22.sp else 18.sp, fontWeight = FontWeight.Bold)
+                Text("뒤로", color = TextMain, fontSize = if (tablet) 16.sp else 12.sp, fontWeight = FontWeight.Bold)
             }
             Text(
                 text = "상세 정보",
@@ -164,7 +164,7 @@ fun ContentPackDetailScreen(
                     items(screenshots.toList().size) { index ->
                         val shot = screenshots[index]
                         AsyncImage(
-                            model = shot,
+                            model = shot.thumbnailUrl,
                             contentDescription = null,
                             modifier = Modifier
                                 .height(if (tablet) 140.dp else 110.dp)
