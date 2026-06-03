@@ -24,30 +24,41 @@ import kotlinx.coroutines.withContext
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
 import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricLoaderEntry
 import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricMetaAPI
+import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeLoaderEntry
+import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeMetaAPI
 
 private val Pink     = Color(0xFFE91E8C)
 private val TextMain = Color(0xFFFCE4EC)
 private val TextSub  = Color(0xFFBB86A0)
+private val Orange   = Color(0xFFFF9043)  // Forge accent
 
 @Composable
 fun LoaderSelectDialog(
     versionId: String,
     onDismiss: () -> Unit,
     onLaunchVanilla: () -> Unit,
-    onLaunchFabric: (loaderVersion: String) -> Unit
+    onLaunchFabric: (loaderVersion: String) -> Unit,
+    onLaunchForge:  (forgeVersion: String) -> Unit,
 ) {
     var choice by remember { mutableStateOf("vanilla") }
-    var fabricList by remember { mutableStateOf<List<FabricLoaderEntry>>(emptyList()) }
+
+    // ─── Fabric ───
+    var fabricList     by remember { mutableStateOf<List<FabricLoaderEntry>>(emptyList()) }
     var selectedLoader by remember { mutableStateOf<String?>(null) }
+    var showSnapshots  by remember { mutableStateOf(false) }
+
+    // ─── Forge ───
+    var forgeList     by remember { mutableStateOf<List<ForgeLoaderEntry>>(emptyList()) }
+    var selectedForge by remember { mutableStateOf<String?>(null) }
+    var showAllForge  by remember { mutableStateOf(false) }
+
     var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var showSnapshots by remember { mutableStateOf(false) }
+    var error   by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     fun loadFabric() {
         if (fabricList.isNotEmpty() || loading) return
-        loading = true
-        error = null
+        loading = true; error = null
         scope.launch {
             try {
                 val list = withContext(Dispatchers.IO) { FabricMetaAPI().listLoaders(versionId) }
@@ -56,6 +67,28 @@ fun LoaderSelectDialog(
                     ?: list.firstOrNull()?.loader?.version
             } catch (e: Exception) {
                 error = e.message ?: "Fabric 로더 목록 불러오기 실패"
+            }
+            loading = false
+        }
+    }
+
+    fun loadForge() {
+        if (forgeList.isNotEmpty() || loading) return
+        loading = true; error = null
+        scope.launch {
+            try {
+                val list = withContext(Dispatchers.IO) { ForgeMetaAPI().listLoaders(versionId) }
+                if (list.isEmpty()) {
+                    error = "$versionId 에 사용 가능한 Forge 빌드가 없음"
+                } else {
+                    forgeList = list
+                    // 기본 선택: recommended → latest → 첫 항목
+                    selectedForge = list.firstOrNull { it.recommended }?.forgeVersion
+                        ?: list.firstOrNull { it.latest }?.forgeVersion
+                                ?: list.first().forgeVersion
+                }
+            } catch (e: Exception) {
+                error = e.message ?: "Forge 로더 목록 불러오기 실패"
             }
             loading = false
         }
@@ -75,22 +108,27 @@ fun LoaderSelectDialog(
         ) {
             Text("로더 선택 — $versionId", color = TextMain, fontSize = 17.sp, fontWeight = FontWeight.Bold)
 
+            // ─── 3탭 ───
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 LoaderTab(
                     label = "🌿 바닐라",
                     selected = choice == "vanilla",
                     modifier = Modifier.weight(1f)
-                ) { choice = "vanilla" }
+                ) { choice = "vanilla"; error = null }
                 LoaderTab(
                     label = "🧵 Fabric",
                     selected = choice == "fabric",
                     modifier = Modifier.weight(1f)
-                ) {
-                    choice = "fabric"
-                    loadFabric()
-                }
+                ) { choice = "fabric"; error = null; loadFabric() }
+                LoaderTab(
+                    label = "🔥 Forge",
+                    selected = choice == "forge",
+                    modifier = Modifier.weight(1f),
+                    accent = Orange
+                ) { choice = "forge"; error = null; loadForge() }
             }
 
+            // ─── Fabric 패널 ───
             if (choice == "fabric") {
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(
@@ -113,10 +151,8 @@ fun LoaderSelectDialog(
                         }
                     }
                     when {
-                        loading -> Box(Modifier.fillMaxWidth().height(160.dp), Alignment.Center) {
-                            CircularProgressIndicator(color = Pink, modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
-                        }
-                        error != null -> Text("❌ $error", color = Color(0xFFFF6B6B), fontSize = 12.sp)
+                        loading -> CenterSpinner(Pink)
+                        error != null -> ErrorText(error!!)
                         else -> {
                             val visible = fabricList.filter { showSnapshots || it.loader.stable }
                             LazyColumn(
@@ -125,29 +161,13 @@ fun LoaderSelectDialog(
                             ) {
                                 items(visible, key = { it.loader.version }) { entry ->
                                     val isSel = selectedLoader == entry.loader.version
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(if (isSel) Color(0xFF2D0A20) else BgDark)
-                                            .border(
-                                                if (isSel) 1.5.dp else 1.dp,
-                                                if (isSel) Pink else BgBorder,
-                                                RoundedCornerShape(8.dp)
-                                            )
-                                            .clickable { selectedLoader = entry.loader.version }
-                                            .padding(horizontal = 12.dp, vertical = 10.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(entry.loader.version, color = TextMain, fontSize = 13.sp,
-                                            fontWeight = if (isSel) FontWeight.Bold else FontWeight.Normal)
-                                        if (entry.loader.stable) {
-                                            Text("stable", color = Pink, fontSize = 10.sp)
-                                        } else {
-                                            Text("snapshot", color = TextSub, fontSize = 10.sp)
-                                        }
-                                    }
+                                    LoaderRow(
+                                        version = entry.loader.version,
+                                        rightLabel = if (entry.loader.stable) "stable" else "snapshot",
+                                        rightColor = if (entry.loader.stable) Pink else TextSub,
+                                        selected = isSel,
+                                        accent = Pink
+                                    ) { selectedLoader = entry.loader.version }
                                 }
                             }
                         }
@@ -155,19 +175,87 @@ fun LoaderSelectDialog(
                 }
             }
 
+            // ─── Forge 패널 ───
+            if (choice == "forge") {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Forge 빌드", color = TextSub, fontSize = 12.sp)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("전체 표시", color = TextSub, fontSize = 14.sp)
+                            Spacer(modifier = Modifier.padding(start = 12.dp))
+                            Switch(
+                                checked = showAllForge,
+                                onCheckedChange = { showAllForge = it },
+                                colors = SwitchDefaults.colors(
+                                    checkedTrackColor = Orange,
+                                    uncheckedTrackColor = BgBorder
+                                )
+                            )
+                        }
+                    }
+                    when {
+                        loading -> CenterSpinner(Orange)
+                        error != null -> ErrorText(error!!)
+                        else -> {
+                            // 기본은 recommended/latest 만, 토글하면 전체
+                            val visible =
+                                if (showAllForge) forgeList
+                                else forgeList.filter { it.recommended || it.latest }
+                                    .ifEmpty { forgeList.take(5) }  // promotions 비어있을 때 fallback
+
+                            LazyColumn(
+                                modifier = Modifier.heightIn(max = 240.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                items(visible, key = { it.forgeVersion }) { entry ->
+                                    val isSel = selectedForge == entry.forgeVersion
+                                    val label = when {
+                                        entry.recommended && entry.latest -> "recommended·latest"
+                                        entry.recommended -> "recommended"
+                                        entry.latest -> "latest"
+                                        else -> ""
+                                    }
+                                    LoaderRow(
+                                        version = entry.forgeVersion,
+                                        rightLabel = label,
+                                        rightColor = if (entry.recommended || entry.latest) Orange else TextSub,
+                                        selected = isSel,
+                                        accent = Orange
+                                    ) { selectedForge = entry.forgeVersion }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ─── 액션 버튼 ───
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End)
             ) {
                 TextButton(onClick = onDismiss) { Text("취소", color = TextSub, fontSize = 13.sp) }
+                val canRun = when (choice) {
+                    "vanilla" -> true
+                    "fabric"  -> selectedLoader != null
+                    "forge"   -> selectedForge  != null
+                    else -> false
+                }
                 Button(
                     onClick = {
-                        if (choice == "vanilla") onLaunchVanilla()
-                        else selectedLoader?.let { onLaunchFabric(it) }
+                        when (choice) {
+                            "vanilla" -> onLaunchVanilla()
+                            "fabric"  -> selectedLoader?.let(onLaunchFabric)
+                            "forge"   -> selectedForge?.let(onLaunchForge)
+                        }
                     },
-                    enabled = choice == "vanilla" || selectedLoader != null,
+                    enabled = canRun,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = Pink,
+                        containerColor = if (choice == "forge") Orange else Pink,
                         disabledContainerColor = BgBorder
                     ),
                     shape = RoundedCornerShape(8.dp)
@@ -180,22 +268,77 @@ fun LoaderSelectDialog(
 }
 
 @Composable
-private fun LoaderTab(label: String, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun LoaderTab(
+    label: String,
+    selected: Boolean,
+    modifier: Modifier,
+    accent: Color = Pink,
+    onClick: () -> Unit,
+) {
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(10.dp))
             .background(if (selected) PinkDark else BgDark)
             .border(
                 if (selected) 1.5.dp else 1.dp,
-                if (selected) Pink else BgBorder,
+                if (selected) accent else BgBorder,
                 RoundedCornerShape(10.dp)
             )
             .clickable(onClick = onClick)
             .padding(vertical = 12.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, color = if (selected) Color.White else TextSub,
+        Text(
+            label,
+            color = if (selected) Color.White else TextSub,
             fontSize = 13.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal)
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
     }
+}
+
+@Composable
+private fun LoaderRow(
+    version: String,
+    rightLabel: String,
+    rightColor: Color,
+    selected: Boolean,
+    accent: Color,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(if (selected) Color(0xFF2D0A20) else BgDark)
+            .border(
+                if (selected) 1.5.dp else 1.dp,
+                if (selected) accent else BgBorder,
+                RoundedCornerShape(8.dp)
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            version, color = TextMain, fontSize = 13.sp,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
+        if (rightLabel.isNotEmpty()) {
+            Text(rightLabel, color = rightColor, fontSize = 10.sp)
+        }
+    }
+}
+
+@Composable
+private fun CenterSpinner(color: Color) {
+    Box(Modifier.fillMaxWidth().height(160.dp), Alignment.Center) {
+        CircularProgressIndicator(color = color, modifier = Modifier.size(28.dp), strokeWidth = 2.dp)
+    }
+}
+
+@Composable
+private fun ErrorText(msg: String) {
+    Text("❌ $msg", color = Color(0xFFFF6B6B), fontSize = 12.sp)
 }

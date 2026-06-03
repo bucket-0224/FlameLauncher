@@ -85,7 +85,7 @@ class MainActivity : BaseActivity() {
                     onToggleFilter = { _showOnlyRelease.value = !showOnlyRelease },
                     onDownloadAndPlay = { version -> startDownload(version) },
                     onLaunchFabric = { version, loader -> startFabricDownloadAndPlay(version, loader) },
-                    onOpenContents = { ModPackBrowserActivity.start(this@MainActivity) },
+                    onOpenContents = { ContentPackBrowserActivity.start(this@MainActivity) },
                     onOpenKeySettings = { KeyboardLayoutEditorActivity.start(this@MainActivity) },
                     onOpenJVMSettings = { JvmSettingsActivity.start(this@MainActivity) },
                     onOpenRendererSettings = { RendererSettingsActivity.start(this@MainActivity) },

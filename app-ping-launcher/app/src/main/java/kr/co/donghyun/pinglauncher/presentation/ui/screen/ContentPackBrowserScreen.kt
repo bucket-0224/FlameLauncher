@@ -28,27 +28,46 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeMod
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
-import kr.co.donghyun.pinglauncher.presentation.ModPackDetailActivity
+import kr.co.donghyun.pinglauncher.presentation.ContentPackDetailActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 
+/**
+ * CurseForge classId 기반 컨텐츠 분류.
+ * - MODPACK: 4471
+ * - MOD: 6
+ * - TEXTURE_PACK(Resource Pack): 12
+ * - SHADER_PACK: 6552
+ */
+enum class ContentType(val classId: Int, val label: String) {
+    MODPACK(4471, "모드팩"),
+    MOD(6, "모드"),
+    TEXTURE_PACK(12, "텍스처팩"),
+    SHADER_PACK(6552, "쉐이더팩");
+
+    /** 모드 로더가 필요한 타입인지 (true면 설치 시 인스턴스 로더 호환성 체크 필요) */
+    val requiresLoader: Boolean
+        get() = this == MOD
+    // 모드팩은 자체적으로 로더 정보를 포함하므로 별도 체크 불필요.
+    // 텍스처팩/쉐이더팩은 바닐라에서도 동작.
+}
+
 @Composable
-fun ModPackBrowserScreen(
-    modpacks: List<CurseForgeMod>,
+fun ContentPackBrowserScreen(
+    contentPacks: List<CurseForgeMod>,
     progress: DownloadProgress,
     isLoading: Boolean,
     isInstalling: Boolean,
     installingModId: Int?,
     statusMessage: String,
     selectedVersion: String,
+    selectedContentType: ContentType,
     installedIds: Set<Int>,
-    onSearch: (String, String) -> Unit,
+    onSearch: (query: String, version: String, type: ContentType) -> Unit,
     onVersionFilter: (String) -> Unit,
+    onContentTypeFilter: (ContentType) -> Unit,
     onLoadMore: () -> Unit,
     hasMore: Boolean,
     onInstall: (CurseForgeMod) -> Unit,
@@ -66,7 +85,6 @@ fun ModPackBrowserScreen(
     }
 
     var searchQuery by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     val supportedVersions = listOf("", "1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
 
@@ -92,7 +110,7 @@ fun ModPackBrowserScreen(
                 horizontalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    "모드팩 검색",
+                    "컨텐츠 검색",
                     color = TextMain,
                     fontSize = if (tablet) 18.sp else 14.sp,
                     fontWeight = FontWeight.Bold
@@ -101,7 +119,7 @@ fun ModPackBrowserScreen(
                     value = searchQuery,
                     onValueChange = {
                         searchQuery = it
-                        onSearch(it, selectedVersion)
+                        onSearch(it, selectedVersion, selectedContentType)
                     },
                     textStyle = TextStyle(color = TextMain, fontSize = if (tablet) 13.sp else 11.sp),
                     cursorBrush = SolidColor(Pink),
@@ -112,6 +130,34 @@ fun ModPackBrowserScreen(
                         .border(1.dp, BgBorder, RoundedCornerShape(20.dp))
                         .padding(horizontal = 14.dp, vertical = if (tablet) 8.dp else 6.dp)
                 )
+            }
+
+            // 컨텐츠 타입 필터 칩 (Modpack / Mod / TexturePack / ShaderPack)
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(horizontal = 2.dp)
+            ) {
+                items(ContentType.values().toList()) { type ->
+                    val isSelected = selectedContentType == type
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(if (isSelected) Pink else BgDark)
+                            .border(1.dp, if (isSelected) Pink else BgBorder, RoundedCornerShape(16.dp))
+                            .clickable {
+                                onContentTypeFilter(type)
+                                onSearch(searchQuery, selectedVersion, type)
+                            }
+                            .padding(horizontal = if (tablet) 14.dp else 12.dp, vertical = if (tablet) 7.dp else 5.dp)
+                    ) {
+                        Text(
+                            text = type.label,
+                            color = if (isSelected) Color.White else TextSub,
+                            fontSize = if (tablet) 12.sp else 10.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                        )
+                    }
+                }
             }
 
             // 버전 필터 세그먼트 로우
@@ -128,7 +174,7 @@ fun ModPackBrowserScreen(
                             .border(1.dp, if (isSelected) Pink else BgBorder, RoundedCornerShape(16.dp))
                             .clickable {
                                 onVersionFilter(version)
-                                onSearch(searchQuery, version)
+                                onSearch(searchQuery, version, selectedContentType)
                             }
                             .padding(horizontal = if (tablet) 12.dp else 10.dp, vertical = if (tablet) 6.dp else 4.dp)
                     ) {
@@ -154,7 +200,7 @@ fun ModPackBrowserScreen(
             ) {
                 Text(statusMessage, color = TextMain, fontSize = if (tablet) 12.sp else 10.sp)
                 LinearProgressIndicator(
-                    progress = { progress.percent.toFloat() },
+                    progress = { progress.fraction },
                     color = Pink,
                     trackColor = BgBorder,
                     modifier = Modifier.fillMaxWidth().height(4.dp)
@@ -171,14 +217,18 @@ fun ModPackBrowserScreen(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(modpacks, key = { it.id }) { mod ->
-                ModPackItem(
+            items(contentPacks, key = { it.id }) { mod ->
+                ContentPackItem(
                     mod = mod,
                     isInstalling = isInstalling && installingModId == mod.id,
                     isInstalled = installedIds.contains(mod.id),
                     onInstall = { onInstall(mod) },
                     onLaunch = { onLaunch(mod) },
-                    onDetail = { ModPackDetailActivity.start(ctx, mod.id, mod.name, mod.summary, mod.logo?.url, mod.downloadCount) },
+                    onDetail = {
+                        ContentPackDetailActivity.start(
+                            ctx, mod.id, mod.name, mod.summary, mod.logo?.url, mod.downloadCount, selectedContentType
+                        )
+                    },
                     tablet = tablet
                 )
             }
@@ -195,7 +245,7 @@ fun ModPackBrowserScreen(
 }
 
 @Composable
-fun ModPackItem(
+fun ContentPackItem(
     mod: CurseForgeMod,
     isInstalling: Boolean,
     isInstalled: Boolean,

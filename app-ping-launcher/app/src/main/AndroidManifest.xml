@@ -23,13 +23,13 @@
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
         <activity android:name=".presentation.CrashReportActivity"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
-        <activity android:name=".presentation.ModPackDetailActivity"
+        <activity android:name=".presentation.ContentPackBrowserActivity"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
         <activity android:name=".presentation.JvmSettingsActivity"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
         <activity android:name=".presentation.KeyboardLayoutEditorActivity"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
-        <activity android:name=".presentation.ModPackBrowserActivity"
+        <activity android:name=".presentation.ContentPackDetailActivity"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
         <activity
             android:name=".presentation.MinecraftActivity"

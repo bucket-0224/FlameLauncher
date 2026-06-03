@@ -45,6 +45,12 @@ enum class Renderer(
             "MESA_LOADER_DRIVER_OVERRIDE" to "zink",
             "GALLIUM_DRIVER" to "zink",
 //            "POJAV_LOAD_TURNIP" to "1"  // Adreno면 Turnip 시도
+            "MESA_VK_WSI_PRESENT_MODE" to "mailbox",
+            "VK_ICD_FILENAMES" to "",         // 시스템 ICD 무시
+            "ZINK_DEBUG" to "noreorder",      // zink 의 일부 reorder 최적화 비활성 (안정성)
+            "LIBGL_KOPPER_DRI2" to "1",       // kopper(=zink WSI) 가 DRI2 없이 동작
+            "LIBGL_DRI3_DISABLE" to "1",      // DRI3 도 끔
+            "GALLIUM_HUD" to "",
         )
     ),
     HOLY_GL4ES(
@@ -76,7 +82,19 @@ enum class Renderer(
         libglName = "libgl4es_114.so",
         libglString = "GL4ES",
         libglEs = "3",
-        emoji = "🖥️"
+        emoji = "🖥️",
+        extraEnv = mapOf(
+            "LIBGL_GL" to "33",          // GL 3.3 코어 강제 노출
+            "LIBGL_ES" to "3",
+            "LIBGL_NOERROR" to "1",      // GL 에러 무시 (지옥문이지만 부팅 한정 시도)
+            "LIBGL_USEVBO" to "1",
+            "LIBGL_BATCH" to "1",
+            "LIBGL_NPOT" to "2",
+            "LIBGL_GLES" to "2",         // 백엔드는 ES2 그대로
+            "LIBGL_FBOMAKECURRENT" to "1",
+            "LIBGL_USEFBO" to "1",
+            "LIBGL_VSYNC" to "0",
+        )
     );
 
     fun buildEnv(cacheDir: String, nativeDir: String): Map<String, String> {

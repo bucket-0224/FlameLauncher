@@ -34,6 +34,7 @@ import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
 import kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
 import kr.co.donghyun.pinglauncher.presentation.ui.components.LoaderSelectDialog
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.*
+import kr.co.donghyun.pinglauncher.presentation.util.curseforge.ForgeInstaller
 import kr.co.donghyun.pinglauncher.presentation.util.isVersionSupported
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 import java.net.URL
@@ -182,6 +183,8 @@ fun MainScreen(
                 onLaunchFabric = { loaderVersion ->
                     showLoaderDialog = false
                     onLaunchFabric(selectedVersion, loaderVersion)
+                },
+                onLaunchForge = { forgeVer ->
                 }
             )
         }
@@ -203,93 +206,96 @@ private fun SidePlayPanel(
 
     // 💡 전체 요소를 Column으로 감싸줍니다.
     // 여기에 modifier = Modifier.fillMaxHeight() 등을 추가하여 높이를 꽉 채워야 Spacer가 정상 작동합니다.
-    Column(modifier = Modifier.fillMaxHeight()) {
+    Column {
+        Column(modifier = Modifier.fillMaxHeight()) {
 
-        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("선택된 버전", color = TextSecondary, fontSize = 12.sp)
-            Text(
-                text = selectedVersion?.id ?: "버전을 선택하세요",
-                color = if (selectedVersion != null) TextPrimary else TextSecondary,
-                fontSize = if(tablet) 28.sp else 24.sp,
-                fontWeight = FontWeight.Bold
-            )
-            if (selectedVersion != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("선택된 버전", color = TextSecondary, fontSize = 12.sp)
                 Text(
-                    text = if (isSupported) selectedVersion.type else "${selectedVersion.type} · 미지원",
-                    color = if (isSupported) TextSecondary else Color(0xFFFF6B6B),
-                    fontSize = 13.sp
+                    text = selectedVersion?.id ?: "버전을 선택하세요",
+                    color = if (selectedVersion != null) TextPrimary else TextSecondary,
+                    fontSize = if(tablet) 28.sp else 24.sp,
+                    fontWeight = FontWeight.Bold
                 )
-            }
-        }
-
-        AnimatedVisibility(visible = isDownloading || progress.phase == DownloadPhase.ERROR) {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                if (selectedVersion != null) {
                     Text(
-                        text = when (progress.phase) {
-                            DownloadPhase.FETCHING_MANIFEST -> "버전 정보 가져오는 중..."
-                            DownloadPhase.DOWNLOADING_CLIENT -> "클라이언트 다운로드 중..."
-                            DownloadPhase.DOWNLOADING_LIBRARIES -> "라이브러리 (${progress.current}/${progress.total})"
-                            DownloadPhase.DOWNLOADING_ASSETS -> "에셋 (${progress.current}/${progress.total})"
-                            DownloadPhase.ERROR -> "❌ ${progress.error ?: "오류"}"
-                            else -> ""
-                        },
-                        color = if (progress.phase == DownloadPhase.ERROR) Color(0xFFFF6B6B) else TextSecondary,
-                        fontSize = 12.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f) // Row 내부이므로 정상 작동
+                        text = if (isSupported) selectedVersion.type else "${selectedVersion.type} · 미지원",
+                        color = if (isSupported) TextSecondary else Color(0xFFFF6B6B),
+                        fontSize = 13.sp
                     )
+                }
+            }
+
+            AnimatedVisibility(visible = isDownloading || progress.phase == DownloadPhase.ERROR) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(
+                            text = when (progress.phase) {
+                                DownloadPhase.FETCHING_MANIFEST -> "버전 정보 가져오는 중..."
+                                DownloadPhase.DOWNLOADING_CLIENT -> "클라이언트 다운로드 중..."
+                                DownloadPhase.DOWNLOADING_LIBRARIES -> "라이브러리 (${progress.current}/${progress.total})"
+                                DownloadPhase.DOWNLOADING_ASSETS -> "에셋 (${progress.current}/${progress.total})"
+                                DownloadPhase.ERROR -> "❌ ${progress.error ?: "오류"}"
+                                else -> ""
+                            },
+                            color = if (progress.phase == DownloadPhase.ERROR) Color(0xFFFF6B6B) else TextSecondary,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f) // Row 내부이므로 정상 작동
+                        )
+                        if (isDownloading) {
+                            Text("${progress.percent}%", color = PinkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
                     if (isDownloading) {
-                        Text("${progress.percent}%", color = PinkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        LinearProgressIndicator(
+                            progress = { progress.fraction },
+                            modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                            color = PinkPrimary,
+                            trackColor = BgBorder,
+                        )
                     }
                 }
+            }
+
+            // 💡 이제 ColumnScope 내부이므로 weight가 올바르게 인식됩니다.
+            Spacer(modifier = Modifier.weight(1f, fill = true))
+
+            Button(
+                onClick = onPlayClick,
+                enabled = selectedVersion != null && !isDownloading && isSupported && (BuildConfig.DEBUG || isLoggedIn),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = PinkPrimary,
+                    disabledContainerColor = BgBorder
+                ),
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.fillMaxWidth().height(60.dp)
+            ) {
                 if (isDownloading) {
-                    LinearProgressIndicator(
-                        progress = { progress.fraction },
-                        modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
-                        color = PinkPrimary,
-                        trackColor = BgBorder,
-                    )
+                    CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
+                } else {
+                    Text("▶  Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                }
+            }
+
+            if (!isLoggedIn && !BuildConfig.DEBUG) {
+                // 버튼 간의 간격이 필요하다면 여기에 Spacer나 패딩을 추가할 수 있습니다.
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = onLogin,
+                    colors = ButtonDefaults.buttonColors(containerColor = PinkDark),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth().height(44.dp)
+                ) {
+                    Text("🔑 로그인 필요", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 }
             }
         }
-
-        // 💡 이제 ColumnScope 내부이므로 weight가 올바르게 인식됩니다.
-        Spacer(modifier = Modifier.weight(1f, fill = true))
-
-        Button(
-            onClick = onPlayClick,
-            enabled = selectedVersion != null && !isDownloading && isSupported && (BuildConfig.DEBUG || isLoggedIn),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = PinkPrimary,
-                disabledContainerColor = BgBorder
-            ),
-            shape = RoundedCornerShape(12.dp),
-            modifier = Modifier.fillMaxWidth().height(60.dp)
-        ) {
-            if (isDownloading) {
-                CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-            } else {
-                Text("▶  Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-            }
-        }
-
-        if (!isLoggedIn && !BuildConfig.DEBUG) {
-            // 버튼 간의 간격이 필요하다면 여기에 Spacer나 패딩을 추가할 수 있습니다.
-            Spacer(modifier = Modifier.height(12.dp))
-            Button(
-                onClick = onLogin,
-                colors = ButtonDefaults.buttonColors(containerColor = PinkDark),
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth().height(44.dp)
-            ) {
-                Text("🔑 로그인 필요", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-            }
-        }
+        Spacer(modifier = Modifier.height(20.dp))
     }
 }
 

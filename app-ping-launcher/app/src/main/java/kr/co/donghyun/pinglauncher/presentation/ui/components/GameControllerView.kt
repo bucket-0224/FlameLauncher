@@ -17,13 +17,40 @@ import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
 private const val GLFW_PRESS = 1
 private const val GLFW_RELEASE = 0
 
+// ────────────────────────────────────────────────────────────────────────
+// KeyboardLayoutEditorScreen 의 상수/공식과 반드시 동일하게 유지.
+// ────────────────────────────────────────────────────────────────────────
+private const val BASE_BUTTON_UNIT = 52f
+private const val TARGET_DP_PHONE = 48f
+private const val TARGET_DP_TABLET = 96f
+
+// 폰/가로화면용 게임패드 프리셋 (GLFW 코드 → x, y 비율)
+private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
+    87  to (0.12f to 0.55f),  // W
+    65  to (0.04f to 0.78f),  // A
+    83  to (0.12f to 0.78f),  // S
+    68  to (0.20f to 0.78f),  // D
+    256 to (0.04f to 0.10f),  // ESC
+    292 to (0.12f to 0.10f),  // F3
+    294 to (0.20f to 0.10f),  // F5
+    -6  to (0.28f to 0.10f),  // keyboard toggle
+    84  to (0.04f to 0.28f),  // T
+    47  to (0.12f to 0.28f),  // /
+    81  to (0.20f to 0.28f),  // Q
+    69  to (0.96f to 0.55f),  // E (inventory)
+    -4  to (0.88f to 0.55f),  // prev slot
+    -5  to (0.88f to 0.28f),  // next slot
+    340 to (0.76f to 0.78f),  // shift = sneak
+    341 to (0.84f to 0.78f),  // ctrl  = sprint
+    32  to (0.92f to 0.78f),  // space = jump
+)
+
 class GameControllerView(context: Context) : View(context) {
     private val activity = context as MinecraftActivity
-    private val buttons: List<KeyButton> = KeyLayoutManager.load(context)
+    private var buttons: List<KeyButton> = KeyLayoutManager.load(context)
     private val buttonRects = mutableMapOf<String, RectF>()
     private val pressedButtons = mutableMapOf<String, Int>()
 
-    // (기존 paint 들 그대로 유지)
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(217, 26, 10, 20); style = Paint.Style.FILL
     }
@@ -47,33 +74,97 @@ class GameControllerView(context: Context) : View(context) {
     }
     private val cornerRadius = 20f
 
+    private fun isTabletDevice(): Boolean =
+        resources.configuration.smallestScreenWidthDp >= 600
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         Log.d("PING_LAUNCHER", "GameControllerView 크기: ${w}x${h}")
         recalcRects(w, h)
     }
 
+    private fun rectsOverlap(buttons: List<KeyButton>, w: Int, h: Int, drawSize: Float): Boolean {
+        if (buttons.size < 2) return false
+        val half = drawSize / 2f
+        val rs = Array(buttons.size) { i ->
+            val cx = buttons[i].x * w
+            val cy = buttons[i].y * h
+            floatArrayOf(cx - half, cy - half, cx + half, cy + half)
+        }
+        for (i in rs.indices) {
+            for (j in i + 1 until rs.size) {
+                val a = rs[i]; val b = rs[j]
+                if (a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]) return true
+            }
+        }
+        return false
+    }
+
     /**
-     * KeyBoardEditorScreen(Compose)의 배치 메커니즘과 완전히 동일하게 매핑합니다.
+     * GLFW 코드별 프리셋으로 매핑하여 정리. 미인식 키는 화면 중앙쪽에 가로로 배치.
+     */
+    private fun applyPresetLayout(
+        buttons: List<KeyButton>, w: Int, h: Int, drawSize: Float
+    ): List<KeyButton> {
+        if (buttons.isEmpty()) return buttons
+
+        val recognized = mutableListOf<KeyButton>()
+        val unrecognized = mutableListOf<KeyButton>()
+
+        buttons.forEach { btn ->
+            val preset = PHONE_LAYOUT_PRESETS[btn.glfwCode]
+            if (preset != null) {
+                recognized.add(btn.copy(
+                    x = preset.first, y = preset.second,
+                    width = BASE_BUTTON_UNIT, height = BASE_BUTTON_UNIT
+                ))
+            } else {
+                unrecognized.add(btn)
+            }
+        }
+
+        if (unrecognized.isEmpty() || w == 0) return recognized
+
+        val gap = drawSize * 0.3f
+        val totalW = unrecognized.size * drawSize + (unrecognized.size - 1) * gap
+        val startX = (w - totalW) / 2f
+        val extras = unrecognized.mapIndexed { i, btn ->
+            val cx = startX + i * (drawSize + gap) + drawSize / 2f
+            btn.copy(
+                x = (cx / w).coerceIn(0.05f, 0.95f),
+                y = 0.42f,
+                width = BASE_BUTTON_UNIT, height = BASE_BUTTON_UNIT
+            )
+        }
+
+        return recognized + extras
+    }
+
+    /**
+     * density 기반 통합 스케일링 + 겹침 시 프리셋 레이아웃으로 자동 정리.
      */
     private fun recalcRects(w: Int, h: Int) {
         buttonRects.clear()
+
         val density = resources.displayMetrics.density
+        val tablet = isTabletDevice()
+        val targetDp = if (tablet) TARGET_DP_TABLET else TARGET_DP_PHONE
+        val baseScale = (targetDp * density) / BASE_BUTTON_UNIT
+        val drawSize = BASE_BUTTON_UNIT * baseScale
+
+        // 겹침 발견 시 프리셋 적용 + 저장
+        if (rectsOverlap(buttons, w, h, drawSize)) {
+            Log.d("PING_LAUNCHER", "버튼 겹침 감지 — 프리셋 레이아웃으로 자동 정리")
+            buttons = applyPresetLayout(buttons, w, h, drawSize)
+            try { KeyLayoutManager.save(context, buttons) } catch (_: Exception) {}
+        }
 
         buttons.forEach { button ->
-            // 1. 임의의 가로 배율(buttonScale)을 제거하고, 편집기에서 지정된 정밀 DP 크기를 그대로 픽셀로 변환합니다.
-            val bw = button.width * density
-            val bh = button.height * density
-
-            // 2. Compose의 비율 전제 조건(x, y는 버튼의 '중심점' 비율)을 그대로 따릅니다.
             val centerX = button.x * w
             val centerY = button.y * h
-
-            // 3. 중심점을 기준으로 좌상단(left, top) 좌표를 역산하여 RectF를 생성합니다.
-            val left = centerX - (bw / 2f)
-            val top = centerY - (bh / 2f)
-
-            buttonRects[button.id] = RectF(left, top, left + bw, top + bh)
+            val left = centerX - (drawSize / 2f)
+            val top = centerY - (drawSize / 2f)
+            buttonRects[button.id] = RectF(left, top, left + drawSize, top + drawSize)
         }
     }
 
@@ -93,7 +184,6 @@ class GameControllerView(context: Context) : View(context) {
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, fill)
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, border)
 
-            // 기존 비율 유지를 위한 폰트 크기 조정
             val fontSize = minOf(rect.width(), rect.height()) * 0.23f
             textPaint.textSize = fontSize
 
@@ -107,8 +197,6 @@ class GameControllerView(context: Context) : View(context) {
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        Log.d("PING_LAUNCHER", "GameControllerView 터치: ${event.actionMasked}, x=${event.x}, y=${event.y}")
-
         val pointerIndex = event.actionIndex
         val pointerId = event.getPointerId(pointerIndex)
         val x = event.getX(pointerIndex)
@@ -116,8 +204,7 @@ class GameControllerView(context: Context) : View(context) {
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
-                val button = findButton(x, y)
-                if (button == null) return false
+                val button = findButton(x, y) ?: return false
                 pressedButtons[button.id] = pointerId
                 handlePress(button.glfwCode, GLFW_PRESS)
                 invalidate()
@@ -165,7 +252,6 @@ class GameControllerView(context: Context) : View(context) {
     }
 
     private fun handlePress(glfwCode: Int, action: Int) {
-        Log.d("PING_LAUNCHER", "handlePress: glfwCode=$glfwCode, action=$action")
         when {
             glfwCode >= 0 -> activity.sendKey(glfwCode, action)
             glfwCode == -1 -> activity.sendMouseButton(0, action)

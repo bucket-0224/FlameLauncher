@@ -17,13 +17,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,6 +34,141 @@ import java.util.UUID
 private val Pink = Color(0xFFE91E8C)
 private val TextMain = Color(0xFFFCE4EC)
 private val TextSub = Color(0xFFBB86A0)
+
+// ────────────────────────────────────────────────────────────────────────
+// 공통 스케일 상수 (GameControllerView 와 반드시 동일하게 유지)
+// ────────────────────────────────────────────────────────────────────────
+internal const val BASE_BUTTON_UNIT = 52f
+private const val TARGET_DP_PHONE = 48f      // 폰: 48dp (Material 표준)
+private const val TARGET_DP_TABLET = 96f     // 태블릿: 96dp
+
+private fun calcBaseScale(tablet: Boolean, density: Float): Float {
+    val targetDp = if (tablet) TARGET_DP_TABLET else TARGET_DP_PHONE
+    return (targetDp * density) / BASE_BUTTON_UNIT
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 폰/가로화면용 게임패드 프리셋 (GLFW 코드 → (x, y) 비율)
+// 마인크래프트 컨트롤러 표준 배치를 재현
+// ────────────────────────────────────────────────────────────────────────
+private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
+    // 이동 WASD (좌측 하단, 십자형)
+    87  to (0.12f to 0.55f),  // W
+    65  to (0.04f to 0.78f),  // A
+    83  to (0.12f to 0.78f),  // S
+    68  to (0.20f to 0.78f),  // D
+
+    // 기능키 (좌측 상단)
+    256 to (0.04f to 0.10f),  // ESC
+    292 to (0.12f to 0.10f),  // F3
+    294 to (0.20f to 0.10f),  // F5
+    -6  to (0.28f to 0.10f),  // 키보드 토글
+
+    // 채팅/커맨드/드롭 (좌측 중단)
+    84  to (0.04f to 0.28f),  // T
+    47  to (0.12f to 0.28f),  // /
+    81  to (0.20f to 0.28f),  // Q
+
+    // 우측 인벤토리 / 슬롯
+    69  to (0.96f to 0.55f),  // E (인벤토리)
+    -4  to (0.88f to 0.55f),  // 이전 슬롯
+    -5  to (0.88f to 0.28f),  // 다음 슬롯
+
+    // 점프/슬쩍/달리기 (우측 하단)
+    340 to (0.76f to 0.78f),  // shift = sneak
+    341 to (0.84f to 0.78f),  // ctrl  = sprint
+    32  to (0.92f to 0.78f),  // space = jump
+)
+
+/** 저장 데이터의 width/height 를 표준값으로 정규화 (예전 빌드 호환) */
+private fun normalizeButtons(buttons: List<KeyButton>): List<KeyButton> =
+    buttons.map {
+        if (it.width == BASE_BUTTON_UNIT && it.height == BASE_BUTTON_UNIT) it
+        else it.copy(width = BASE_BUTTON_UNIT, height = BASE_BUTTON_UNIT)
+    }
+
+/** AABB 충돌 검사 — 임의의 두 버튼이 겹치면 true */
+private fun hasOverlap(
+    buttons: List<KeyButton>,
+    canvasSize: IntSize,
+    tablet: Boolean,
+    density: Float
+): Boolean {
+    if (buttons.size < 2 || canvasSize.width == 0 || canvasSize.height == 0) return false
+
+    val baseScale = calcBaseScale(tablet, density)
+    val half = (BASE_BUTTON_UNIT * baseScale) / 2f
+    val w = canvasSize.width.toFloat()
+    val h = canvasSize.height.toFloat()
+
+    val rects = Array(buttons.size) { i ->
+        val cx = buttons[i].x * w
+        val cy = buttons[i].y * h
+        floatArrayOf(cx - half, cy - half, cx + half, cy + half)
+    }
+
+    for (i in rects.indices) {
+        for (j in i + 1 until rects.size) {
+            val a = rects[i]; val b = rects[j]
+            if (a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]) return true
+        }
+    }
+    return false
+}
+
+/**
+ * GLFW 코드별 프리셋 좌표로 매핑하여 정리한다.
+ * 프리셋에 없는 커스텀 키들은 상단 중앙에 가로로 배치.
+ */
+private fun applyPresetLayout(
+    buttons: List<KeyButton>,
+    canvasSize: IntSize,
+    tablet: Boolean,
+    density: Float
+): List<KeyButton> {
+    if (buttons.isEmpty()) return buttons
+
+    val recognized = mutableListOf<KeyButton>()
+    val unrecognized = mutableListOf<KeyButton>()
+
+    buttons.forEach { btn ->
+        val preset = PHONE_LAYOUT_PRESETS[btn.glfwCode]
+        if (preset != null) {
+            recognized.add(btn.copy(
+                x = preset.first,
+                y = preset.second,
+                width = BASE_BUTTON_UNIT,
+                height = BASE_BUTTON_UNIT
+            ))
+        } else {
+            unrecognized.add(btn)
+        }
+    }
+
+    if (unrecognized.isEmpty() || canvasSize.width == 0) {
+        return recognized
+    }
+
+    // 미인식 키는 상단 중앙(y=0.10)에 가로 한 줄로 배치
+    val baseScale = calcBaseScale(tablet, density)
+    val buttonPx = BASE_BUTTON_UNIT * baseScale
+    val gap = buttonPx * 0.3f
+    val canvasW = canvasSize.width.toFloat()
+    val totalW = unrecognized.size * buttonPx + (unrecognized.size - 1) * gap
+    val startX = (canvasW - totalW) / 2f
+
+    val extras = unrecognized.mapIndexed { i, btn ->
+        val cx = startX + i * (buttonPx + gap) + buttonPx / 2f
+        btn.copy(
+            x = (cx / canvasW).coerceIn(0.05f, 0.95f),
+            y = 0.42f,                                     // 미인식 키는 중앙쪽에
+            width = BASE_BUTTON_UNIT,
+            height = BASE_BUTTON_UNIT
+        )
+    }
+
+    return recognized + extras
+}
 
 object GlfwKeysAll {
     data class KeyInfo(val label: String, val glfwCode: Int)
@@ -65,14 +197,23 @@ object GlfwKeysAll {
 @Composable
 fun KeyboardLayoutEditorScreen(onBack: () -> Unit) {
     val context = LocalContext.current
-    var buttons by remember { mutableStateOf(KeyLayoutManager.load(context)) }
+    val density = LocalDensity.current
+    var buttons by remember { mutableStateOf(normalizeButtons(KeyLayoutManager.load(context))) }
     var selectedButtonId by remember { mutableStateOf<String?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     val tablet = isTablet()
 
+    // 캔버스 측정 후 겹침 감지 → 프리셋 레이아웃으로 자동 정리
+    LaunchedEffect(canvasSize.width, canvasSize.height) {
+        if (canvasSize.width > 0 && canvasSize.height > 0 &&
+            hasOverlap(buttons, canvasSize, tablet, density.density)
+        ) {
+            buttons = applyPresetLayout(buttons, canvasSize, tablet, density.density)
+        }
+    }
+
     Column(modifier = Modifier.fillMaxSize().background(BgDark).systemBarsPadding()) {
-        // 툴바 레이아웃 비율 반응형 조정
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -86,8 +227,20 @@ fun KeyboardLayoutEditorScreen(onBack: () -> Unit) {
                 Text("취소", color = TextSub, fontSize = if (tablet) 16.sp else 13.sp)
             }
             Text("가상 키패드 편집", color = TextMain, fontSize = if (tablet) 18.sp else 14.sp, fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { buttons = KeyLayoutManager.reset(context); selectedButtonId = null }) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = {
+                    buttons = applyPresetLayout(buttons, canvasSize, tablet, density.density)
+                    selectedButtonId = null
+                }) {
+                    Text("정렬", color = Color(0xFF4CAF50), fontSize = if (tablet) 14.sp else 11.sp)
+                }
+                TextButton(onClick = {
+                    val reset = normalizeButtons(KeyLayoutManager.reset(context))
+                    buttons = if (hasOverlap(reset, canvasSize, tablet, density.density))
+                        applyPresetLayout(reset, canvasSize, tablet, density.density)
+                    else reset
+                    selectedButtonId = null
+                }) {
                     Text("초기화", color = Color(0xFFFF6B6B), fontSize = if (tablet) 14.sp else 11.sp)
                 }
                 Button(
@@ -101,7 +254,6 @@ fun KeyboardLayoutEditorScreen(onBack: () -> Unit) {
             }
         }
 
-        // 배치 편집 캔버스 공간
         Box(
             modifier = Modifier
                 .weight(1f)
@@ -129,12 +281,10 @@ fun KeyboardLayoutEditorScreen(onBack: () -> Unit) {
                     onDelete = {
                         buttons = buttons.filter { it.id != btn.id }
                         selectedButtonId = null
-                    },
-                    tablet = tablet
+                    }
                 )
             }
 
-            // 키 추가용 플로팅 플랫 컴포넌트
             Button(
                 onClick = { showAddDialog = true },
                 colors = ButtonDefaults.buttonColors(containerColor = Pink),
@@ -158,8 +308,8 @@ fun KeyboardLayoutEditorScreen(onBack: () -> Unit) {
                     glfwCode = keyInfo.glfwCode,
                     x = 0.5f,
                     y = 0.5f,
-                    width = if (tablet) 52f else 42f,
-                    height = if (tablet) 52f else 42f,
+                    width = BASE_BUTTON_UNIT,
+                    height = BASE_BUTTON_UNIT,
                     isAccent = keyInfo.glfwCode == 32
                 )
                 showAddDialog = false
@@ -176,23 +326,25 @@ fun DraggableKeyButton(
     isSelected: Boolean,
     onSelect: () -> Unit,
     onMove: (Float, Float) -> Unit,
-    onDelete: () -> Unit,
-    tablet: Boolean
+    onDelete: () -> Unit
 ) {
     val density = LocalDensity.current
+    val tablet = isTablet()
     val viewWidth = canvasSize.width.toFloat()
     val viewHeight = canvasSize.height.toFloat()
 
-    val btnWidthDp = button.width.dp
-    val btnHeightDp = button.height.dp
+    val baseScale = calcBaseScale(tablet, density.density)
+
+    val drawUnitPx = BASE_BUTTON_UNIT * baseScale
+    val btnSizeDp = with(density) { drawUnitPx.toDp() }
 
     Box(
         modifier = Modifier
             .offset(
-                x = with(density) { (button.x * viewWidth).toDp() } - (btnWidthDp / 2),
-                y = with(density) { (button.y * viewHeight).toDp() } - (btnHeightDp / 2)
+                x = with(density) { (button.x * viewWidth).toDp() } - (btnSizeDp / 2),
+                y = with(density) { (button.y * viewHeight).toDp() } - (btnSizeDp / 2)
             )
-            .size(width = btnWidthDp, height = btnHeightDp)
+            .size(width = btnSizeDp, height = btnSizeDp)
             .clip(RoundedCornerShape(8.dp))
             .background(if (isSelected) Pink.copy(alpha = 0.4f) else BgSurface)
             .border(2.dp, if (isSelected) Pink else BgBorder, RoundedCornerShape(8.dp))
@@ -218,7 +370,13 @@ fun DraggableKeyButton(
             },
         contentAlignment = Alignment.Center
     ) {
-        Text(button.label, color = TextMain, fontSize = if (tablet) 12.sp else 10.sp, fontWeight = FontWeight.Bold)
+        val calculatedFontSize = drawUnitPx * 0.22f
+        Text(
+            text = button.label,
+            color = TextMain,
+            fontSize = with(density) { calculatedFontSize.toSp() },
+            fontWeight = FontWeight.Bold
+        )
 
         if (isSelected) {
             Box(
