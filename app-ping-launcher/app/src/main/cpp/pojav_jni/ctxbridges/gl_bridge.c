@@ -115,17 +115,38 @@ gl_render_window_t* gl_init_context(gl_render_window_t *share) {
 }
 
 void gl_swap_surface(gl_render_window_t* bundle) {
+    LOGI("gl_swap_surface: enter, nativeSurface=%p newNativeSurface=%p surface=%p",
+         bundle->nativeSurface, bundle->newNativeSurface, bundle->surface);
+
     if(bundle->nativeSurface != NULL) {
         ANativeWindow_release(bundle->nativeSurface);
     }
-    if(bundle->surface != NULL) eglDestroySurface_p(g_EglDisplay, bundle->surface);
+    if(bundle->surface != NULL) {
+        EGLBoolean ds = eglDestroySurface_p(g_EglDisplay, bundle->surface);
+        LOGI("gl_swap_surface: destroy old EGLSurface result=%d", ds);
+    }
+
     if(bundle->newNativeSurface != NULL) {
         LOGI("Switching to new native surface");
         bundle->nativeSurface = bundle->newNativeSurface;
         bundle->newNativeSurface = NULL;
         ANativeWindow_acquire(bundle->nativeSurface);
+        int32_t w = ANativeWindow_getWidth(bundle->nativeSurface);
+        int32_t h = ANativeWindow_getHeight(bundle->nativeSurface);
+        LOGI("gl_swap_surface: ANativeWindow size=%dx%d", w, h);
         ANativeWindow_setBuffersGeometry(bundle->nativeSurface, 0, 0, bundle->format);
-        bundle->surface = eglCreateWindowSurface_p(g_EglDisplay, bundle->config, bundle->nativeSurface, NULL);
+        bundle->surface = eglCreateWindowSurface_p(g_EglDisplay, bundle->config,
+                                                   bundle->nativeSurface, NULL);
+        if (bundle->surface == EGL_NO_SURFACE) {
+            LOGE("gl_swap_surface: eglCreateWindowSurface FAILED error=0x%04x",
+                 eglGetError_p());
+            bundle->surface = NULL;
+        } else {
+            EGLint sw=0, sh=0;
+            eglQuerySurface_p(g_EglDisplay, bundle->surface, EGL_WIDTH, &sw);
+            eglQuerySurface_p(g_EglDisplay, bundle->surface, EGL_HEIGHT, &sh);
+            LOGI("gl_swap_surface: new EGLSurface=%p size=%dx%d", bundle->surface, sw, sh);
+        }
     }else{
         LOGI("No new native surface, switching to 1x1 pbuffer");
         bundle->nativeSurface = NULL;
@@ -136,15 +157,9 @@ void gl_swap_surface(gl_render_window_t* bundle) {
 }
 
 void gl_make_current(gl_render_window_t* bundle) {
-    LOGI("##### PATCH_V4_ACTIVE ##### bundle=%p currentBundle=%p", bundle, currentBundle);
-
     if(bundle == NULL) {
-        // [진단 가드] 첫 attach 후에 들어오는 NULL detach 호출을 무시.
-        // PojavLauncher patched GLFW가 glfwCreateWindow 내부 셋업 직후
-        // detach 호출을 보내는데, 우리 환경에선 그 다음 reattach가 안 일어나
-        // GL.createCapabilities() 시점에 context가 사라진 상태가 됨.
         if (currentBundle != NULL) {
-            LOGI("gl_bridge: ignoring makeCurrent(NULL) — preserving active context (currentBundle=%p)", currentBundle);
+            LOGI("gl_bridge: ignoring makeCurrent(NULL) — preserving active context");
             return;
         }
         if(eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
@@ -152,59 +167,81 @@ void gl_make_current(gl_render_window_t* bundle) {
         }
         return;
     }
+
     bool hasSetMainWindow = false;
     if(pojav_environ->mainWindowBundle == NULL) {
         pojav_environ->mainWindowBundle = (basic_render_window_t*)bundle;
-        LOGI("Main window bundle is now %p", pojav_environ->mainWindowBundle);
         pojav_environ->mainWindowBundle->newNativeSurface = pojav_environ->pojavWindow;
         hasSetMainWindow = true;
     }
-    LOGI("Making current, surface=%p, nativeSurface=%p, newNativeSurface=%p", bundle->surface, bundle->nativeSurface, bundle->newNativeSurface);
 
-    // [진단 가드 2] 이미 같은 bundle이 current이고 surface도 그대로면 재attach 생략.
-    // patched GLFW가 같은 window에 대해 makeCurrent를 반복 호출하는 경우 보호.
-    if (currentBundle == bundle && bundle->surface != NULL && bundle->newNativeSurface == NULL) {
-        LOGI("gl_bridge: bundle already current and no new surface — skipping redundant makeCurrent");
-        return;
+    // ★ 진단 가드 2 수정: 현재 EGLContext가 실제로 이 bundle인지까지 확인
+    if (currentBundle == bundle
+        && bundle->surface != NULL
+        && bundle->newNativeSurface == NULL
+        && bundle->state == STATE_RENDERER_ALIVE) {
+        // 추가로 실제 EGL이 우리 surface에 바인딩 되어 있는지 확인
+        EGLContext cur_ctx = eglGetCurrentContext_p();
+        EGLSurface cur_surf = eglGetCurrentSurface_p(EGL_DRAW);
+        if (cur_ctx == bundle->context && cur_surf == bundle->surface) {
+            return;  // 진짜 redundant
+        }
+        LOGI("gl_bridge: bundle stale (ctx=%p expected=%p, surf=%p expected=%p) — rebinding",
+             cur_ctx, bundle->context, cur_surf, bundle->surface);
+        // fall through to real makeCurrent
     }
 
-    if(bundle->surface == NULL) { //it likely will be on the first run
+    if(bundle->surface == NULL) {
         gl_swap_surface(bundle);
     }
-    EGLBoolean mc_result = eglMakeCurrent_p(g_EglDisplay, bundle->surface, bundle->surface, bundle->context);
+    EGLBoolean mc_result = eglMakeCurrent_p(g_EglDisplay, bundle->surface,
+                                            bundle->surface, bundle->context);
     EGLint mc_error = eglGetError_p();
-    EGLContext mc_check = eglGetCurrentContext_p ? eglGetCurrentContext_p() : EGL_NO_CONTEXT;
-    LOGI("eglMakeCurrent result=%d error=0x%04x currentContext=%p expected=%p",
-         mc_result, mc_error, mc_check, bundle->context);
+    LOGI("eglMakeCurrent result=%d error=0x%04x", mc_result, mc_error);
 
     if(mc_result) {
         currentBundle = bundle;
-    }else {
-        if(hasSetMainWindow) {
-            pojav_environ->mainWindowBundle->newNativeSurface = NULL;
-            gl_swap_surface((gl_render_window_t*)pojav_environ->mainWindowBundle);
-            pojav_environ->mainWindowBundle = NULL;
-        }
-        LOGE("eglMakeCurrent returned with error: %04x", mc_error);
     }
 }
 
 void gl_swap_buffers() {
     if(currentBundle->state == STATE_RENDERER_NEW_WINDOW) {
-        eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT); //detach everything to destroy the old EGLSurface
+        LOGI("gl_swap_buffers: STATE_RENDERER_NEW_WINDOW detected, "
+             "old surface=%p newNativeSurface=%p",
+             currentBundle->surface, currentBundle->newNativeSurface);
+        eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
         gl_swap_surface(currentBundle);
-        eglMakeCurrent_p(g_EglDisplay, currentBundle->surface, currentBundle->surface, currentBundle->context);
+        LOGI("gl_swap_buffers: after swap_surface, new EGLSurface=%p nativeSurface=%p",
+             currentBundle->surface, currentBundle->nativeSurface);
+        EGLBoolean mc = eglMakeCurrent_p(g_EglDisplay, currentBundle->surface,
+                                         currentBundle->surface, currentBundle->context);
+        LOGI("gl_swap_buffers: makeCurrent after swap result=%d error=0x%04x",
+             mc, eglGetError_p());
         currentBundle->state = STATE_RENDERER_ALIVE;
     }
-    if(currentBundle->surface != NULL)
-        if(!eglSwapBuffers_p(g_EglDisplay, currentBundle->surface) && eglGetError_p() == EGL_BAD_SURFACE) {
-            eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
-            currentBundle->newNativeSurface = NULL;
-            gl_swap_surface(currentBundle);
-            eglMakeCurrent_p(g_EglDisplay, currentBundle->surface, currentBundle->surface, currentBundle->context);
-            LOGI("The window has died, awaiting window change");
-    }
+    if(currentBundle->surface != NULL) {
+        if(!eglSwapBuffers_p(g_EglDisplay, currentBundle->surface)
+           && eglGetError_p() == EGL_BAD_SURFACE) {
 
+            EGLint err = eglGetError_p();
+            LOGE("gl_swap_buffers: eglSwapBuffers FAILED error=0x%04x surface=%p",
+                 err, currentBundle->surface);
+
+            // ★ 이미 새 surface가 예약되어 있으면 폴백하지 말고 그걸 사용
+            if (currentBundle->newNativeSurface != NULL) {
+                LOGI("Swap failed but new surface pending — switching to it");
+                eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+                gl_swap_surface(currentBundle);
+                eglMakeCurrent_p(g_EglDisplay, currentBundle->surface,
+                                 currentBundle->surface, currentBundle->context);
+                currentBundle->state = STATE_RENDERER_ALIVE;
+            } else {
+                eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+                gl_swap_surface(currentBundle);  // 1x1 pbuffer로
+                LOGI("The window has died, awaiting window change");
+            }
+        }
+    }
 }
 
 void gl_setup_window() {

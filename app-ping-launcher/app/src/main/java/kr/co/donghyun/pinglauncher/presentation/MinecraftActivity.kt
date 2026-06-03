@@ -43,6 +43,8 @@ class MinecraftActivity : BaseActivity() {
     internal var instanceDir: String? = null
     private var customGameDir: String? = null
     private var currentSurface: Surface? = null
+    @Volatile var combatMode: Boolean = false
+
 
 
     internal val isGrabbing: Boolean
@@ -960,6 +962,16 @@ class MinecraftActivity : BaseActivity() {
     override fun onResume() {
         super.onResume()
         window.decorView.requestFocus()
+
+        Log.d("PING_LAUNCHER", "onResume — surface 재바인딩 대기")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        if (jvmStarted && isGrabbing) {
+            sendKey(256, GLFW_PRESS)    // ESC 누름
+            sendKey(256, GLFW_RELEASE)
+        }
     }
 
     override fun onDestroy() {

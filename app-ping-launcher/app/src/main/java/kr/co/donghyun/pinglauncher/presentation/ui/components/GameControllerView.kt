@@ -173,22 +173,31 @@ class GameControllerView(context: Context) : View(context) {
             val rect = buttonRects[button.id] ?: return@forEach
             val isPressed = pressedButtons.containsKey(button.id)
 
+            // ★ 전투 토글 버튼은 모드 상태에 따라 활성/비활성 표시
+            val isCombatToggleActive = (button.glfwCode == -7 && activity.combatMode)
+
             val fill = when {
+                isCombatToggleActive -> bgAccentPressedPaint   // 활성 = 진한 핑크
                 isPressed && button.isAccent -> bgAccentPressedPaint
                 isPressed -> bgPressedPaint
                 button.isAccent -> bgAccentPaint
                 else -> bgPaint
             }
-            val border = if (button.isAccent) borderAccentPaint else borderPaint
+            val border = if (button.isAccent || isCombatToggleActive) borderAccentPaint else borderPaint
 
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, fill)
             canvas.drawRoundRect(rect, cornerRadius, cornerRadius, border)
 
+            // 라벨도 모드에 따라 바꾸기
+            val labelText = when {
+                button.glfwCode == -7 -> if (activity.combatMode) "⚔️" else "🛠️"
+                else -> button.label
+            }
+
             val fontSize = minOf(rect.width(), rect.height()) * 0.23f
             textPaint.textSize = fontSize
-
             canvas.drawText(
-                button.label,
+                labelText,
                 rect.centerX(),
                 rect.centerY() + fontSize * 0.35f,
                 textPaint
@@ -278,6 +287,11 @@ class GameControllerView(context: Context) : View(context) {
                     android.view.inputmethod.InputMethodManager.SHOW_FORCED,
                     android.view.inputmethod.InputMethodManager.HIDE_IMPLICIT_ONLY
                 )
+            }
+            glfwCode == -7 && action == GLFW_PRESS -> {
+                activity.combatMode = !activity.combatMode
+                Log.d("PING_LAUNCHER", "전투 모드: ${if (activity.combatMode) "ON" else "OFF"}")
+                invalidate()  // 버튼 색상 갱신용
             }
         }
     }

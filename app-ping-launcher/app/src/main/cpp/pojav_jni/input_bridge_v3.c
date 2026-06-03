@@ -275,17 +275,22 @@ void noncritical_set_stackqueue(__attribute__((unused)) JNIEnv *env, __attribute
     critical_set_stackqueue(use_input_stack_queue);
 }
 
-JNIEXPORT jstring JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(JNIEnv* env, __attribute__((unused)) jclass clazz, jint action, jbyteArray copySrc) {
-#ifdef DEBUG
-    LOGD("Debug: Clipboard access is going on\n", pojav_environ->isUseStackQueueCall);
-#endif
+JNIEXPORT jstring JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(
+        JNIEnv* env, jclass clazz, jint action, jbyteArray copySrc) {
 
     JNIEnv *dalvikEnv;
-    (*pojav_environ->dalvikJavaVMPtr)->AttachCurrentThread(pojav_environ->dalvikJavaVMPtr, &dalvikEnv, NULL);
+    // GetEnv로 먼저 확인 — 이미 attach 되어 있으면 그대로 사용
+    jint envStat = (*pojav_environ->dalvikJavaVMPtr)->GetEnv(
+            pojav_environ->dalvikJavaVMPtr, (void**)&dalvikEnv, JNI_VERSION_1_6);
+
+    if (envStat == JNI_EDETACHED) {
+        // 처음 들어온 스레드만 attach. 이후로는 detach 하지 않음.
+        (*pojav_environ->dalvikJavaVMPtr)->AttachCurrentThread(
+                pojav_environ->dalvikJavaVMPtr, &dalvikEnv, NULL);
+    }
     assert(dalvikEnv != NULL);
     assert(pojav_environ->bridgeClazz != NULL);
 
-    LOGD("Clipboard: Converting string\n");
     char *copySrcC;
     jstring copyDst = NULL;
     if (copySrc) {
@@ -293,14 +298,18 @@ JNIEXPORT jstring JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(JNI
         copyDst = (*dalvikEnv)->NewStringUTF(dalvikEnv, copySrcC);
     }
 
-    LOGD("Clipboard: Calling 2nd\n");
-    jstring pasteDst = convertStringJVM(dalvikEnv, env, (jstring) (*dalvikEnv)->CallStaticObjectMethod(dalvikEnv, pojav_environ->bridgeClazz, pojav_environ->method_accessAndroidClipboard, action, copyDst));
+    jstring pasteDst = convertStringJVM(dalvikEnv, env,
+                                        (jstring) (*dalvikEnv)->CallStaticObjectMethod(
+                                                dalvikEnv, pojav_environ->bridgeClazz,
+                                                pojav_environ->method_accessAndroidClipboard, action, copyDst));
 
     if (copySrc) {
         (*dalvikEnv)->DeleteLocalRef(dalvikEnv, copyDst);
         (*env)->ReleaseByteArrayElements(env, copySrc, (jbyte *)copySrcC, 0);
     }
-    (*pojav_environ->dalvikJavaVMPtr)->DetachCurrentThread(pojav_environ->dalvikJavaVMPtr);
+
+    // ★ DetachCurrentThread 호출 제거 ★
+
     return pasteDst;
 }
 

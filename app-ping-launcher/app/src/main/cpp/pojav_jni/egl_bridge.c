@@ -54,6 +54,7 @@ struct PotatoBridge potatoBridge;
 
 #include "ctxbridges/egl_loader.h"
 #include "ctxbridges/osmesa_loader.h"
+#include "log.h"
 
 #define RENDERER_GL4ES 1
 #define RENDERER_VK_ZINK 2
@@ -82,11 +83,32 @@ EXTERNAL_API void pojavTerminate() {
     }
 }
 
-JNIEXPORT void JNICALL Java_net_kdt_pojavlaunch_utils_JREUtils_setupBridgeWindow(JNIEnv* env, ABI_COMPAT jclass clazz, jobject surface) {
-    pojav_environ->pojavWindow = ANativeWindow_fromSurface(env, surface);
-    if(br_setup_window != NULL) br_setup_window();
-}
+JNIEXPORT void JNICALL Java_net_kdt_pojavlaunch_utils_JREUtils_setupBridgeWindow(
+        JNIEnv* env, jclass clazz, jobject surface)
+{
+    LOGI("setupBridgeWindow: enter, old pojavWindow=%p", pojav_environ->pojavWindow);
 
+    if (pojav_environ->pojavWindow != NULL) {
+        ANativeWindow_release(pojav_environ->pojavWindow);
+        pojav_environ->pojavWindow = NULL;
+    }
+
+    pojav_environ->pojavWindow = ANativeWindow_fromSurface(env, surface);
+    if (pojav_environ->pojavWindow == NULL) {
+        LOGE("setupBridgeWindow: ANativeWindow_fromSurface returned NULL");
+        return;
+    }
+    int32_t w = ANativeWindow_getWidth(pojav_environ->pojavWindow);
+    int32_t h = ANativeWindow_getHeight(pojav_environ->pojavWindow);
+    LOGI("setupBridgeWindow: new pojavWindow=%p size=%dx%d, mainWindowBundle=%p",
+         pojav_environ->pojavWindow, w, h, pojav_environ->mainWindowBundle);
+
+    if(br_setup_window != NULL) br_setup_window();
+
+    LOGI("setupBridgeWindow: after br_setup_window, state=%d newNativeSurface=%p",
+         pojav_environ->mainWindowBundle ? pojav_environ->mainWindowBundle->state : -1,
+         pojav_environ->mainWindowBundle ? pojav_environ->mainWindowBundle->newNativeSurface : NULL);
+}
 
 JNIEXPORT void JNICALL
 Java_net_kdt_pojavlaunch_utils_JREUtils_releaseBridgeWindow(ABI_COMPAT JNIEnv *env, ABI_COMPAT jclass clazz) {

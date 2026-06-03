@@ -129,7 +129,6 @@ void osm_swap_buffers() {
 
 void osm_setup_window() {
     if(pojav_environ->mainWindowBundle != NULL) {
-        LOGI("Main window bundle is not NULL, changing state");
         pojav_environ->mainWindowBundle->state = STATE_RENDERER_NEW_WINDOW;
         pojav_environ->mainWindowBundle->newNativeSurface = pojav_environ->pojavWindow;
     }

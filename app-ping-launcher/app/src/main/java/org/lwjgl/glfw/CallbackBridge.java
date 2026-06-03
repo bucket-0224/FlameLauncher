@@ -50,8 +50,11 @@ public class CallbackBridge {
                         return t != null ? t.toString() : "";
                     }
                     return "";
-                case 2002: // OPEN
-                    Log.i(TAG, "open URL ignored: " + copyContent);
+                case 2002: // OPEN — xdg-open 후킹으로 들어옴
+                    Log.i(TAG, "openPath: " + copyContent);
+                    if (!copyContent.isEmpty()) {
+                        net.kdt.pojavlaunch.MainActivity.openLink(copyContent);
+                    }
                     return "";
                 default:
                     return "";

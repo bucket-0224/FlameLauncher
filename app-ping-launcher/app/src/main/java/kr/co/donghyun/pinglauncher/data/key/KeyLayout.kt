@@ -39,6 +39,7 @@ object KeyLayoutManager {
         KeyButton("slash",  "/",   47,  0.08f, 0.14f, width = 52f, height = 52f),
         KeyButton("drop",   "Q",   81,  0.12f, 0.14f, width = 52f, height = 52f),
         KeyButton("keyboard", "⌨️", -6, 0.16f, 0.04f, width = 52f, height = 52f),
+        KeyButton("combat", "⚔️", -7, 0.20f, 0.04f, width = 52f, height = 52f, isAccent = true),
     )
 
     fun load(context: Context): List<KeyButton> {

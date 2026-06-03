@@ -217,21 +217,20 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeIsGrabbing
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSetupBridgeWindow(
         JNIEnv* env, jobject thiz, jobject surface) {
-    LOGI("MinecraftActivity: nativeSetupBridgeWindow 호출됨");
+    LOGI("nativeSetupBridgeWindow 호출됨");
     typedef void (*SetupBridgeWindow_t)(JNIEnv*, jclass, jobject);
-    void* handle = dlopen("libglfw.so", RTLD_NOLOAD | RTLD_NOW);
-    if (!handle) {
-        LOGE("libglfw.so not loaded: %s", dlerror());
-        return;
+
+    const char* libs[] = { "libglfw.so", "libpojavexec.so", nullptr };
+    for (int i = 0; libs[i]; i++) {
+        void* h = dlopen(libs[i], RTLD_NOLOAD | RTLD_NOW);
+        if (!h) continue;
+        SetupBridgeWindow_t fn = (SetupBridgeWindow_t)dlsym(h,
+                                                            "Java_net_kdt_pojavlaunch_utils_JREUtils_setupBridgeWindow");
+        if (fn) {
+            LOGI("setupBridgeWindow 호출 → %s (fn=%p)", libs[i], fn);
+            fn(env, nullptr, surface);
+        }
     }
-    SetupBridgeWindow_t fn = (SetupBridgeWindow_t)dlsym(handle,
-                                                        "Java_net_kdt_pojavlaunch_utils_JREUtils_setupBridgeWindow");
-    if (!fn) {
-        LOGE("setupBridgeWindow 심볼 없음: %s", dlerror());
-        return;
-    }
-    fn(env, nullptr, surface);
-    LOGI("MinecraftActivity: nativeSetupBridgeWindow 완료");
 }
 
 // Caused by 체인까지 재귀 출력

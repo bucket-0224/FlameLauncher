@@ -94,7 +94,7 @@ fun MinecraftSurface(
                 }
 
                 setOnTouchListener { _, event ->
-                    Log.d("PING_LAUNCHER", "Surface 터치: ${event.action}, isGrabbing=${activity.isGrabbing}")
+                    Log.d("PING_LAUNCHER", "Surface 터치: ${event.action}, isGrabbing=${activity.isGrabbing}, combat=${activity.combatMode}")
                     try {
                         when (event.action and MotionEvent.ACTION_MASK) {
                             MotionEvent.ACTION_DOWN -> {
@@ -106,6 +106,7 @@ fun MinecraftSurface(
                                 isLongPress = false
 
                                 if (!activity.isGrabbing) {
+                                    // ── UI 모드 (인벤토리/메뉴) — 기존 동작 유지 ──
                                     activity.currentCursorX = event.x
                                     activity.currentCursorY = event.y
                                     try {
@@ -116,15 +117,14 @@ fun MinecraftSurface(
                                             .invoke(null, 0, 1, 0)
                                     } catch (_: Exception) {}
                                 } else {
-                                    // 인게임 — 롱클릭 타이머 (기존 유지)
+                                    // ── 인게임 모드 — 롱프레스 타이머 ──
+                                    // 전투 모드: 길게 = 우클릭 유지 (방패/활)
+                                    // 일반 모드: 길게 = 좌클릭 유지 (블록 파괴)
+                                    val longBtn = if (activity.combatMode) 1 else 0
                                     longPressRunnable = Runnable {
-                                        if (!isDragging || isLongPress) {
+                                        if (!isDragging) {
                                             isLongPress = true
-                                            try {
-                                                val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
-                                                cb.getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                                                    .invoke(null, 0, 1, 0)
-                                            } catch (_: Exception) {}
+                                            activity.sendMouseButton(longBtn, 1)  // PRESS
                                         }
                                     }.also { handler.postDelayed(it, LONG_PRESS_TIMEOUT) }
                                 }
@@ -152,7 +152,7 @@ fun MinecraftSurface(
                                         activity.currentCursorX += dx * activity.MOUSE_SENSITIVITY
                                         activity.currentCursorY += dy * activity.MOUSE_SENSITIVITY
                                     } else {
-                                        // UI(인벤토리 등) — 터치 위치 = 커서 위치
+                                        // UI — 절대 좌표
                                         activity.currentCursorX = event.x
                                         activity.currentCursorY = event.y
                                     }
@@ -172,28 +172,23 @@ fun MinecraftSurface(
                                 longPressRunnable = null
 
                                 if (activity.isGrabbing) {
-                                    // 항상 좌클릭 해제
-                                    try {
-                                        val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
-                                        cb.getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                                            .invoke(null, 0, 0, 0)
-                                    } catch (_: Exception) {}
-
-                                    if (!isLongPress && !isDragging) {
-                                        try {
-                                            val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
-                                            cb.getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                                                .invoke(null, 1, 1, 0)
-                                            handler.postDelayed({
-                                                try {
-                                                    cb.getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                                                        .invoke(null, 1, 0, 0)
-                                                } catch (_: Exception) {}
-                                            }, 100)
-                                        } catch (_: Exception) {}
+                                    // ── 인게임 모드 ──
+                                    if (isLongPress) {
+                                        // 롱프레스 중이었으면 해당 버튼 release
+                                        val longBtn = if (activity.combatMode) 1 else 0
+                                        activity.sendMouseButton(longBtn, 0)  // RELEASE
+                                    } else if (!isDragging) {
+                                        // 짧은 탭
+                                        // 전투 모드: 탭 = 좌클릭 (공격)
+                                        // 일반 모드: 탭 = 우클릭 (놓기/상호작용)
+                                        val tapBtn = if (activity.combatMode) 0 else 1
+                                        activity.sendMouseButton(tapBtn, 1)   // PRESS
+                                        handler.postDelayed({
+                                            activity.sendMouseButton(tapBtn, 0)   // RELEASE
+                                        }, 50)
                                     }
                                 } else {
-                                    // 일반 UI — 좌클릭 해제
+                                    // ── UI 모드 — 좌클릭 release ──
                                     try {
                                         val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
                                         cb.getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
@@ -204,9 +199,20 @@ fun MinecraftSurface(
                                 isLongPress = false
                                 isDragging = false
                             }
+
+                            MotionEvent.ACTION_CANCEL -> {
+                                // 안전망: 어떤 이유로 취소되면 모든 버튼 release
+                                longPressRunnable?.let { handler.removeCallbacks(it) }
+                                longPressRunnable = null
+                                if (isLongPress && activity.isGrabbing) {
+                                    val longBtn = if (activity.combatMode) 1 else 0
+                                    activity.sendMouseButton(longBtn, 0)
+                                }
+                                isLongPress = false
+                                isDragging = false
+                            }
                         }
                     } catch (_: Exception) {}
-
                     true
                 }
             }

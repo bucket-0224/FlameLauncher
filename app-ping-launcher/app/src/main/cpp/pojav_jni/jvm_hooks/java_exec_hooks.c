@@ -50,8 +50,20 @@ static jint hooked_ProcessImpl_forkAndExec(JNIEnv *env, jobject process, jint mo
     (*env)->ReleaseByteArrayElements(env, prog, (jbyte *)pProg, 0);
 
     if(strcmp(prog_basename, "xdg-open") == 0) {
-        // When invoking xdg-open, send the open URL into Android
-        Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(env, NULL, CLIPBOARD_OPEN, argBlock);
+        // argBlock 의 첫 null-terminated 문자열만 추출
+        jsize block_len = (*env)->GetArrayLength(env, argBlock);
+        jbyte* block = (*env)->GetByteArrayElements(env, argBlock, NULL);
+
+        // 진짜 문자열 길이 (첫 NUL 까지)
+        int real_len = 0;
+        while (real_len < block_len && block[real_len] != 0) real_len++;
+
+        jbyteArray pathOnly = (*env)->NewByteArray(env, real_len);
+        (*env)->SetByteArrayRegion(env, pathOnly, 0, real_len, block);
+        (*env)->ReleaseByteArrayElements(env, argBlock, block, JNI_ABORT);
+
+        Java_org_lwjgl_glfw_CallbackBridge_nativeClipboard(env, NULL, CLIPBOARD_OPEN, pathOnly);
+        (*env)->DeleteLocalRef(env, pathOnly);
         return 0;
     }else if(strcmp(prog_basename, "ffmpeg") == 0) {
         // When invoking ffmpeg, always replace the program path with the path to ffmpeg from the plugin.
