@@ -53,29 +53,6 @@ enum class Renderer(
             "GALLIUM_HUD" to "",
         )
     ),
-    LTW(
-        id = "ltw",
-        displayName = "LTW (GLES 래퍼)",
-        description = "GL을 GLES 3.x로 변환. MobileGlues와 비슷한 컨셉이지만 Sodium·Iris 호환성이 더 좋음. 1.17+ 모드팩 추천.",
-        // ★ "ltw" 가 아니라 "opengles3" 로 — LTW 자체는 이걸 안 보지만
-        //   egl_bridge.c 의 strncmp("opengles", ..., 8) 분기를 타려고 필요.
-        //   (set_gl_bridge_tbl 자동 호출됨 → 별도 ltw 분기 코드 제거 가능)
-        pojavRenderer = "opengles3",
-        libglName = "libltw.so",
-        libglString = "GLES",
-        libglEs = "3",
-        emoji = "⚡",
-        extraEnv = mapOf(
-            // LTW 가 실제로 보는 env 만:
-            "LIBGL_NOERROR"                         to "1",
-            // Sodium/Iris 의 GL 4.6 체크 통과용 (LWJGL/Minecraft 쪽이 봄)
-            "MESA_GL_VERSION_OVERRIDE"              to "4.6",
-            "MESA_GLSL_VERSION_OVERRIDE"            to "460",
-            "force_glsl_extensions_warn"            to "true",
-            "allow_higher_compat_version"           to "true",
-            "allow_glsl_extension_directive_midshader" to "true"
-        )
-    ),
     HOLY_GL4ES(
         id = "gl4es",
         displayName = "Holy-GL4ES",

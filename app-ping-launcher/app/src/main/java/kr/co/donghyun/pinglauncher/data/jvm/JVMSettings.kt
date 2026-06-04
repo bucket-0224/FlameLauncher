@@ -33,6 +33,10 @@ data class JvmSettings(
             "-Xmx${maxHeapMb}M",
             "-Xms${minHeapMb}M",
             "-XX:+UnlockExperimentalVMOptions",
+            "-Djna.nosys=true",
+            "-Doshi.os=android",
+            "-Dio.netty.native.workdir=${cacheDirPath}",
+            "-Djna.tmpdir=${cacheDirPath}",
         )
         if (useG1GC) {
             args += listOf(

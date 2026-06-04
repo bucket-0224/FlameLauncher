@@ -183,10 +183,13 @@ class MinecraftActivity : BaseActivity() {
                 }
             }
             "ltw" -> {
-                // Vulkan 의존성 없음 — System.loadLibrary("vulkan") 제거
-                if (loadSoSafely(File(nativesDir, "libltw.so"), required = true)) {
-                    Log.d("PING_LAUNCHER", "✅ 렌더러: LTW (GLES 래퍼)")
+                try {
+                    System.loadLibrary("GLESv2")
+                    Log.d("PING_LAUNCHER", "✅ libGLESv2.so preloaded for LTW")
+                } catch (e: Throwable) {
+                    Log.w("PING_LAUNCHER", "⚠️ libGLESv2.so preload 실패: ${e.message}")
                 }
+                Log.d("PING_LAUNCHER", "✅ 렌더러: LTW (LWJGL 측에서 자체 로드)")
             }
             else -> {
                 // gl4es / gl4es_desktop / holy_gl4es

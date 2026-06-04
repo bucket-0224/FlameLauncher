@@ -27,74 +27,61 @@ static EGLDisplay g_EglDisplay;
 static bool ltw_initialized = false;
 static gl_render_window_t* g_lastInitializedBundle = NULL;
 
-//static void try_init_ltw_once(void) {
-//    if (ltw_initialized) {
-//        if (g_lastInitializedBundle != NULL &&
-//            eglGetCurrentContext_p() == EGL_NO_CONTEXT) {
-//            long tid = syscall(SYS_gettid);
-//            LOGI("LTW: cross-thread re-bind EGL (tid=%ld)", tid);
-//            EGLBoolean r = eglMakeCurrent_p(g_EglDisplay,
-//                                            g_lastInitializedBundle->surface,
-//                                            g_lastInitializedBundle->surface,
-//                                            g_lastInitializedBundle->context);
-//            LOGI("LTW: re-bind result=%d", r);
-//            currentBundle = g_lastInitializedBundle;
-//        }
-//        return;
-//    }
-//
-//    // ★ RTLD_NOLOAD 가 SONAME 매칭에 실패할 수 있어서 명시적 dlopen 사용.
-//    //   이미 로드된 .so 면 refcount 만 증가, 새로 안 로드함.
-//    void* handle = dlopen("libltw.so", RTLD_NOW);
-//    if (!handle) {
-//        // LWJGL 이 아직 dlopen 안 한 상태. 조용히 다음 기회.
-//        return;
-//    }
-//
-//    void (*init_egl_p)(void)              = (void(*)(void)) dlsym(handle, "init_egl");
-//    void (*init_extra_extensions_p)(void) = (void(*)(void)) dlsym(handle, "init_extra_extensions");
-//    void (*init_noerror_p)(void)          = (void(*)(void)) dlsym(handle, "init_noerror");
-//
-//    if (!init_egl_p) {
-//        LOGW("LTW: libltw.so handle 잡혔지만 init_egl 심볼 없음 — strip 됐거나 다른 빌드");
-//        // dlclose 안 함 — 다른 곳에서 쓰는 중일 수 있음
-//        ltw_initialized = true;  // 무한 재시도 방지
-//        return;
-//    }
-//
-//    // ★ EGL context 가 active 인지 확인 — init_egl 은 보통 현재 ctx 의 GLES 함수를
-//    //   dlsym 으로 가져가므로 active 필수.
-//    EGLContext cur_ctx = eglGetCurrentContext_p();
-//    if (cur_ctx == EGL_NO_CONTEXT) {
-//        LOGI("LTW: init_egl 발견, 그러나 EGL ctx 아직 inactive — 다음 makeCurrent 까지 대기");
-//        return;   // ltw_initialized 는 여전히 false → 다음 기회에 재시도
-//    }
-//
-//    LOGI("LTW: calling init_egl()  (ctx=%p)", cur_ctx);
-//    init_egl_p();
-//
-//    if (init_extra_extensions_p && getenv("LTW_ENABLE_EXTRA_EXTENSIONS")) {
-//        LOGI("LTW: calling init_extra_extensions()");
-//        init_extra_extensions_p();
-//    } else if (init_extra_extensions_p) {
-//        LOGI("LTW: init_extra_extensions() SKIPPED (NULL-deref workaround)");
-//    }
-//
-//    if (init_noerror_p && getenv("LIBGL_NOERROR")) {
-//        LOGI("LTW: calling init_noerror()");
-//        init_noerror_p();
-//    }
-//    ltw_initialized = true;
-//}
 
 static void try_init_ltw_once(void) {
     if (ltw_initialized) return;
 
-    // ★ 매뉴얼 init 비활성: LWJGL 이 libltw.so 를 dlopen 할 때
-    //   LTW 가 자체 생성자(.init_array)로 초기화하도록 위임.
-    //   init_egl / init_extra_extensions 를 명시적으로 부르면 NULL deref 가
-    //   나거나 dispatch 테이블이 불완전 채워져 glGetString → NULL 이 됨.
-    LOGI("LTW: manual init disabled — LWJGL dlopen path 가 자체 초기화 담당");
+    void* handle = dlopen("libltw.so", RTLD_NOLOAD | RTLD_NOW);
+    if (!handle) return;
+
+    if (eglGetCurrentContext_p() == EGL_NO_CONTEXT) {
+        LOGI("LTW: ctx not active yet — defer init");
+        return;
+    }
+
+    void* gles_handle = dlopen("libGLESv2.so", RTLD_NOW | RTLD_GLOBAL);
+    if (!gles_handle) gles_handle = dlopen("libGLESv3.so", RTLD_NOW | RTLD_GLOBAL);
+    if (gles_handle) LOGI("LTW: preloaded GLES library RTLD_GLOBAL");
+
+    void (*p_init_egl)(void)     = (void(*)(void)) dlsym(handle, "init_egl");
+    void (*p_proc_init)(void)    = (void(*)(void)) dlsym(handle, "proc_init");
+    void (*p_init_noerror)(void) = (void(*)(void)) dlsym(handle, "init_noerror");
+
+    if (!p_init_egl || !p_proc_init) {
+        LOGE("LTW: missing required init symbols");
+        ltw_initialized = true;
+        return;
+    }
+
+    // ★ 미니멀 init — 공개 entry point 만
+    LOGI("LTW: calling init_egl()");
+    p_init_egl();
+
+    LOGI("LTW: calling proc_init()");
+    p_proc_init();
+
+    // LIBGL_NOERROR=1 일 때만
+    const char* noerror = getenv("LIBGL_NOERROR");
+    if (p_init_noerror && noerror && noerror[0] == '1') {
+        LOGI("LTW: calling init_noerror()");
+        p_init_noerror();
+    }
+
+    // ★ basevertex_init / buffer_copier_init / init_extra_extensions 호출 안 함
+    //   - 앞 두 개는 *_init 접미사 = LTW 내부 서브시스템 헬퍼 (외부 호출 시 NULL deref)
+    //   - init_extra_extensions 는 이전에 SIGSEGV 발생, 일단 보류
+
+    // 진단
+    typedef const unsigned char* (*pGS)(unsigned int);
+    pGS gs = (pGS) dlsym(handle, "glGetString");
+    if (gs) {
+        const unsigned char* ver = gs(0x1F02);
+        const unsigned char* ren = gs(0x1F01);
+        LOGI("LTW post-init: GL_VERSION=%s  GL_RENDERER=%s",
+             ver ? (const char*)ver : "(NULL)",
+             ren ? (const char*)ren : "(NULL)");
+    }
+
     ltw_initialized = true;
 }
 
@@ -236,22 +223,10 @@ void gl_swap_surface(gl_render_window_t* bundle) {
 
 void gl_make_current(gl_render_window_t* bundle) {
     if(bundle == NULL) {
-        if (currentBundle != NULL) {
-            LOGI("gl_bridge: ignoring makeCurrent(NULL) — preserving active context");
-            return;
-        }
+        // ★ 변경: NULL makeCurrent 를 무시하지 말고 정말로 detach 한다.
+        //   LTW/LWJGL 이 cross-thread context 이관할 때 필수.
         if(eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
             currentBundle = NULL;
-
-            EGLBoolean mc_result = eglMakeCurrent_p(g_EglDisplay, bundle->surface,
-                                                    bundle->surface, bundle->context);
-            EGLint mc_error = eglGetError_p();
-            LOGI("eglMakeCurrent result=%d error=0x%04x", mc_result, mc_error);
-
-            if(mc_result) {
-                currentBundle = bundle;
-                try_init_ltw_once();    // ★ 추가
-            }
         }
         return;
     }

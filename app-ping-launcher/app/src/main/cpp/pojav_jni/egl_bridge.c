@@ -210,6 +210,11 @@ int pojavInitOpenGL() {
         if (!getenv("MESA_LOADER_DRIVER_OVERRIDE"))  setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
         set_osm_bridge_tbl();
         printf("OpenGL: set_osm_bridge_tbl() done (Zink path)\n");
+    } else if (strcmp(renderer, "ltw") == 0) {
+        pojav_environ->config_renderer = RENDERER_VK_LTW;
+        // LTW 도 EGL/GLES 기반 → gl_bridge 그대로 사용
+        set_gl_bridge_tbl();
+        printf("OpenGL: set_gl_bridge_tbl() done (LTW path)\n");
     } else {
         printf("OpenGL: unknown renderer '%s', defaulting to vulkan_zink\n", renderer);
         pojav_environ->config_renderer = RENDERER_VK_ZINK;
