@@ -49,9 +49,10 @@ data class JvmSettings(
 
         val glLibName = when (renderer.id) {
             "mobileglues" -> "libmobileglues.so"
-            "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
+            "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
-            else -> "libgl4es_114.so"
+            "ltw"  -> "libltw.so"     // ★ 추가
+            else   -> "libgl4es_114.so"
         }
 
         args += listOf(
@@ -72,6 +73,13 @@ data class JvmSettings(
             "-Dorg.lwjgl.opengl.Display.allowSoftwareOpenGL=true",
             "-Djava.io.tmpdir=${cacheDirPath}",
         )
+
+        if (renderer.id == "mobileglues" || renderer.id == "ltw") {
+            args += listOf(
+                "-Dnet.caffeinemc.sodium.checks.skip=true",
+                "-Dsodium.checks.issue2561=false"
+            )
+        }
 
         val isLegacy = isLegacyVersion(versionId)  // 1.12.2 이하 = legacy
 

@@ -59,6 +59,7 @@ struct PotatoBridge potatoBridge;
 #define RENDERER_GL4ES 1
 #define RENDERER_VK_ZINK 2
 #define RENDERER_VULKAN 4
+#define RENDERER_VK_LTW 5
 
 EXTERNAL_API void pojavTerminate() {
     printf("EGLBridge: Terminating\n");

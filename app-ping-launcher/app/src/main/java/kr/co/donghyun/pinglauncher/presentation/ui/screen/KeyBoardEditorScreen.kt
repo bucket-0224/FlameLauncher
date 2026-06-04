@@ -54,10 +54,10 @@ private fun calcBaseScale(tablet: Boolean, density: Float): Float {
 // ────────────────────────────────────────────────────────────────────────
 private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     // 이동 WASD (좌측 하단, 십자형)
-    87  to (0.12f to 0.55f),  // W
-    65  to (0.04f to 0.78f),  // A
-    83  to (0.12f to 0.78f),  // S
-    68  to (0.20f to 0.78f),  // D
+    87  to (0.12f to 0.7f),  // W
+    65  to (0.06f to 0.88f),  // A
+    83  to (0.12f to 0.88f),  // S
+    68  to (0.18f to 0.88f),  // D
 
     // 기능키 (좌측 상단)
     256 to (0.04f to 0.10f),  // ESC
@@ -71,15 +71,15 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     81  to (0.20f to 0.28f),  // Q
 
     // 우측 인벤토리 / 슬롯
-    69  to (0.96f to 0.55f),  // E (인벤토리)
-    -4  to (0.88f to 0.55f),  // 이전 슬롯
-    -7 to (0.8f to 0.55f),
-    -5  to (0.88f to 0.28f),  // 다음 슬롯
+    69  to (0.96f to 0.7f),  // E (인벤토리)
+    -4  to (0.88f to 0.7f),  // 이전 슬롯
+    -7 to (0.8f to 0.7f),
+    -5  to (0.88f to 0.52f),  // 다음 슬롯
 
     // 점프/슬쩍/달리기 (우측 하단)
-    340 to (0.76f to 0.78f),  // shift = sneak
-    341 to (0.84f to 0.78f),  // ctrl  = sprint
-    32  to (0.92f to 0.78f),  // space = jump
+    340 to (0.76f to 0.88f),  // shift = sneak
+    341 to (0.84f to 0.88f),  // ctrl  = sprint
+    32  to (0.92f to 0.88f),  // space = jump
 )
 
 /** 저장 데이터의 width/height 를 표준값으로 정규화 (예전 빌드 호환) */

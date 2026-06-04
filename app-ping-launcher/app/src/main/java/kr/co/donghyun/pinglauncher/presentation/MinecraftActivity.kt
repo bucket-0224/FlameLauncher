@@ -182,6 +182,12 @@ class MinecraftActivity : BaseActivity() {
                     Log.d("PING_LAUNCHER", "✅ 렌더러: Zink")
                 }
             }
+            "ltw" -> {
+                // Vulkan 의존성 없음 — System.loadLibrary("vulkan") 제거
+                if (loadSoSafely(File(nativesDir, "libltw.so"), required = true)) {
+                    Log.d("PING_LAUNCHER", "✅ 렌더러: LTW (GLES 래퍼)")
+                }
+            }
             else -> {
                 // gl4es / gl4es_desktop / holy_gl4es
                 if (loadSoSafely(File(nativesDir, "libgl4es_114.so"), required = true)) {
@@ -775,7 +781,8 @@ class MinecraftActivity : BaseActivity() {
             "mobileglues" -> "libmobileglues.so"
             "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
-            else -> "libgl4es_114.so"
+            "ltw"  -> "libltw.so"     // ★ 추가
+            else   -> "libgl4es_114.so"
         }
 
         Log.i("PingLauncherJVM", "🎨 Selected glLibName=$glLibName (renderer=${renderer.id})")
@@ -858,7 +865,14 @@ class MinecraftActivity : BaseActivity() {
                 val rendererEnv = renderer.buildEnv(
                     cacheDir = applicationContext.cacheDir.absolutePath,
                     nativeDir = applicationInfo.nativeLibraryDir
-                )
+                ).toMutableMap().apply {
+                    if (renderer.id == "virgl") {
+                        this["VTEST_SOCKET_NAME"] =
+                            kr.co.donghyun.pinglauncher.presentation.util.renderer
+                                .VirGLLauncher.socketPath(this@MinecraftActivity)
+                    }
+                }
+
                 Log.d("PING_LAUNCHER", "🎨 적용된 렌더러: ${renderer.displayName}")
                 rendererEnv.forEach { (k, v) -> Log.d("PING_LAUNCHER", "  env $k=$v") }
                 launcher.applyEnv(rendererEnv)
