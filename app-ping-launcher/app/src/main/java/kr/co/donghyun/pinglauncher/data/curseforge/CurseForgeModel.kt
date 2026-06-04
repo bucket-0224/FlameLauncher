@@ -45,9 +45,9 @@ data class CurseForgeFile(
     val downloadUrl: String?,
     val gameVersions: List<String>,
     val fileLength: Long,
-    val dependencies: List<CurseForgeDependency>
+    val dependencies: List<CurseForgeDependency>,
+    val releaseType: Int = 1   // 1=Release, 2=Beta, 3=Alpha
 )
-
 data class CurseForgeFileIndex(
     val gameVersion: String,
     val fileId: Int,

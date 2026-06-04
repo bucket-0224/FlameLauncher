@@ -111,6 +111,33 @@ enum class Renderer(
             "POJAV_VSYNC" to "1"
         )
         base.putAll(extraEnv)
+
+        if (id == "mobileglues") {
+            // MobileGlues 전용 디렉토리 — config.json과 latest.log, GLSL 캐시가 여기 저장됨
+            val mgDir = "$cacheDir/MobileGlues"
+            java.io.File(mgDir).mkdirs()
+            base["MG_DIR_PATH"] = mgDir
+
+            // config.json 자동 생성 (없을 때만)
+            val configFile = java.io.File(mgDir, "config.json")
+            if (!configFile.exists()) {
+                configFile.writeText("""
+                {
+                  "enableANGLE": 0,
+                  "enableNoError": 1,
+                  "enableExtTimerQuery": 0,
+                  "enableExtComputeShader": 1,
+                  "enableExtDirectStateAccess": 0,
+                  "maxGlslCacheSize": 256,
+                  "multidrawMode": 0,
+                  "angleDepthClearFixMode": 0,
+                  "customGLVersion": 0,
+                  "fsr1Setting": 0
+                }
+            """.trimIndent())
+            }
+        }
+
         return base
     }
 

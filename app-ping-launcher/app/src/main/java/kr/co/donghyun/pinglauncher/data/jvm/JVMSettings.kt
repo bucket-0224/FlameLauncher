@@ -118,7 +118,9 @@ data class JvmSettings(
         if (renderer.id == "mobileglues") {
             args += listOf(
                 "-Dnet.caffeinemc.sodium.checks.skip=true",
-                "-Dsodium.checks.issue2561=false"
+                "-Dsodium.checks.issue2561=false",
+                "-Dorg.lwjgl.opengl.maxVersion=4.6",
+                "-Diris.force.support=true"
             )
         }
 

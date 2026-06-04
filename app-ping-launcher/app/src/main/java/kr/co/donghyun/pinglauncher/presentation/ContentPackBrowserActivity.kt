@@ -24,6 +24,7 @@ import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeFile
 import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeListResponse
 import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeLogo
 import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeMod
+import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeResponse
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceMeta
 import kr.co.donghyun.pinglauncher.data.instance.InstanceType
@@ -68,6 +69,9 @@ class ContentPackBrowserActivity : BaseActivity() {
     private val _selectedContentType = MutableStateFlow(ContentType.MODPACK)
     private val _installedIds = MutableStateFlow<Set<Int>>(emptySet())
     private val _hasMore = MutableStateFlow(true)
+
+    // CurseForge Podium project ID (modrinth: "podium", CF slug: "podium-sodium")
+    private val PODIUM_MOD_ID = 1209829   // ← CurseForge "Podium (Pojav x Sodium)"
 
     // ───── 내부 상태 ─────
     private var currentQuery: String = ""
@@ -300,13 +304,34 @@ class ContentPackBrowserActivity : BaseActivity() {
     }
 
     /**
-     * 인스턴스 디렉토리에 모드/리소스/쉐이더 파일 하나를 다운로드한다.
-     * UI 상태(beginInstall/endInstall)는 만지지 않음 — 호출 측 책임.
-     *
-     * 경로 규칙:
-     *  - legacy(1.12 이하) : <instance>/.minecraft/<subDir>/
-     *  - modern(1.13+)     : <instance>/<subDir>/
+     * Sodium 이 설치 대상에 있고, Podium 이 아직 없으면 Podium 도 같이 받도록 보강.
+     * Sodium 의 PojavLauncher 차단을 무력화해주는 호환성 패치.
      */
+    private fun augmentWithPodiumIfSodium(
+        items: List<Pair<CurseForgeMod, CurseForgeFile>>,
+        mcVersion: String,
+        loaderType: String?
+    ): List<Pair<CurseForgeMod, CurseForgeFile>> {
+        val hasSodium = items.any { (m, _) ->
+            m.name.equals("Sodium", ignoreCase = true) ||
+                    m.name.startsWith("Sodium", ignoreCase = true) && !m.name.contains("Extra", true)
+        }
+        if (!hasSodium) return items
+        if (items.any { it.first.id == PODIUM_MOD_ID }) return items  // 이미 포함
+        if (loaderType?.lowercase() != "fabric" && loaderType?.lowercase() != "neoforge") {
+            // Podium 은 Fabric/NeoForge 만 지원
+            return items
+        }
+
+        val podiumMod  = fetchModInfo(PODIUM_MOD_ID) ?: return items
+        val podiumFile = fetchLatestFileForVersion(PODIUM_MOD_ID, mcVersion, loaderType) ?: run {
+            Log.w("PING_LAUNCHER", "Podium 호환 파일 못 찾음 mc=$mcVersion loader=$loaderType")
+            return items
+        }
+        Log.d("PING_LAUNCHER", "🩹 Sodium 감지 → Podium 자동 추가: ${podiumFile.fileName}")
+        return items + (podiumMod to podiumFile)
+    }
+
     private suspend fun addContentToInstance(
         mod: CurseForgeMod,
         instanceId: String,
@@ -321,17 +346,34 @@ class ContentPackBrowserActivity : BaseActivity() {
             "addContentToInstance: mod=${mod.id} type=$contentType " +
                     "instance=$instanceId mc=${meta.mcVersion} loaderFilter=$loaderFilter")
 
-        val file = withContext(Dispatchers.IO) {
+        // ── 1) 메인 파일 결정 ─────────────────────────────────────────
+        val rootFile = withContext(Dispatchers.IO) {
             fetchLatestFileForVersion(mod.id, meta.mcVersion, loaderFilter)
         } ?: run {
-            Log.w("PING_LAUNCHER", "❌ CurseForge 에서 호환 파일 못 찾음 ...")
+            Log.w("PING_LAUNCHER", "❌ ${mod.name} — MC ${meta.mcVersion} 호환 파일 없음")
             _statusMessage.value = "${mod.name} — MC ${meta.mcVersion} 호환 파일 없음"
             return false
         }
 
-// ★ 이전: null 이면 return false. 이제는 fallback 으로 항상 해결.
-        val downloadUrl = resolveDownloadUrl(file)
+        // ── 2) MOD 타입이면 의존성 재귀 해결 ─────────────────────────
+        val deps = if (contentType == ContentType.MOD) {
+            withContext(Dispatchers.IO) {
+                resolveDependencies(rootFile, meta.mcVersion, loaderFilter)
+            }
+        } else emptyList()
 
+        val withPodium = withContext(Dispatchers.IO) {
+            augmentWithPodiumIfSodium(listOf(mod to rootFile) + deps, meta.mcVersion, loaderFilter)
+        }
+        val allItems = withPodium   // 기존: val allItems = listOf(mod to rootFile) + deps
+
+        Log.d("PING_LAUNCHER",
+            "📦 설치 대상 ${allItems.size}개 (메인 1 + 의존성 ${deps.size})")
+        deps.forEach { (m, f) ->
+            Log.d("PING_LAUNCHER", "  ↳ ${m.name} → ${f.fileName} (rt=${f.releaseType})")
+        }
+
+        // ── 3) 출력 디렉토리 결정 ────────────────────────────────────
         val subDir = when (contentType) {
             ContentType.MOD          -> "mods"
             ContentType.TEXTURE_PACK -> "resourcepacks"
@@ -341,29 +383,53 @@ class ContentPackBrowserActivity : BaseActivity() {
         val baseDir = if (isLegacyVersion(meta.mcVersion))
             instanceDir.resolve(".minecraft") else instanceDir
         val outDir = baseDir.resolve(subDir).also { it.mkdirs() }
-        val outFile = outDir.resolve(file.fileName)
 
-        Log.d("PING_LAUNCHER",
-            "⬇ ${file.fileName} (${file.fileLength}B) → ${outFile.absolutePath}")
-        withContext(Dispatchers.IO) {
-            downloadFile(downloadUrl, outFile, file.fileName)
-        }
+        // ── 4) 순차 다운로드 (충돌 jar 정리 → 다운로드) ──────────────
+        var allOk = true
+        allItems.forEachIndexed { idx, (m, f) ->
+            _statusMessage.value = "[${idx + 1}/${allItems.size}] ${m.name} 다운로드 중..."
 
-        if (!outFile.exists() || outFile.length() == 0L) {
-            Log.e("PING_LAUNCHER", "❌ 다운로드 후 검증 실패: ${outFile.absolutePath}")
-            return false
-        }
-        Log.d("PING_LAUNCHER",
-            "✅ ${contentType.label} 설치: ${outFile.absolutePath} (${outFile.length()}B)")
+            // 같은 prefix의 다른 버전 jar 정리 (이번에 받을 파일과 정확히 같은 이름은 보존)
+            if (contentType == ContentType.MOD) {
+                withContext(Dispatchers.IO) { removeConflictingJars(outDir, f.fileName) }
+            }
 
-        withContext(Dispatchers.IO) {
-            when (contentType) {
-                ContentType.TEXTURE_PACK -> enableResourcePack(baseDir, meta.mcVersion, file.fileName)
-                ContentType.SHADER_PACK  -> enableShaderPack(baseDir, file.fileName)
-                else -> { }
+            val outFile = outDir.resolve(f.fileName)
+            if (outFile.exists() && outFile.length() == f.fileLength && f.fileLength > 0) {
+                Log.d("PING_LAUNCHER", "  → 이미 동일 파일 존재, 스킵: ${f.fileName}")
+                return@forEachIndexed
+            }
+
+            val downloadUrl = resolveDownloadUrl(f)
+            try {
+                withContext(Dispatchers.IO) {
+                    downloadFile(downloadUrl, outFile, f.fileName)
+                }
+                if (!outFile.exists() || outFile.length() == 0L) {
+                    Log.e("PING_LAUNCHER", "  ❌ 검증 실패: ${outFile.absolutePath}")
+                    allOk = false
+                } else {
+                    Log.d("PING_LAUNCHER",
+                        "  ✅ ${f.fileName} (${outFile.length()}B)")
+                }
+            } catch (e: Exception) {
+                Log.e("PING_LAUNCHER", "  ❌ 예외: ${f.fileName} — ${e.message}", e)
+                allOk = false
             }
         }
-        return true
+
+        // ── 5) 텍스처/쉐이더는 메인 파일에만 활성화 ──────────────────
+        if (allOk) {
+            withContext(Dispatchers.IO) {
+                when (contentType) {
+                    ContentType.TEXTURE_PACK -> enableResourcePack(baseDir, meta.mcVersion, rootFile.fileName)
+                    ContentType.SHADER_PACK  -> enableShaderPack(baseDir, rootFile.fileName)
+                    else -> { }
+                }
+            }
+        }
+
+        return allOk
     }
 
     // ContentPackBrowserActivity.kt 의 private 멤버로 추가
@@ -727,15 +793,16 @@ class ContentPackBrowserActivity : BaseActivity() {
     // ───── 보조: CurseForge 파일 조회/다운로드 ─────
 
     /**
-     * 특정 mod의 최신 파일. gameVersion / loaderType 으로 필터 가능.
-     * - loaderType: "fabric" / "forge" / "neoforge" / "quilt" (null이면 전체)
+     * 특정 mod의 최신 호환 파일 선택.
+     * 정렬 우선순위: release > beta > alpha, 그 다음 id desc (최신).
+     * gameVersion이 주어지면 그 버전 문자열이 gameVersions에 정확히 포함된 것만.
      */
     private fun fetchLatestFileForVersion(
         modId: Int,
         gameVersion: String?,
         loaderType: String?
     ): CurseForgeFile? {
-        val url = StringBuilder("https://api.curseforge.com/v1/mods/$modId/files?index=0&pageSize=20")
+        val url = StringBuilder("https://api.curseforge.com/v1/mods/$modId/files?index=0&pageSize=50")
         if (!gameVersion.isNullOrBlank()) url.append("&gameVersion=").append(gameVersion)
         if (!loaderType.isNullOrBlank()) {
             val modLoaderType = when (loaderType.lowercase()) {
@@ -758,8 +825,115 @@ class ContentPackBrowserActivity : BaseActivity() {
             val body = response.body?.string() ?: return null
             val type = object : TypeToken<CurseForgeListResponse<CurseForgeFile>>() {}.type
             return runCatching {
-                gson.fromJson<CurseForgeListResponse<CurseForgeFile>>(body, type).data.firstOrNull()
+                val files = gson.fromJson<CurseForgeListResponse<CurseForgeFile>>(body, type).data
+
+                // 1) MC 버전 정확 매칭 (e.g. "1.21.1" 만, "1.21"이나 "1.21.2"는 제외)
+                val mcMatched = if (!gameVersion.isNullOrBlank())
+                    files.filter { it.gameVersions.contains(gameVersion) }
+                else files
+
+                // 2) 로더 매칭 검증 (server 필터가 가끔 새는 케이스 대비)
+                val loaderMatched = if (!loaderType.isNullOrBlank()) {
+                    mcMatched.filter { f ->
+                        f.gameVersions.any { it.equals(loaderType, ignoreCase = true) }
+                                // 일부 모드는 로더 태그를 안 박음 — 그건 그대로 허용
+                                || f.gameVersions.none { it in LOADER_TAGS }
+                    }
+                } else mcMatched
+
+                // 3) release > beta > alpha, 같은 등급이면 id desc
+                loaderMatched
+                    .sortedWith(compareBy({ it.releaseType }, { -it.id }))
+                    .firstOrNull()
+                    .also {
+                        Log.d("PING_LAUNCHER",
+                            "📋 mod=$modId mc=$gameVersion loader=$loaderType " +
+                                    "→ ${it?.fileName ?: "(없음)"} (rt=${it?.releaseType})")
+                    }
             }.getOrNull()
+        }
+    }
+
+    private val LOADER_TAGS = setOf("Forge", "Fabric", "NeoForge", "Quilt")
+
+    private fun fetchModInfo(modId: Int): CurseForgeMod? {
+        val request = Request.Builder()
+            .url("https://api.curseforge.com/v1/mods/$modId")
+            .header("x-api-key", BuildConfig.CURSEFORGE_API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return runCatching {
+            httpClient.newCall(request).execute().use { resp ->
+                val body = resp.body?.string() ?: return@runCatching null
+                val type = object : TypeToken<CurseForgeResponse<CurseForgeMod>>() {}.type
+                gson.fromJson<CurseForgeResponse<CurseForgeMod>>(body, type).data
+            }
+        }.getOrNull()
+    }
+
+    /**
+     * file 의 RequiredDependency(relationType=3) 들을 같은 mc/loader 로 재귀 해결.
+     * @return (mod, file) 쌍 리스트. 중복 modId는 한 번만.
+     */
+    private fun resolveDependencies(
+        rootFile: CurseForgeFile,
+        mcVersion: String,
+        loaderType: String?,
+        visited: MutableSet<Int> = mutableSetOf()
+    ): List<Pair<CurseForgeMod, CurseForgeFile>> {
+        val out = mutableListOf<Pair<CurseForgeMod, CurseForgeFile>>()
+        val required = rootFile.dependencies.filter { it.relationType == 3 }
+
+        for (dep in required) {
+            if (!visited.add(dep.modId)) continue
+
+            val depMod = fetchModInfo(dep.modId)
+            if (depMod == null) {
+                Log.w("PING_LAUNCHER", "  ↳ 의존성 mod 정보 못 받음: id=${dep.modId}")
+                continue
+            }
+
+            val depFile = fetchLatestFileForVersion(dep.modId, mcVersion, loaderType)
+            if (depFile == null) {
+                Log.w("PING_LAUNCHER",
+                    "  ↳ ${depMod.name} — mc=$mcVersion loader=$loaderType 호환 파일 없음")
+                continue
+            }
+
+            out += depMod to depFile
+            out += resolveDependencies(depFile, mcVersion, loaderType, visited)
+        }
+        return out
+    }
+
+    /**
+     * "sodium-fabric-0.8.12-alpha.4+mc1.21.1.jar" → "sodium-fabric"
+     * "iris-fabric-1.8.8+mc1.21.1.jar"            → "iris-fabric"
+     *
+     * jar 이름에서 첫 숫자가 등장하기 직전까지를 mod 식별 prefix 로 사용.
+     */
+    private fun extractModFilePrefix(fileName: String): String {
+        val nameOnly = fileName.removeSuffix(".jar")
+        val m = Regex("^([a-zA-Z][a-zA-Z0-9_\\-]*?)[-_]+\\d").find(nameOnly)
+        return m?.groupValues?.get(1) ?: nameOnly
+    }
+
+    private fun removeConflictingJars(outDir: File, newFileName: String) {
+        val newPrefix = extractModFilePrefix(newFileName)
+        if (newPrefix.length < 3) return  // "fa" 같은 짧은 건 위험해서 스킵
+
+        outDir.listFiles()?.forEach { f ->
+            if (!f.isFile) return@forEach
+            if (f.extension != "jar") return@forEach
+            if (f.name == newFileName) return@forEach              // 정확히 같으면 두기
+            if (f.name.endsWith(".disabled")) return@forEach       // 비활성은 손대지 않음
+
+            val oldPrefix = extractModFilePrefix(f.name)
+            if (oldPrefix.equals(newPrefix, ignoreCase = true)) {
+                Log.d("PING_LAUNCHER",
+                    "🗑 같은 prefix($newPrefix) 기존 jar 제거: ${f.name}")
+                f.delete()
+            }
         }
     }
 

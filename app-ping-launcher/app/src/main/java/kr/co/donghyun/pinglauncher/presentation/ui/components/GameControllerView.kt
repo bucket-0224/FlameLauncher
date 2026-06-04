@@ -22,7 +22,7 @@ private const val GLFW_RELEASE = 0
 // ────────────────────────────────────────────────────────────────────────
 private const val BASE_BUTTON_UNIT = 52f
 private const val TARGET_DP_PHONE = 48f
-private const val TARGET_DP_TABLET = 96f
+private const val TARGET_DP_TABLET = 76f
 
 // 폰/가로화면용 게임패드 프리셋 (GLFW 코드 → x, y 비율)
 private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
