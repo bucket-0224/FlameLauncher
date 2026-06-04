@@ -71,13 +71,8 @@ fun ContentPackDetailScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onBack() }
-                    .padding(horizontal = 8.dp, vertical = 4.dp)
-            ) {
-                Text("뒤로", color = TextMain, fontSize = if (tablet) 16.sp else 12.sp, fontWeight = FontWeight.Bold)
+            TextButton(onClick = onBack) {
+                Text("뒤로", color = TextSub, fontSize = if (tablet) 14.sp else 11.sp)
             }
             Text(
                 text = "상세 정보",
