@@ -24,6 +24,7 @@ private const val BASE_BUTTON_UNIT = 52f
 private const val TARGET_DP_PHONE = 48f
 private const val TARGET_DP_TABLET = 76f
 
+
 // 폰/가로화면용 게임패드 프리셋 (GLFW 코드 → x, y 비율)
 private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     87  to (0.12f to 0.7f),  // W
@@ -47,10 +48,15 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
 )
 
 class GameControllerView(context: Context) : View(context) {
+    private var imeVisible: Boolean = false
+
     private val activity = context as MinecraftActivity
     private var buttons: List<KeyButton> = KeyLayoutManager.load(context)
     private val buttonRects = mutableMapOf<String, RectF>()
     private val pressedButtons = mutableMapOf<String, Int>()
+    private val forwardedPids = mutableSetOf<Int>()  // 우리가 SurfaceView 로 떠넘긴 pointer
+    private var surfaceViewCached: View? = null
+
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.argb(217, 26, 10, 20); style = Paint.Style.FILL
@@ -141,6 +147,139 @@ class GameControllerView(context: Context) : View(context) {
         return recognized + extras
     }
 
+    private fun surfaceView(): View? {
+        val cur = surfaceViewCached
+        if (cur != null && cur.isAttachedToWindow) return cur
+        val sv = activity.window.decorView.findViewWithTag<View>("minecraft_surface")
+        surfaceViewCached = sv
+        return sv
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+
+        // 1) 새 pointer 분류 (버튼 위인지 vs 빈 영역인지)
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                forwardedPids.clear()
+                classifyNewPointer(event, event.actionIndex)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                classifyNewPointer(event, event.actionIndex)
+            }
+        }
+
+        // 2) 이번 이벤트의 pointer 들을 ours/theirs 로 나눠서 각각 다른 view 로 보냄
+        val theirEvent = filterEvent(event, keep = forwardedPids)
+        val ourPids = (0 until event.pointerCount)
+            .map { event.getPointerId(it) }
+            .filter { it !in forwardedPids }
+            .toSet()
+        val ourEvent = filterEvent(event, keep = ourPids)
+
+        if (ourEvent != null) {
+            super.dispatchTouchEvent(ourEvent)   // → 우리 onTouchEvent
+            ourEvent.recycle()
+        }
+        if (theirEvent != null) {
+            surfaceView()?.dispatchTouchEvent(theirEvent)  // → SurfaceView 의 setOnTouchListener
+            theirEvent.recycle()
+        }
+
+        // 3) pointer 끝나면 cleanup
+        when (action) {
+            MotionEvent.ACTION_POINTER_UP ->
+                forwardedPids.remove(event.getPointerId(event.actionIndex))
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                forwardedPids.clear()
+        }
+        return true
+    }
+
+    private fun classifyNewPointer(event: MotionEvent, index: Int) {
+        val pid = event.getPointerId(index)
+        val onButton = findButton(event.getX(index), event.getY(index)) != null
+        if (!onButton) forwardedPids.add(pid)
+    }
+
+    /**
+     * source 에서 keep 에 들어있는 pointer 만 남긴 새 MotionEvent 생성.
+     * action 도 적절히 변환:
+     *  - 액션 대상 pointer 가 keep 에 없으면 ACTION_MOVE 로 다운그레이드
+     *  - keep 에 1개만 남으면 ACTION_POINTER_DOWN/UP → ACTION_DOWN/UP 으로 정규화
+     */
+    private fun filterEvent(source: MotionEvent, keep: Set<Int>): MotionEvent? {
+        if (keep.isEmpty()) return null
+        val keepIndices = (0 until source.pointerCount)
+            .filter { source.getPointerId(it) in keep }
+        if (keepIndices.isEmpty()) return null
+
+        val sourceAction = source.actionMasked
+        val sourceActionIdx = source.actionIndex
+        val sourceActionPid = source.getPointerId(sourceActionIdx)
+
+        val isDown = sourceAction == MotionEvent.ACTION_DOWN
+                || sourceAction == MotionEvent.ACTION_POINTER_DOWN
+        val isUp = sourceAction == MotionEvent.ACTION_UP
+                || sourceAction == MotionEvent.ACTION_POINTER_UP
+
+        val newAction: Int
+        val newActionIdx: Int
+
+        when {
+            (isDown || isUp) && sourceActionPid !in keep -> {
+                // 이번 액션의 주인공이 우리가 keep 하는 pointer 가 아님 → 그냥 MOVE
+                newAction = MotionEvent.ACTION_MOVE
+                newActionIdx = 0
+            }
+            isDown -> {
+                val mapped = keepIndices.indexOf(sourceActionIdx)
+                newAction =
+                    if (keepIndices.size == 1) MotionEvent.ACTION_DOWN
+                    else MotionEvent.ACTION_POINTER_DOWN
+                newActionIdx = mapped
+            }
+            isUp -> {
+                val mapped = keepIndices.indexOf(sourceActionIdx)
+                newAction =
+                    if (keepIndices.size == 1) MotionEvent.ACTION_UP
+                    else MotionEvent.ACTION_POINTER_UP
+                newActionIdx = mapped
+            }
+            else -> {
+                newAction = sourceAction
+                newActionIdx = 0
+            }
+        }
+
+        val combinedAction = newAction or
+                (newActionIdx shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+
+        val props = Array(keepIndices.size) { MotionEvent.PointerProperties() }
+        val coords = Array(keepIndices.size) { MotionEvent.PointerCoords() }
+        keepIndices.forEachIndexed { newI, origI ->
+            source.getPointerProperties(origI, props[newI])
+            source.getPointerCoords(origI, coords[newI])
+        }
+
+        return MotionEvent.obtain(
+            source.downTime,
+            source.eventTime,
+            combinedAction,
+            keepIndices.size,
+            props,
+            coords,
+            source.metaState,
+            source.buttonState,
+            source.xPrecision,
+            source.yPrecision,
+            source.deviceId,
+            source.edgeFlags,
+            source.source,
+            source.flags
+        )
+    }
+    
     /**
      * density 기반 통합 스케일링 + 겹침 시 프리셋 레이아웃으로 자동 정리.
      */
@@ -232,26 +371,47 @@ class GameControllerView(context: Context) : View(context) {
                 return false
             }
             MotionEvent.ACTION_MOVE -> {
+                var changed = false
                 for (i in 0 until event.pointerCount) {
                     val pid = event.getPointerId(i)
                     val px = event.getX(i)
                     val py = event.getY(i)
-                    val buttonId = pressedButtons.entries.find { it.value == pid }?.key
-                    if (buttonId != null) {
-                        val rect = buttonRects[buttonId]
-                        if (rect != null && !rect.contains(px, py)) {
-                            val button = buttons.find { it.id == buttonId }
-                            pressedButtons.remove(buttonId)
-                            if (button != null) handlePress(button.glfwCode, GLFW_RELEASE)
-                            invalidate()
-                        }
+
+                    // 이 포인터가 지금 잡고 있는 버튼 (없을 수도)
+                    val currentButtonId = pressedButtons.entries.find { it.value == pid }?.key
+                    val newButton = findButton(px, py)
+                    val newButtonId = newButton?.id
+
+                    // 같은 버튼이면 변화 없음
+                    if (currentButtonId == newButtonId) continue
+
+                    // 1) 기존 버튼이 있었다면 release
+                    if (currentButtonId != null) {
+                        val oldButton = buttons.find { it.id == currentButtonId }
+                        pressedButtons.remove(currentButtonId)
+                        if (oldButton != null) handlePress(oldButton.glfwCode, GLFW_RELEASE)
+                        changed = true
+                    }
+
+                    // 2) 새 버튼이 swipe 대상이고, 다른 손가락이 이미 잡고 있지 않다면 press
+                    if (newButton != null
+                        && newButton.isSwipeable()
+                        && !pressedButtons.containsKey(newButton.id)
+                    ) {
+                        pressedButtons[newButton.id] = pid
+                        handlePress(newButton.glfwCode, GLFW_PRESS)
+                        changed = true
                     }
                 }
+                if (changed) invalidate()
                 return pressedButtons.isNotEmpty()
             }
         }
         return false
     }
+
+    private fun KeyButton.isSwipeable(): Boolean =
+        glfwCode >= 0 || glfwCode in -3..-1
 
     private fun findButton(x: Float, y: Float): KeyButton? {
         buttons.forEach { button ->
@@ -279,29 +439,27 @@ class GameControllerView(context: Context) : View(context) {
                 activity.sendKey(49 + next, GLFW_PRESS)
                 activity.sendKey(49 + next, GLFW_RELEASE)
             }
+            // glfwCode == -6 분기 전체 교체
             glfwCode == -6 && action == GLFW_PRESS -> {
                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
                         as android.view.inputmethod.InputMethodManager
                 val surfaceView = activity.window.decorView
-                    .findViewWithTag<android.view.View>("minecraft_surface")
+                    .findViewWithTag<android.view.View>("minecraft_surface") ?: return
 
-                if (surfaceView != null) {
-                    if (imm.isActive(surfaceView)) {
-                        // 이미 surfaceView 에 IME 가 붙어있다 = 토글 = 닫기
-                        imm.hideSoftInputFromWindow(surfaceView.windowToken, 0)
-                    } else {
-                        // 닫혀있는 상태 = 열기.
-                        // requestFocus 가 한 프레임 지나야 실제 반영되므로 post 로 한 박자 늦춤.
-                        surfaceView.isFocusable = true
-                        surfaceView.isFocusableInTouchMode = true
-                        surfaceView.requestFocus()
-                        surfaceView.post {
-                            imm.showSoftInput(
-                                surfaceView,
-                                android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT
-                            )
-                        }
+                // 매번 포커스 다시 잡기 — 한 번 잃으면 showSoftInput 이 무시됨
+                surfaceView.isFocusable = true
+                surfaceView.isFocusableInTouchMode = true
+                surfaceView.requestFocus()
+
+                if (imeVisible) {
+                    imm.hideSoftInputFromWindow(surfaceView.windowToken, 0)
+                    imeVisible = false
+                } else {
+                    // SHOW_IMPLICIT 말고 0 — 사용자가 명시적으로 누른 거니까 강제로
+                    surfaceView.post {
+                        imm.showSoftInput(surfaceView, 0)
                     }
+                    imeVisible = true
                 }
             }
             glfwCode == -7 && action == GLFW_PRESS -> {
@@ -309,6 +467,12 @@ class GameControllerView(context: Context) : View(context) {
                 Log.d("PING_LAUNCHER", "전투 모드: ${if (activity.combatMode) "ON" else "OFF"}")
                 invalidate()  // 버튼 색상 갱신용
             }
+        }
+    }
+
+    fun setImeVisibleExternal(visible: Boolean) {
+        if (imeVisible != visible) {
+            imeVisible = visible
         }
     }
 

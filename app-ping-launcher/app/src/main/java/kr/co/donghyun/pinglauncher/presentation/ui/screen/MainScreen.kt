@@ -1,5 +1,7 @@
 package kr.co.donghyun.pinglauncher.presentation.ui.screen
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.graphics.BitmapFactory
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
@@ -21,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kr.co.donghyun.pinglauncher.BuildConfig
+import kr.co.donghyun.pinglauncher.data.instance.InstanceMeta
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadPhase
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
 import kr.co.donghyun.pinglauncher.data.mojang.VersionEntry
@@ -38,18 +42,25 @@ import kr.co.donghyun.pinglauncher.presentation.util.isVersionSupported
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 import java.net.URL
 
+enum class MainTab(val label: String) {
+    INSTALLED("📦 설치됨"),
+    RELEASE("🌿 정식 출시"),
+    ALL("📜 전체"),
+}
+
 @Composable
 fun MainScreen(
     versions: List<VersionEntry>,
+    instances: List<InstanceMeta>,
     progress: DownloadProgress,
     selectedVersion: VersionEntry?,
     isLoading: Boolean,
-    showOnlyRelease: Boolean,
     onVersionSelect: (VersionEntry) -> Unit,
-    onToggleFilter: () -> Unit,
     onDownloadAndPlay: (VersionEntry) -> Unit,
     onLaunchFabric: (VersionEntry, String) -> Unit,
     onLaunchForge: (VersionEntry, String) -> Unit,
+    onLaunchInstance: (InstanceMeta) -> Unit,
+    onDeleteInstance: (InstanceMeta) -> Unit,
     onOpenContents: () -> Unit,
     onOpenKeySettings: () -> Unit,
     onOpenJVMSettings: () -> Unit,
@@ -64,7 +75,17 @@ fun MainScreen(
             progress.phase != DownloadPhase.DONE &&
             progress.phase != DownloadPhase.ERROR
 
-    val filtered = if (showOnlyRelease) versions.filter { it.type == "release" } else versions
+    // 인스턴스가 있으면 INSTALLED 가 기본, 없으면 RELEASE
+    var selectedTab by remember(instances.isEmpty()) {
+        mutableStateOf(if (instances.isNotEmpty()) MainTab.INSTALLED else MainTab.RELEASE)
+    }
+
+    val filteredVersions = when (selectedTab) {
+        MainTab.RELEASE -> versions.filter { it.type == "release" }
+        MainTab.ALL     -> versions
+        MainTab.INSTALLED -> emptyList()
+    }
+
     var showLoaderDialog by remember { mutableStateOf(false) }
     val tablet = isTablet()
 
@@ -75,51 +96,54 @@ fun MainScreen(
                 onOpenContents, onOpenKeySettings, onOpenJVMSettings, onOpenRendererSettings
             )
 
-            // 필터 칩
+            // ── 3-way 탭 ──
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
             ) {
-                FilterChip(
-                    selected = showOnlyRelease,
-                    onClick = { if (!showOnlyRelease) onToggleFilter() },
-                    label = { Text("정식 출시", color = TextPrimary, fontSize = if(tablet) 12.sp else 8.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = PinkDark, containerColor = BgSurface
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true, selected = showOnlyRelease,
-                        borderColor = BgBorder, selectedBorderColor = PinkPrimary
-                    )
-                )
-                FilterChip(
-                    selected = !showOnlyRelease,
-                    onClick = { if (showOnlyRelease) onToggleFilter() },
-                    label = { Text("전체", color = TextPrimary, fontSize = if(tablet) 12.sp else 8.sp) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = PinkDark, containerColor = BgSurface
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true, selected = !showOnlyRelease,
-                        borderColor = BgBorder, selectedBorderColor = PinkPrimary
-                    )
-                )
+                MainTab.entries.forEach { tab ->
+                    val sel = selectedTab == tab
+                    val count = when (tab) {
+                        MainTab.INSTALLED -> instances.size
+                        MainTab.RELEASE   -> versions.count { it.type == "release" }
+                        MainTab.ALL       -> versions.size
+                    }
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(if (sel) PinkDark else BgSurface)
+                            .border(
+                                if (sel) 1.5.dp else 1.dp,
+                                if (sel) PinkPrimary else BgBorder,
+                                RoundedCornerShape(10.dp)
+                            )
+                            .clickable { selectedTab = tab }
+                            .padding(vertical = if (tablet) 10.dp else 7.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = if (count > 0) "${tab.label} ($count)" else tab.label,
+                            color = if (sel) Color.White else TextSecondary,
+                            fontSize = if (tablet) 13.sp else 10.sp,
+                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                        )
+                    }
+                }
             }
 
-            if (isLoading) {
+            if (isLoading && selectedTab != MainTab.INSTALLED) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = PinkPrimary)
                 }
             } else if (tablet) {
-                // ── 태블릿 2-pane ──────────────────────────────
                 Row(modifier = Modifier.fillMaxSize().weight(1f)) {
-                    LazyColumn(
-                        modifier = Modifier.weight(0.62f).fillMaxHeight(),
-                        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        items(filtered) { v ->
-                            VersionItem(v, selectedVersion?.id == v.id) { onVersionSelect(v) }
+                    Box(modifier = Modifier.weight(0.62f).fillMaxHeight()) {
+                        when (selectedTab) {
+                            MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance)
+                            else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                         }
                     }
                     Column(
@@ -131,34 +155,33 @@ fun MainScreen(
                             .padding(20.dp),
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        SidePlayPanel(
-                            selectedVersion = selectedVersion,
-                            progress = progress,
-                            isDownloading = isDownloading,
-                            isLoggedIn = isLoggedIn,
-                            onPlayClick = { showLoaderDialog = true },
-                            onLogin = onLogin
-                        )
+                        if (selectedTab == MainTab.INSTALLED) {
+                            InstalledPanel(instances.size)
+                        } else {
+                            SidePlayPanel(
+                                selectedVersion = selectedVersion,
+                                progress = progress,
+                                isDownloading = isDownloading,
+                                isLoggedIn = isLoggedIn,
+                                onPlayClick = { showLoaderDialog = true },
+                                onLogin = onLogin
+                            )
+                        }
                     }
                     Spacer(modifier = Modifier.width(20.dp))
                 }
             } else {
-                // ── 폰 1-pane ─────────────────────────────────
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    items(filtered) { v ->
-                        VersionItem(v, selectedVersion?.id == v.id) { onVersionSelect(v) }
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (selectedTab) {
+                        MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance)
+                        else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                     }
-                    item { Box(modifier = Modifier.height(64.dp)) }
                 }
             }
         }
 
-        // 폰: 하단 고정 패널
-        if (!tablet) {
+        // 폰: 하단 패널은 INSTALLED 탭이 아닐 때만
+        if (!tablet && selectedTab != MainTab.INSTALLED) {
             BottomPanel(
                 selectedVersion = selectedVersion,
                 progress = progress,
@@ -176,20 +199,191 @@ fun MainScreen(
             LoaderSelectDialog(
                 versionId = selectedVersion.id,
                 onDismiss = { showLoaderDialog = false },
-                onLaunchVanilla = {
-                    showLoaderDialog = false
-                    onDownloadAndPlay(selectedVersion)
-                },
-                onLaunchFabric = { loaderVersion ->
-                    showLoaderDialog = false
-                    onLaunchFabric(selectedVersion, loaderVersion)
-                },
-                onLaunchForge = { forgeVer ->                       // ★ 채우기
-                    showLoaderDialog = false
-                    onLaunchForge(selectedVersion, forgeVer)
-                }
+                onLaunchVanilla = { showLoaderDialog = false; onDownloadAndPlay(selectedVersion) },
+                onLaunchFabric  = { v -> showLoaderDialog = false; onLaunchFabric(selectedVersion, v) },
+                onLaunchForge   = { v -> showLoaderDialog = false; onLaunchForge(selectedVersion, v) },
             )
         }
+    }
+}
+
+@Composable
+private fun VersionsList(
+    versions: List<VersionEntry>,
+    selectedVersion: VersionEntry?,
+    onVersionSelect: (VersionEntry) -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        items(versions) { v ->
+            VersionItem(v, selectedVersion?.id == v.id) { onVersionSelect(v) }
+        }
+        item { Box(modifier = Modifier.height(64.dp)) }
+    }
+}
+
+@Composable
+private fun InstancesList(
+    instances: List<InstanceMeta>,
+    onLaunch: (InstanceMeta) -> Unit,
+    onDelete: (InstanceMeta) -> Unit,
+) {
+    if (instances.isEmpty()) {
+        Box(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("📭", fontSize = 48.sp)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "설치된 인스턴스가 없습니다",
+                    color = TextSecondary,
+                    fontSize = 13.sp
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "버전 탭에서 다운로드하거나, 추가 컨텐츠에서 모드팩을 설치하세요",
+                    color = TextSecondary.copy(alpha = 0.6f),
+                    fontSize = 11.sp,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+            }
+        }
+        return
+    }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        items(instances, key = { it.id }) { meta ->
+            InstanceItem(meta, onLaunch = { onLaunch(meta) }, onDelete = { onDelete(meta) })
+        }
+        item { Box(modifier = Modifier.height(64.dp)) }
+    }
+}
+
+@Composable
+private fun InstanceItem(
+    meta: InstanceMeta,
+    onLaunch: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    val tablet = isTablet()
+    var showConfirmDelete by remember { mutableStateOf(false) }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(BgSurface)
+            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+            .padding(horizontal = if (tablet) 14.dp else 10.dp, vertical = if (tablet) 12.dp else 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        Text(meta.iconEmoji, fontSize = if (tablet) 28.sp else 22.sp)
+
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                meta.name,
+                color = TextPrimary,
+                fontSize = if (tablet) 14.sp else 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val loaderLabel = when (meta.loaderType?.lowercase()) {
+                "fabric"   -> "Fabric ${meta.loaderVersion ?: ""}"
+                "forge"    -> "Forge ${meta.loaderVersion ?: ""}"
+                "neoforge" -> "NeoForge ${meta.loaderVersion ?: ""}"
+                else       -> "Vanilla"
+            }
+            Text(
+                "MC ${meta.mcVersion} · $loaderLabel",
+                color = TextSecondary,
+                fontSize = if (tablet) 11.sp else 9.sp,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+
+        // 삭제
+        Box(
+            modifier = Modifier
+                .size(if (tablet) 32.dp else 28.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(BgDark)
+                .border(1.dp, BgBorder, RoundedCornerShape(6.dp))
+                .clickable { showConfirmDelete = true },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("🗑", fontSize = if (tablet) 14.sp else 12.sp)
+        }
+
+        // 실행
+        Button(
+            onClick = onLaunch,
+            colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary),
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+            modifier = Modifier.height(if (tablet) 36.dp else 30.dp),
+        ) {
+            Text(
+                "▶ 실행",
+                color = Color.White,
+                fontSize = if (tablet) 12.sp else 10.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+
+    if (showConfirmDelete) {
+        AlertDialog(
+            onDismissRequest = { showConfirmDelete = false },
+            title = { Text("인스턴스 삭제", color = TextPrimary) },
+            text = {
+                Text(
+                    "‘${meta.name}’ 인스턴스의 모든 파일(월드, 모드, 설정)을 삭제합니다. 되돌릴 수 없습니다.",
+                    color = TextSecondary,
+                    fontSize = 13.sp,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showConfirmDelete = false
+                    onDelete()
+                }) { Text("삭제", color = Color(0xFFFF6B6B)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showConfirmDelete = false }) {
+                    Text("취소", color = TextSecondary)
+                }
+            },
+            containerColor = BgSurface,
+        )
+    }
+}
+
+@Composable
+private fun InstalledPanel(count: Int) {
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("설치된 인스턴스", color = TextSecondary, fontSize = 12.sp)
+        Text(
+            "$count 개",
+            color = TextPrimary,
+            fontSize = 28.sp,
+            fontWeight = FontWeight.Bold,
+        )
+        Text(
+            "좌측 목록에서 ▶ 실행을 눌러 바로 시작할 수 있습니다.",
+            color = TextSecondary,
+            fontSize = 12.sp,
+        )
     }
 }
 

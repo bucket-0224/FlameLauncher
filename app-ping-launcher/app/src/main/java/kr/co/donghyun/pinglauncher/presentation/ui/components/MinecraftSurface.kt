@@ -72,6 +72,7 @@ fun MinecraftSurface(
                     }
                 })
 
+
                 setOnKeyListener { _, keyCode, event ->
                     val glfwKey = ctx.androidKeyToGlfw(keyCode) ?: return@setOnKeyListener false
                     val action = if (event.action == android.view.KeyEvent.ACTION_DOWN) 1 else 0

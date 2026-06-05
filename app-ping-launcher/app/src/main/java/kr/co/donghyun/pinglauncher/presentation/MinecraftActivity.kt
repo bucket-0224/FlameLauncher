@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
+import androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener
 import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettings
@@ -132,6 +133,12 @@ class MinecraftActivity : BaseActivity() {
         Log.d("PING_LAUNCHER", "instanceDir 수신: $instanceDir")  // ← 추가
         customGameDir = intent.getStringExtra(EXTRA_GAME_DIR)
         Log.d("PING_LAUNCHER", "customGameDir 수신: $customGameDir")  // ← 추가
+
+        setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
+            val ime = insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime())
+            gameControllerView?.setImeVisibleExternal(ime)
+            insets
+        }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { return }

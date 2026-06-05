@@ -43,6 +43,8 @@ class MainActivity : BaseActivity() {
     private var isLoggedIn by mutableStateOf(false)
     private var username by mutableStateOf<String?>(null)
 
+    private val _instances = MutableStateFlow<List<InstanceMeta>>(emptyList())
+
     private val loginLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
     ) { result ->
@@ -67,6 +69,8 @@ class MainActivity : BaseActivity() {
             )
         )
 
+        refreshInstances()
+
         setContent {
             PingLauncherTheme {
                 val versions by _versions.asStateFlow().collectAsState()
@@ -74,18 +78,21 @@ class MainActivity : BaseActivity() {
                 val selected by _selectedVersion.asStateFlow().collectAsState()
                 val isLoading by _isLoading.asStateFlow().collectAsState()
                 val showOnlyRelease by _showOnlyRelease.asStateFlow().collectAsState()
+                val instances by _instances.asStateFlow().collectAsState()
+
 
                 MainScreen(
                     versions = versions,
+                    instances = instances,                          // ★ 추가
                     progress = progress,
                     selectedVersion = selected,
                     isLoading = isLoading,
-                    showOnlyRelease = showOnlyRelease,
                     onVersionSelect = { _selectedVersion.value = it },
-                    onToggleFilter = { _showOnlyRelease.value = !showOnlyRelease },
                     onDownloadAndPlay = { version -> startDownload(version) },
-                    onLaunchFabric = { version, loader -> startFabricDownloadAndPlay(version, loader) },
-                    onLaunchForge  = { version, forgeVer -> startForgeDownloadAndPlay(version, forgeVer, isNeoForge = false) },
+                    onLaunchFabric = { v, l -> startFabricDownloadAndPlay(v, l) },
+                    onLaunchForge  = { v, f -> startForgeDownloadAndPlay(v, f, false) },
+                    onLaunchInstance = { meta -> launchInstance(meta) },   // ★ 추가
+                    onDeleteInstance = { meta -> deleteInstance(meta) },   // ★ 추가
                     onOpenContents = { ContentPackBrowserActivity.start(this@MainActivity) },
                     onOpenKeySettings = { KeyboardLayoutEditorActivity.start(this@MainActivity) },
                     onOpenJVMSettings = { JvmSettingsActivity.start(this@MainActivity) },
@@ -406,6 +413,49 @@ class MainActivity : BaseActivity() {
         }
     }
 
+    // 새 메서드
+    private fun refreshInstances() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            _instances.value = InstanceManager.listInstances(this@MainActivity)
+                .sortedByDescending {
+                    InstanceManager.instanceDir(this@MainActivity, it.id).lastModified()
+                }
+        }
+    }
+
+    private fun launchInstance(meta: InstanceMeta) {
+        val instanceDir = InstanceManager.instanceDir(this, meta.id)
+        val internalBase = applicationContext.filesDir
+        val nativesDir = File(internalBase, "natives")
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                copyNativesFromApkLibDir(nativesDir)
+                copyLwjglJarFromAssets(internalBase)
+                prePopulateLwjglExtractDir(internalBase, nativesDir, meta.mcVersion)
+                withContext(Dispatchers.Main) {
+                    MinecraftActivity.start(
+                        this@MainActivity,
+                        versionId   = meta.mcVersion,
+                        assetIndex  = meta.assetIndexId,
+                        extraJars   = meta.extraJars,
+                        mainClass   = meta.mainClass,
+                        instanceDir = instanceDir.absolutePath,
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e("PING_LAUNCHER", "인스턴스 실행 실패: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun deleteInstance(meta: InstanceMeta) {
+        lifecycleScope.launch(Dispatchers.IO) {
+            InstanceManager.deleteInstance(this@MainActivity, meta.id)
+            refreshInstances()
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         val prefs = getSharedPreferences("ping_launcher", MODE_PRIVATE)
@@ -415,5 +465,6 @@ class MainActivity : BaseActivity() {
             CrashReportActivity.start(this, pendingCrash)
         }
         refreshLoginState()
+        refreshInstances()
     }
 }
