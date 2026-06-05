@@ -40,6 +40,7 @@ set(POJAV_SOURCES
         pojav_jni/jvm_hooks/emui_iterator_fix_hook.c
         pojav_jni/native_hooks/exit_hook.c
         pojav_jni/native_hooks/chmod_hook.c
+        pojav_jni/native_hooks/resolvconf_hook.c
         pojav_jni/jre_launcher.c
 )
 

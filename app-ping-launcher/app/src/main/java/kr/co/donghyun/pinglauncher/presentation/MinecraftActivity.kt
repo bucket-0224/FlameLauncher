@@ -25,6 +25,7 @@ import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.components.GameControllerView
 import kr.co.donghyun.pinglauncher.presentation.ui.components.MinecraftSurface
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.pinglauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.pinglauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftJREPreparer
 import kr.co.donghyun.pinglauncher.presentation.util.renderer.VirGLLauncher
@@ -41,7 +42,15 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_TAB
 import org.lwjgl.glfw.GLFW.GLFW_KEY_W
 import org.lwjgl.glfw.GLFW.GLFW_PRESS
 import org.lwjgl.glfw.GLFW.GLFW_RELEASE
+import org.objectweb.asm.ClassReader
+import org.objectweb.asm.ClassVisitor
+import org.objectweb.asm.ClassWriter
+import org.objectweb.asm.Opcodes
 import java.io.File
+import java.io.IOException
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 
 
 class MinecraftActivity : BaseActivity() {
@@ -321,6 +330,8 @@ class MinecraftActivity : BaseActivity() {
         loadSoSafely(File(nativesDir, "liblwjgl.so"), required = false)
         loadSoSafely(File(nativesDir, "liblwjgl_opengl.so"), required = false)
 
+        DnsHookNative.setup(this)
+
         // ── AWT stub preload (실패해도 무시 — JNI 바인딩 불일치여도 핵심 .so 는 이미 떠 있음) ──
         try {
             JavaNativeLauncher.preloadAwtStubs(applicationInfo.nativeLibraryDir)
@@ -422,6 +433,154 @@ class MinecraftActivity : BaseActivity() {
     internal var currentCursorY = 720f
     internal val MOUSE_SENSITIVITY = 1.5f
 
+
+    /**
+     * PojavLauncher patched lwjgl-glfw-classes.jar 에 누락된 GLFW 3.4 API 를
+     * ASM 으로 노옵 스텁 주입.
+     *
+     * 1.21.5+ (특히 26w14a) 가 부팅 단계에서 호출하는 API:
+     *   - glfwPlatformSupported(int)Z   ← 26w14a 가 NoSuchMethodError 로 죽는 지점
+     *   - glfwGetPlatform()I
+     *   - glfwFocusWindow / glfwHideWindow / glfwMaximizeWindow / glfwRestoreWindow (J)V
+     *
+     * 실제 GLFW 백엔드는 어차피 libglfw.so/libpojavexec.so 가 자체 구현이라,
+     * 노옵 스텁이 있어도 MC 가 부팅 단계는 통과한다. HiDPI / IME 같은 부가 기능은
+     * 동작 안 할 수 있지만 게임 자체는 켜짐.
+     */
+    private fun patchLwjglGlfwIfNeeded(lwjgl3Dir: File) {
+        if (!lwjgl3Dir.exists()) return
+        val candidates = lwjgl3Dir.listFiles()
+            ?.filter { it.name.startsWith("lwjgl-glfw-classes") && it.extension == "jar" }
+            ?: return
+
+        for (jar in candidates) {
+            val marker = File(jar.parent, "${jar.name}.patched_glfw34")
+            if (marker.exists()) {
+                Log.d("PING_LAUNCHER", "GLFW 3.4 패치 이미 적용됨: ${jar.name}")
+                continue
+            }
+            Log.d("PING_LAUNCHER", "GLFW 3.4 스텁 주입 시작: ${jar.name}")
+            try {
+                patchGlfwJar(jar)
+                marker.createNewFile()
+                Log.d("PING_LAUNCHER", "✅ GLFW 3.4 스텁 주입 완료: ${jar.name}")
+            } catch (e: Exception) {
+                Log.e("PING_LAUNCHER", "GLFW 3.4 패치 실패: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun patchGlfwJar(jar: File) {
+        val tmp = File(jar.parent, jar.name + ".tmp")
+        ZipFile(jar).use { zin ->
+            ZipOutputStream(tmp.outputStream()).use { zout ->
+                val entries = zin.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    val bytes = zin.getInputStream(entry).readBytes()
+                    val finalBytes = if (entry.name == "org/lwjgl/glfw/GLFW.class") {
+                        patchGlfwClass(bytes)
+                    } else bytes
+
+                    // 새 ZipEntry 로 만들어야 CRC/size 자동 계산. DEFLATED 로 통일.
+                    val newEntry = ZipEntry(entry.name).apply {
+                        method = ZipEntry.DEFLATED
+                    }
+                    zout.putNextEntry(newEntry)
+                    zout.write(finalBytes)
+                    zout.closeEntry()
+                }
+            }
+        }
+        if (!jar.delete()) throw IOException("기존 jar 삭제 실패: ${jar.absolutePath}")
+        if (!tmp.renameTo(jar)) throw IOException("임시 jar rename 실패")
+    }
+
+    private fun patchGlfwClass(bytes: ByteArray): ByteArray {
+        val ASM = Opcodes.ASM9
+
+        // 이미 같은 시그니처 메서드가 있으면 덮어쓰지 않도록 1차 스캔
+        val existing = HashSet<String>()
+        ClassReader(bytes).accept(object : ClassVisitor(ASM) {
+            override fun visitMethod(
+                access: Int, name: String, descriptor: String,
+                signature: String?, exceptions: Array<out String>?
+            ): org.objectweb.asm.MethodVisitor? {
+                existing.add("$name$descriptor")
+                return null
+            }
+        }, ClassReader.SKIP_CODE)
+
+        val reader = ClassReader(bytes)
+        val writer = ClassWriter(reader, ClassWriter.COMPUTE_FRAMES)
+
+        val visitor = object : ClassVisitor(ASM, writer) {
+            override fun visitEnd() {
+                // GLFW_PLATFORM_X11 = 0x60004
+                if ("glfwPlatformSupported(I)Z" !in existing) {
+                    emitPlatformSupported(); Log.d("PING_LAUNCHER", "  + glfwPlatformSupported(I)Z")
+                }
+                if ("glfwGetPlatform()I" !in existing) {
+                    emitGetPlatform(); Log.d("PING_LAUNCHER", "  + glfwGetPlatform()I")
+                }
+                listOf(
+                    "glfwFocusWindow", "glfwHideWindow",
+                    "glfwMaximizeWindow", "glfwRestoreWindow",
+                    "glfwRequestWindowAttention"
+                ).forEach { n ->
+                    if ("$n(J)V" !in existing) {
+                        emitNoopJV(n); Log.d("PING_LAUNCHER", "  + $n(J)V")
+                    }
+                }
+                super.visitEnd()
+            }
+
+            private fun emitPlatformSupported() {
+                val mv = cv.visitMethod(
+                    Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                    "glfwPlatformSupported", "(I)Z", null, null
+                )
+                mv.visitCode()
+                mv.visitVarInsn(Opcodes.ILOAD, 0)
+                mv.visitLdcInsn(0x60004)
+                val notEqual = org.objectweb.asm.Label()
+                mv.visitJumpInsn(Opcodes.IF_ICMPNE, notEqual)
+                mv.visitInsn(Opcodes.ICONST_1)
+                mv.visitInsn(Opcodes.IRETURN)
+                mv.visitLabel(notEqual)
+                mv.visitInsn(Opcodes.ICONST_0)
+                mv.visitInsn(Opcodes.IRETURN)
+                mv.visitMaxs(2, 1)
+                mv.visitEnd()
+            }
+
+            private fun emitGetPlatform() {
+                val mv = cv.visitMethod(
+                    Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                    "glfwGetPlatform", "()I", null, null
+                )
+                mv.visitCode()
+                mv.visitLdcInsn(0x60004)
+                mv.visitInsn(Opcodes.IRETURN)
+                mv.visitMaxs(1, 0)
+                mv.visitEnd()
+            }
+
+            private fun emitNoopJV(name: String) {
+                val mv = cv.visitMethod(
+                    Opcodes.ACC_PUBLIC or Opcodes.ACC_STATIC,
+                    name, "(J)V", null, null
+                )
+                mv.visitCode()
+                mv.visitInsn(Opcodes.RETURN)
+                mv.visitMaxs(0, 2)   // long = 2 slot
+                mv.visitEnd()
+            }
+        }
+        reader.accept(visitor, 0)
+        return writer.toByteArray()
+    }
+
     private fun patchLaunchwrapperIfNeeded(searchDirs: List<File>) {
         searchDirs.forEach { dir ->
             dir.walkTopDown()
@@ -444,16 +603,16 @@ class MinecraftActivity : BaseActivity() {
     }
 
     private fun patchLaunchJar(lwJar: File) {
-        val zipIn = java.util.zip.ZipFile(lwJar)
+        val zipIn = ZipFile(lwJar)
         val patchedJar = File(lwJar.parent, lwJar.name + ".tmp")
-        val zipOut = java.util.zip.ZipOutputStream(patchedJar.outputStream())
+        val zipOut = ZipOutputStream(patchedJar.outputStream())
 
         zipIn.entries().asSequence().forEach { entry ->
             val bytes = zipIn.getInputStream(entry).readBytes()
             val patched = if (entry.name == "net/minecraft/launchwrapper/Launch.class") {
                 patchLaunchClass(bytes)
             } else bytes
-            zipOut.putNextEntry(java.util.zip.ZipEntry(entry.name))
+            zipOut.putNextEntry(ZipEntry(entry.name))
             zipOut.write(patched)
             zipOut.closeEntry()
         }
@@ -465,26 +624,26 @@ class MinecraftActivity : BaseActivity() {
     }
 
     private fun patchLaunchClass(bytes: ByteArray): ByteArray {
-        val reader = org.objectweb.asm.ClassReader(bytes)
-        val writer = org.objectweb.asm.ClassWriter(reader, org.objectweb.asm.ClassWriter.COMPUTE_FRAMES)
+        val reader = ClassReader(bytes)
+        val writer = ClassWriter(reader, ClassWriter.COMPUTE_FRAMES)
 
-        val visitor = object : org.objectweb.asm.ClassVisitor(org.objectweb.asm.Opcodes.ASM9, writer) {
+        val visitor = object : ClassVisitor(Opcodes.ASM9, writer) {
             override fun visitMethod(
                 access: Int, name: String, descriptor: String,
                 signature: String?, exceptions: Array<out String>?
             ): org.objectweb.asm.MethodVisitor {
                 val mv = super.visitMethod(access, name, descriptor, signature, exceptions)
                 if (name == "<init>" && descriptor == "()V") {
-                    return object : org.objectweb.asm.MethodVisitor(org.objectweb.asm.Opcodes.ASM9, mv) {
+                    return object : org.objectweb.asm.MethodVisitor(Opcodes.ASM9, mv) {
                         override fun visitTypeInsn(opcode: Int, type: String) {
-                            if (opcode == org.objectweb.asm.Opcodes.CHECKCAST && type == "java/net/URLClassLoader") {
-                                visitInsn(org.objectweb.asm.Opcodes.POP)
+                            if (opcode == Opcodes.CHECKCAST && type == "java/net/URLClassLoader") {
+                                visitInsn(Opcodes.POP)
                                 visitLdcInsn("java.class.path")
                                 visitLdcInsn("")
-                                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESTATIC, "java/lang/System", "getProperty", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false)
+                                visitMethodInsn(Opcodes.INVOKESTATIC, "java/lang/System", "getProperty", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", false)
                                 visitLdcInsn(File.pathSeparator)
-                                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEVIRTUAL, "java/lang/String", "split", "(Ljava/lang/String;)[Ljava/lang/String;", false)
-                                visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESTATIC, "net/minecraft/launchwrapper/Launch", "pingStringsToUrls", "([Ljava/lang/String;)[Ljava/net/URL;", false)
+                                visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/lang/String", "split", "(Ljava/lang/String;)[Ljava/lang/String;", false)
+                                visitMethodInsn(Opcodes.INVOKESTATIC, "net/minecraft/launchwrapper/Launch", "pingStringsToUrls", "([Ljava/lang/String;)[Ljava/net/URL;", false)
                                 return
                             }
                             super.visitTypeInsn(opcode, type)
@@ -501,49 +660,49 @@ class MinecraftActivity : BaseActivity() {
             override fun visitEnd() {
                 // 헬퍼 메서드 추가
                 val mv = cv.visitMethod(
-                    org.objectweb.asm.Opcodes.ACC_PRIVATE or org.objectweb.asm.Opcodes.ACC_STATIC,
+                    Opcodes.ACC_PRIVATE or Opcodes.ACC_STATIC,
                     "pingStringsToUrls", "([Ljava/lang/String;)[Ljava/net/URL;", null, null
                 )
                 mv.visitCode()
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
-                mv.visitInsn(org.objectweb.asm.Opcodes.ARRAYLENGTH)
-                mv.visitTypeInsn(org.objectweb.asm.Opcodes.ANEWARRAY, "java/net/URL")
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ASTORE, 1)
-                mv.visitInsn(org.objectweb.asm.Opcodes.ICONST_0)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ISTORE, 2)
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitInsn(Opcodes.ARRAYLENGTH)
+                mv.visitTypeInsn(Opcodes.ANEWARRAY, "java/net/URL")
+                mv.visitVarInsn(Opcodes.ASTORE, 1)
+                mv.visitInsn(Opcodes.ICONST_0)
+                mv.visitVarInsn(Opcodes.ISTORE, 2)
                 val loopStart = org.objectweb.asm.Label()
                 val loopEnd = org.objectweb.asm.Label()
                 mv.visitLabel(loopStart)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ILOAD, 2)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
-                mv.visitInsn(org.objectweb.asm.Opcodes.ARRAYLENGTH)
-                mv.visitJumpInsn(org.objectweb.asm.Opcodes.IF_ICMPGE, loopEnd)
+                mv.visitVarInsn(Opcodes.ILOAD, 2)
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitInsn(Opcodes.ARRAYLENGTH)
+                mv.visitJumpInsn(Opcodes.IF_ICMPGE, loopEnd)
                 val tryStart = org.objectweb.asm.Label()
                 val tryEnd = org.objectweb.asm.Label()
                 val catchBlock = org.objectweb.asm.Label()
                 mv.visitTryCatchBlock(tryStart, tryEnd, catchBlock, "java/lang/Exception")
                 mv.visitLabel(tryStart)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 1)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ILOAD, 2)
-                mv.visitTypeInsn(org.objectweb.asm.Opcodes.NEW, "java/io/File")
-                mv.visitInsn(org.objectweb.asm.Opcodes.DUP)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 0)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ILOAD, 2)
-                mv.visitInsn(org.objectweb.asm.Opcodes.AALOAD)
-                mv.visitMethodInsn(org.objectweb.asm.Opcodes.INVOKESPECIAL, "java/io/File", "<init>", "(Ljava/lang/String;)V", false)
-                mv.visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEVIRTUAL, "java/io/File", "toURI", "()Ljava/net/URI;", false)
-                mv.visitMethodInsn(org.objectweb.asm.Opcodes.INVOKEVIRTUAL, "java/net/URI", "toURL", "()Ljava/net/URL;", false)
-                mv.visitInsn(org.objectweb.asm.Opcodes.AASTORE)
+                mv.visitVarInsn(Opcodes.ALOAD, 1)
+                mv.visitVarInsn(Opcodes.ILOAD, 2)
+                mv.visitTypeInsn(Opcodes.NEW, "java/io/File")
+                mv.visitInsn(Opcodes.DUP)
+                mv.visitVarInsn(Opcodes.ALOAD, 0)
+                mv.visitVarInsn(Opcodes.ILOAD, 2)
+                mv.visitInsn(Opcodes.AALOAD)
+                mv.visitMethodInsn(Opcodes.INVOKESPECIAL, "java/io/File", "<init>", "(Ljava/lang/String;)V", false)
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/io/File", "toURI", "()Ljava/net/URI;", false)
+                mv.visitMethodInsn(Opcodes.INVOKEVIRTUAL, "java/net/URI", "toURL", "()Ljava/net/URL;", false)
+                mv.visitInsn(Opcodes.AASTORE)
                 mv.visitLabel(tryEnd)
                 mv.visitIincInsn(2, 1)
-                mv.visitJumpInsn(org.objectweb.asm.Opcodes.GOTO, loopStart)
+                mv.visitJumpInsn(Opcodes.GOTO, loopStart)
                 mv.visitLabel(catchBlock)
-                mv.visitInsn(org.objectweb.asm.Opcodes.POP)
+                mv.visitInsn(Opcodes.POP)
                 mv.visitIincInsn(2, 1)
-                mv.visitJumpInsn(org.objectweb.asm.Opcodes.GOTO, loopStart)
+                mv.visitJumpInsn(Opcodes.GOTO, loopStart)
                 mv.visitLabel(loopEnd)
-                mv.visitVarInsn(org.objectweb.asm.Opcodes.ALOAD, 1)
-                mv.visitInsn(org.objectweb.asm.Opcodes.ARETURN)
+                mv.visitVarInsn(Opcodes.ALOAD, 1)
+                mv.visitInsn(Opcodes.ARETURN)
                 mv.visitMaxs(5, 3)
                 mv.visitEnd()
                 super.visitEnd()
@@ -754,6 +913,7 @@ class MinecraftActivity : BaseActivity() {
 
         // PojavLauncher 패치 LWJGL은 모든 MC 버전에 필요 (libglfw.so가 pojavInit 라우팅을 가정함)
         copyLwjglJars(base)
+        patchLwjglGlfwIfNeeded(File(base, "lwjgl3"))
         val lwjgl3Dir = File(base, "lwjgl3")
         // 수정 — patched GLFW를 무조건 0번 인덱스에
         val lwjglJars = lwjgl3Dir.listFiles()
