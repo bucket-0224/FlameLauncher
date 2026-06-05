@@ -40,16 +40,20 @@ fun MinecraftSurface(
         factory = { ctx ->
             val activity = ctx as MinecraftActivity
             object : SurfaceView(ctx) {
-                override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-                    // ── 2) TYPE_NULL 금지. 일반 텍스트로 광고 ──
-                    outAttrs.inputType =
-                        android.text.InputType.TYPE_CLASS_TEXT or
-                                android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS  // 자동완성 꺼서 IME 가 조용히 chars 만 보내게
-                    outAttrs.imeOptions =
-                        EditorInfo.IME_FLAG_NO_EXTRACT_UI or       // 가로 모드에서 fullscreen 추출 UI 차단
-                                EditorInfo.IME_FLAG_NO_FULLSCREEN or
-                                EditorInfo.IME_ACTION_NONE
+                override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
+                    val config = resources.configuration
+                    val hasHardwareKeyboard = config.keyboard != android.content.res.Configuration.KEYBOARD_NOKEYS
 
+                    if (hasHardwareKeyboard) {
+                        // 물리 키보드 있음 → onKeyDown/onKeyUp 경로로만 받기
+                        return null
+                    }
+
+                    outAttrs.inputType = android.text.InputType.TYPE_CLASS_TEXT or
+                            android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+                    outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                            EditorInfo.IME_FLAG_NO_FULLSCREEN or
+                            EditorInfo.IME_ACTION_NONE
                     return MinecraftInputConnection(this, activity)
                 }
             }.apply {

@@ -11,6 +11,9 @@
 #include <pthread.h>
 #include <stdio.h>
 
+#include "environ/environ.h"  // 기존 include 옆에
+
+
 #ifndef JNI_VERSION_1_8
 #define JNI_VERSION_1_8 0x00010008
 #endif
@@ -576,4 +579,108 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
     }
 
     return 0;
+}
+
+// 한 방에 처리: environ 에서 mainWindowBundle 꺼내서 nglfwSetShowingWindow 호출
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeTrySetupShowingWindow(
+        JNIEnv* env, jobject thiz) {
+
+    // 1) environ 확인
+    const char* env_str = getenv("POJAV_ENVIRON");
+    if (!env_str) {
+        return JNI_FALSE;
+    }
+    char* endptr;
+    uintptr_t environ_ptr = strtoul(env_str, &endptr, 16);
+    if (*endptr != '\0' || environ_ptr == 0) {
+        return JNI_FALSE;
+    }
+
+    // 2) mainWindowBundle 위치는 환경구조체의 두 번째 필드 (offset = sizeof(void*))
+    void** mainWindowBundle_loc = (void**)(environ_ptr + sizeof(void*));
+    void* mainWindowBundle = *mainWindowBundle_loc;
+    if (!mainWindowBundle) {
+        return JNI_FALSE;
+    }
+
+    // 3) nglfwSetShowingWindow 호출
+    void* h = dlopen("libpojavexec.so", RTLD_NOLOAD | RTLD_NOW);
+    if (!h) h = dlopen("libglfw.so", RTLD_NOLOAD | RTLD_NOW);
+    if (!h) {
+        LOGE("nativeTrySetupShowingWindow: libpojavexec/libglfw 미로드");
+        return JNI_FALSE;
+    }
+
+    typedef void (*SetShowing_t)(JNIEnv*, jclass, jlong);
+    SetShowing_t fn = (SetShowing_t)dlsym(
+            h, "Java_org_lwjgl_glfw_GLFW_nglfwSetShowingWindow");
+    if (!fn) {
+        LOGE("nglfwSetShowingWindow 심볼 없음");
+        return JNI_FALSE;
+    }
+
+    fn(env, nullptr, (jlong)(uintptr_t)mainWindowBundle);
+    LOGI("✅ showingWindow = mainWindowBundle = %p", mainWindowBundle);
+    return JNI_TRUE;
+}
+
+// 현재 environ 의 상태를 한 번에 덤프
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeDumpInputState(
+        JNIEnv* env, jobject thiz) {
+    const char* env_str = getenv("POJAV_ENVIRON");
+    if (!env_str) {
+        LOGI("DUMP: POJAV_ENVIRON 없음");
+        return;
+    }
+    char* endptr;
+    uintptr_t environ_ptr = strtoul(env_str, &endptr, 16);
+    if (*endptr != '\0' || environ_ptr == 0) {
+        LOGI("DUMP: environ 파싱 실패");
+        return;
+    }
+
+    void* h = dlopen("libpojavexec.so", RTLD_NOLOAD | RTLD_NOW);
+    if (!h) h = dlopen("libglfw.so", RTLD_NOLOAD | RTLD_NOW);
+
+    void** main_bundle = (void**)(environ_ptr + sizeof(void*));
+    LOGI("DUMP: mainWindowBundle = %p", *main_bundle);
+    LOGI("DUMP: pojavWindow      = %p", *(void**)environ_ptr);
+}
+extern "C" JNIEXPORT void JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeDumpCharCallback(
+        JNIEnv* env, jobject thiz) {
+    const char* env_str = getenv("POJAV_ENVIRON");
+    if (!env_str) { LOGI("DUMP: no POJAV_ENVIRON"); return; }
+    char* endptr;
+    uintptr_t ptr = strtoul(env_str, &endptr, 16);
+    if (*endptr != '\0' || ptr == 0) {
+        LOGI("DUMP: environ parse fail");
+        return;
+    }
+
+    void* h = dlopen("libpojavexec.so", RTLD_NOLOAD | RTLD_NOW);
+    if (h) {
+        void* p1 = dlsym(h, "Java_org_lwjgl_glfw_GLFW_nglfwSetCharCallback");
+        void* p2 = dlsym(h, "Java_org_lwjgl_glfw_GLFW_nglfwSetKeyCallback");
+        void* p3 = dlsym(h, "Java_org_lwjgl_glfw_GLFW_nglfwSetMouseButtonCallback");
+        LOGI("DUMP: dlsym nglfwSetCharCallback        = %p", p1);
+        LOGI("DUMP: dlsym nglfwSetKeyCallback         = %p", p2);
+        LOGI("DUMP: dlsym nglfwSetMouseButtonCallback = %p", p3);
+    }
+
+    struct pojav_environ_s* e = (struct pojav_environ_s*)ptr;
+
+    LOGI("DUMP: GLFW_invoke_Char     = %p", (void*)e->GLFW_invoke_Char);
+    LOGI("DUMP: GLFW_invoke_CharMods = %p", (void*)e->GLFW_invoke_CharMods);  // ★ 추가
+    LOGI("DUMP: GLFW_invoke_Key      = %p", (void*)e->GLFW_invoke_Key);
+    LOGI("DUMP: pojav_environ      = %p", e);
+    LOGI("DUMP: mainWindowBundle   = %p", e->mainWindowBundle);
+    LOGI("DUMP: showingWindow      = 0x%lx", (long)e->showingWindow);
+    LOGI("DUMP: isInputReady       = %d", e->isInputReady);
+    LOGI("DUMP: isGrabbing         = %d", e->isGrabbing);
+    LOGI("DUMP: GLFW_invoke_Char   = %p", (void*)e->GLFW_invoke_Char);
+    LOGI("DUMP: GLFW_invoke_Key    = %p", (void*)e->GLFW_invoke_Key);
+    LOGI("DUMP: GLFW_invoke_MouseButton = %p", (void*)e->GLFW_invoke_MouseButton);
 }

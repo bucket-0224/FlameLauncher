@@ -1,5 +1,6 @@
 package kr.co.donghyun.pinglauncher.presentation.util.minecraft
 
+import android.util.Log
 import android.view.KeyEvent
 import android.view.View
 import android.view.inputmethod.BaseInputConnection
@@ -10,28 +11,55 @@ class MinecraftInputConnection(
     private val activity: MinecraftActivity,
 ) : BaseInputConnection(targetView, /*fullEditor=*/ true) {
 
-    // 조합 중인 문자열을 보관. 한글 IME 가 setComposingText 로 매 자모마다 호출.
-    // ex) ㄱ → 가 → 갑 → 강  … 매번 마지막 형태로 덮어쓴다.
+    // 조합 중인 텍스트. 한글 IME 가 매 자모마다 호출.
     private var pendingComposition: String = ""
 
     override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-        // 조합 중이었다면 commit 시점에 이미 조합 결과가 text 로 옴 → 그대로 송신
+        Log.d("PING_IME", "commitText: '$text'")
+        // 조합 완료된 텍스트는 그대로 송신
         pendingComposition = ""
-        text?.forEach { sendChar(it) }
+        text?.forEach { sendCharToMc(it) }
         return true
     }
 
     override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-        // 조합 중간 상태 보관만. MC 에는 아직 송신하지 않음.
-        pendingComposition = text?.toString().orEmpty()
+        Log.d("PING_IME", "setComposingText: '$text' (pending='$pendingComposition')")
+
+        val newText = text?.toString().orEmpty()
+        val oldText = pendingComposition
+
+        // 한글 조합 처리 전략:
+        //   "ㄱ" → "가" → "강" 식으로 조합이 진행되는데,
+        //   매번 마지막 글자만 채팅창에 반영되어야 함.
+        //   즉 이전 조합문자를 backspace 로 지우고 새 조합문자를 commit 해야 자연스럽다.
+        //
+        // 그러나 MC 의 EditBox 는 IME 조합 개념이 없어서, 단순히 "글자 송신" 만 지원.
+        // 따라서 다음과 같이 한다:
+        //   1) 이전 조합 글자가 있다면 backspace 송신 (= 키 KEYCODE_DEL)
+        //   2) 새 조합 텍스트의 마지막 글자를 nativeSendCharMods 로 송신
+
+        if (oldText.isNotEmpty()) {
+            // 이전 조합 문자 지우기 - oldText 길이만큼 backspace
+            repeat(oldText.length) {
+                activity.sendKey(259, 1)  // GLFW Backspace down
+                activity.sendKey(259, 0)  // up
+            }
+        }
+
+        if (newText.isNotEmpty()) {
+            // 새 조합 글자 송신
+            newText.forEach { sendCharToMc(it) }
+        }
+
+        pendingComposition = newText
         return true
     }
 
     override fun finishComposingText(): Boolean {
-        if (pendingComposition.isNotEmpty()) {
-            pendingComposition.forEach { sendChar(it) }
-            pendingComposition = ""
-        }
+        Log.d("PING_IME", "finishComposingText (pending='$pendingComposition')")
+        // 조합이 확정되면 pendingComposition 는 그대로 commit 된 상태로 간주
+        // 이미 setComposingText 에서 송신됐으므로 추가 작업 없음.
+        pendingComposition = ""
         return true
     }
 
@@ -39,14 +67,14 @@ class MinecraftInputConnection(
         val isDown = event.action == KeyEvent.ACTION_DOWN
         val glfwAction = if (isDown) 1 else 0
         val glfwKey = when (event.keyCode) {
-            KeyEvent.KEYCODE_DEL        -> 259  // Backspace
+            KeyEvent.KEYCODE_DEL          -> 259  // Backspace
             KeyEvent.KEYCODE_ENTER,
-            KeyEvent.KEYCODE_NUMPAD_ENTER -> 257  // Enter
-            KeyEvent.KEYCODE_DPAD_LEFT  -> 263
-            KeyEvent.KEYCODE_DPAD_RIGHT -> 262
-            KeyEvent.KEYCODE_DPAD_UP    -> 265
-            KeyEvent.KEYCODE_DPAD_DOWN  -> 264
-            KeyEvent.KEYCODE_FORWARD_DEL -> 261  // Delete
+            KeyEvent.KEYCODE_NUMPAD_ENTER -> 257
+            KeyEvent.KEYCODE_DPAD_LEFT    -> 263
+            KeyEvent.KEYCODE_DPAD_RIGHT   -> 262
+            KeyEvent.KEYCODE_DPAD_UP      -> 265
+            KeyEvent.KEYCODE_DPAD_DOWN    -> 264
+            KeyEvent.KEYCODE_FORWARD_DEL  -> 261
             else -> return super.sendKeyEvent(event)
         }
         activity.sendKey(glfwKey, glfwAction)
@@ -54,7 +82,7 @@ class MinecraftInputConnection(
     }
 
     override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-        // Samsung 키보드 등 일부 IME 는 backspace 대신 이걸로 보냄
+        Log.d("PING_IME", "deleteSurroundingText: before=$beforeLength after=$afterLength")
         repeat(beforeLength) {
             activity.sendKey(259, 1)
             activity.sendKey(259, 0)
@@ -66,11 +94,17 @@ class MinecraftInputConnection(
         return true
     }
 
-    private fun sendChar(c: Char) {
+    /** MC 의 nativeSendCharMods 로 단일 문자 송신 */
+    private fun sendCharToMc(c: Char) {
         try {
-            Class.forName("org.lwjgl.glfw.CallbackBridge")
-                .getMethod("nativeSendChar", Char::class.java)
-                .invoke(null, c)
-        } catch (_: Exception) {}
+            val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
+            // Char 콜백 (1.12 이하)
+            cb.getMethod("nativeSendChar", Char::class.java).invoke(null, c)
+            // CharMods 콜백 (1.13+) — 핵심
+            cb.getMethod("nativeSendCharMods", Char::class.java, Int::class.java)
+                .invoke(null, c, 0)
+        } catch (e: Exception) {
+            Log.e("PING_IME", "sendCharToMc 실패", e)
+        }
     }
 }

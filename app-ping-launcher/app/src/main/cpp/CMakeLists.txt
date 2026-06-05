@@ -13,6 +13,10 @@ find_library(dl-lib dl)
 
 # ── pingjvm (JVM 부팅) ────────────────────────────────────────
 add_library(pingjvm SHARED pingjvm.cpp)
+target_include_directories(pingjvm PRIVATE
+        pojav_jni
+        pojav_jni/environ
+)
 target_link_libraries(pingjvm ${log-lib})
 
 # ── PojavLauncher core 소스 (awt_bridge.c 제외) ───────────────

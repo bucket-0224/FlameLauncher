@@ -2,8 +2,12 @@ package kr.co.donghyun.pinglauncher.presentation
 
 import android.content.Context
 import android.content.Intent
+import android.hardware.input.InputManager.InputDeviceListener
 import android.util.Log
+import android.view.InputDevice
+import android.view.KeyEvent
 import android.view.Surface
+import android.view.View
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
@@ -43,6 +47,9 @@ class MinecraftActivity : BaseActivity() {
 
     private external fun nativeIsGrabbing(): Boolean
     private external fun nativeSetupBridgeWindow(surface: Surface)
+    private external fun nativeTrySetupShowingWindow(): Boolean
+    private external fun nativeDumpInputState()
+
 
     // Intent로 전달받은 버전 정보
     private lateinit var versionId: String
@@ -54,6 +61,8 @@ class MinecraftActivity : BaseActivity() {
     private var currentSurface: Surface? = null
     @Volatile var combatMode: Boolean = false
 
+    private var forceShowController: Boolean? = null
+
     private val PROCESSOR_ONLY_JAR_PREFIXES = listOf(
         "ForgeAutoRenamingTool",
         "BinaryPatcher", "binarypatcher",
@@ -63,6 +72,9 @@ class MinecraftActivity : BaseActivity() {
         "DiffPatch", "diffpatch",
         "mergetool"   // ※ 부팅에 필요한 mergetool-*-api.jar 는 보존 필요 — 아래 헬퍼에서 별도 처리
     )
+
+    private var gameControllerView: GameControllerView? = null
+    private var inputDeviceListener: InputDeviceListener? = null
 
     internal val isGrabbing: Boolean
         get() = try { nativeIsGrabbing() } catch (_: Exception) { false }
@@ -155,14 +167,91 @@ class MinecraftActivity : BaseActivity() {
             }
         }
 
-        val controllerView = GameControllerView(this)
-        addContentView(
-            controllerView,
-            android.view.ViewGroup.LayoutParams(
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT
+
+        gameControllerView = GameControllerView(this).also { view ->
+            addContentView(
+                view,
+                android.view.ViewGroup.LayoutParams(
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                    android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                )
             )
-        )
+        }
+
+        // 초기 상태 반영 + 디바이스 변화 감지
+        setupInputDeviceWatching()
+        installPhysicalKeyboardInterceptor()
+    }
+
+    private fun setupInputDeviceWatching() {
+        val im = getSystemService(INPUT_SERVICE)
+                as android.hardware.input.InputManager
+
+        // 초기 상태 반영
+        updateGameControllerVisibility()
+
+        // 디바이스 add/remove/change 감지
+        inputDeviceListener = object : InputDeviceListener {
+            override fun onInputDeviceAdded(deviceId: Int) {
+                Log.d("PING_LAUNCHER", "🎮 입력 디바이스 추가: id=$deviceId")
+                updateGameControllerVisibility()
+            }
+            override fun onInputDeviceRemoved(deviceId: Int) {
+                Log.d("PING_LAUNCHER", "🎮 입력 디바이스 제거: id=$deviceId")
+                updateGameControllerVisibility()
+            }
+            override fun onInputDeviceChanged(deviceId: Int) {
+                updateGameControllerVisibility()
+            }
+        }
+        im.registerInputDeviceListener(inputDeviceListener, null)
+    }
+
+    /** 현재 물리 키보드 또는 마우스가 연결되어 있는지 */
+    private fun hasHardwareKeyboardOrMouse(): Boolean {
+        val im = getSystemService(INPUT_SERVICE)
+                as android.hardware.input.InputManager
+
+        for (id in im.inputDeviceIds) {
+            val dev = im.getInputDevice(id) ?: continue
+            if (dev.isVirtual) continue
+
+            val src = dev.sources
+
+            // 알파벳 키보드 (소프트 IME 제외)
+            if ((src and InputDevice.SOURCE_KEYBOARD) != 0
+                && dev.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
+                return true
+            }
+
+            // 마우스 / 터치패드
+            if ((src and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE
+                || (src and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD) {
+                return true
+            }
+        }
+        return false
+    }
+
+
+    /**
+     * 물리 키보드/마우스가 연결되어 있으면 GameControllerView 를 숨긴다.
+     *
+     * 판정 기준:
+     *  - 키보드: SOURCE_KEYBOARD 비트 + KEYBOARD_TYPE_ALPHABETIC (소프트 IME 제외)
+     *  - 마우스: SOURCE_MOUSE 비트 (또는 SOURCE_MOUSE_RELATIVE)
+     *  - 둘 중 하나라도 있으면 숨김
+     */
+    private fun updateGameControllerVisibility() {
+        val shouldHide = hasHardwareKeyboardOrMouse()
+
+        Log.e("PING_LAUNCHER",   // ← Debug → Error 로 변경 (디버그용 일시 변경)
+            "🎮 GameController visibility: → ${if (shouldHide) "HIDE" else "SHOW"}")
+
+        runOnUiThread {
+            gameControllerView?.visibility =
+                if (shouldHide) View.GONE else View.VISIBLE
+        }
     }
 
     private fun setupAndLaunch(surface: Surface) {
@@ -465,53 +554,27 @@ class MinecraftActivity : BaseActivity() {
 
     internal fun sendKey(glfwKeyCode: Int, action: Int) {
         Log.d("PING_LAUNCHER", "sendKey 호출: $glfwKeyCode, action=$action")
+
         try {
             val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
+
+            // ★ InputReady 강제 ON (진단 + 임시 수정)
+            cb.getMethod("nativeSetInputReady", Boolean::class.java).invoke(null, true)
+
             val scancode = getScancode(glfwKeyCode)
             cb.getMethod("nativeSendKey", Int::class.java, Int::class.java, Int::class.java, Int::class.java)
                 .invoke(null, glfwKeyCode, scancode, action, 0)
-            if (action == 1) {
-                val keyChar = glfwKeyToChar(glfwKeyCode)
-                if (keyChar != '\u0000') {
-                    cb.getMethod("nativeSendChar", Char::class.java).invoke(null, keyChar)
-                }
-            }
-        } catch (_: Exception) {}
+//            if (action == 1) {
+//                val keyChar = glfwKeyToChar(glfwKeyCode)
+//                if (keyChar != '\u0000') {
+//                    cb.getMethod("nativeSendChar", Char::class.java).invoke(null, keyChar)
+//                }
+//            }
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "sendKey 예외", e)
+        }
     }
 
-    private fun glfwToAndroidKey(glfwKey: Int): Int? = when (glfwKey) {
-        65 -> android.view.KeyEvent.KEYCODE_A
-        66 -> android.view.KeyEvent.KEYCODE_B
-        67 -> android.view.KeyEvent.KEYCODE_C
-        68 -> android.view.KeyEvent.KEYCODE_D
-        69 -> android.view.KeyEvent.KEYCODE_E
-        70 -> android.view.KeyEvent.KEYCODE_F
-        71 -> android.view.KeyEvent.KEYCODE_G
-        72 -> android.view.KeyEvent.KEYCODE_H
-        73 -> android.view.KeyEvent.KEYCODE_I
-        74 -> android.view.KeyEvent.KEYCODE_J
-        75 -> android.view.KeyEvent.KEYCODE_K
-        76 -> android.view.KeyEvent.KEYCODE_L
-        77 -> android.view.KeyEvent.KEYCODE_M
-        78 -> android.view.KeyEvent.KEYCODE_N
-        79 -> android.view.KeyEvent.KEYCODE_O
-        80 -> android.view.KeyEvent.KEYCODE_P
-        81 -> android.view.KeyEvent.KEYCODE_Q
-        82 -> android.view.KeyEvent.KEYCODE_R
-        83 -> android.view.KeyEvent.KEYCODE_S
-        84 -> android.view.KeyEvent.KEYCODE_T
-        85 -> android.view.KeyEvent.KEYCODE_U
-        86 -> android.view.KeyEvent.KEYCODE_V
-        87 -> android.view.KeyEvent.KEYCODE_W
-        88 -> android.view.KeyEvent.KEYCODE_X
-        89 -> android.view.KeyEvent.KEYCODE_Y
-        90 -> android.view.KeyEvent.KEYCODE_Z
-        32 -> android.view.KeyEvent.KEYCODE_SPACE
-        256 -> android.view.KeyEvent.KEYCODE_ESCAPE
-        257 -> android.view.KeyEvent.KEYCODE_ENTER
-        258 -> android.view.KeyEvent.KEYCODE_TAB
-        else -> null
-    }
 
     internal fun glfwKeyToChar(glfwKey: Int): Char = when (glfwKey) {
         in 65..90 -> ('a' + (glfwKey - 65))  // a-z
@@ -1124,20 +1187,44 @@ class MinecraftActivity : BaseActivity() {
                 }
             }
         }.start()
+
+        Thread {
+            Log.d("PING_LAUNCHER", "🔵 showingWindow 워치독 시작")
+            val deadline = System.currentTimeMillis() + 120_000
+            var attempts = 0
+            var success = false
+
+            while (System.currentTimeMillis() < deadline) {
+                attempts++
+                try {
+                    if (nativeTrySetupShowingWindow()) {
+                        Log.d("PING_LAUNCHER", "✅ showingWindow 세팅 완료 (시도 $attempts)")
+                        success = true
+                        // 한 번 성공해도 MC 가 풀스크린/리사이즈 하면 새 window 가 생길 수 있어서
+                        // 5초마다 재확인. 같은 핸들이면 native 쪽이 어차피 노옵.
+                        Thread.sleep(5000)
+                        continue
+                    }
+                    if (attempts % 20 == 0) {
+                        Log.d("PING_LAUNCHER", "🔵 대기중... (시도 $attempts)")
+                    }
+                } catch (e: Throwable) {
+                    Log.w("PING_LAUNCHER", "워치독 예외: ${e.message}")
+                }
+                Thread.sleep(500)
+            }
+            Log.d("PING_LAUNCHER", "🔵 워치독 종료 (success=$success)")
+        }.apply { isDaemon = true; start() }
     }
 
-    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
             // 마우스 소스면 우클릭, 아니면 ESC
-            if (event.source and android.view.InputDevice.SOURCE_MOUSE != 0) {
+            if (event.source and InputDevice.SOURCE_MOUSE != 0) {
                 sendMouseButton(1, GLFW_PRESS)
             } else {
                 sendKey(256, GLFW_PRESS) // ESC
             }
-            return true
-        }
-        if (keyCode == android.view.KeyEvent.KEYCODE_SPACE) {
-            sendKey(GLFW_KEY_SPACE, GLFW_PRESS)
             return true
         }
         val glfwKey = androidKeyToGlfw(keyCode) ?: return false
@@ -1145,18 +1232,150 @@ class MinecraftActivity : BaseActivity() {
         return true
     }
 
-    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent): Boolean {
-        if (keyCode == android.view.KeyEvent.KEYCODE_BACK) {
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
             sendKey(256, GLFW_RELEASE)
-            return true
-        }
-        if (keyCode == android.view.KeyEvent.KEYCODE_SPACE) {
-            sendKey(GLFW_KEY_SPACE, GLFW_RELEASE)
             return true
         }
         val glfwKey = androidKeyToGlfw(keyCode) ?: return false
         sendKey(glfwKey, GLFW_RELEASE)
         return true
+    }
+
+
+    private fun installPhysicalKeyboardInterceptor() {
+        val originalCallback = window.callback
+        window.callback = object : android.view.Window.Callback by originalCallback {
+            override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+                if (handlePhysicalKey(event)) return true
+                return originalCallback.dispatchKeyEvent(event)
+            }
+        }
+    }
+
+    private fun handlePhysicalKey(event: KeyEvent): Boolean {
+        Log.d("PING_LAUNCHER",
+            "🔑 handlePhysicalKey: keyCode=${event.keyCode} " +
+                    "action=${event.action} src=0x${event.source.toString(16)}")
+
+        // JVM 부팅 전엔 무시
+        if (!jvmStarted) return false
+
+        if (!jvmStarted) return false
+
+        // ★ ACTION_MULTIPLE 은 IME 가 합성한 이벤트 — 절대 가로채지 말 것
+        if (event.action == KeyEvent.ACTION_MULTIPLE) return false
+
+        // ★ IME 가 처리해야 하는 키 — 한글 전환, 한자 등
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_LANGUAGE_SWITCH,   // 한영 키
+            KeyEvent.KEYCODE_KANA,
+            KeyEvent.KEYCODE_HENKAN,
+            KeyEvent.KEYCODE_MUHENKAN,
+            KeyEvent.KEYCODE_EISU -> return false
+        }
+
+        val hasKeyboardSource =
+            (event.source and InputDevice.SOURCE_KEYBOARD) ==
+                    InputDevice.SOURCE_KEYBOARD
+
+        if (!hasKeyboardSource) return false
+
+        // 물리 키보드 / 외장 키보드만 가로채기
+        // (소프트 IME 는 deviceId == -1 또는 KeyCharacterMap.VIRTUAL_KEYBOARD)
+        val isPhysical =
+                (event.source and InputDevice.SOURCE_KEYBOARD) != 0 &&
+                event.deviceId != android.view.KeyCharacterMap.VIRTUAL_KEYBOARD
+
+        if (!isPhysical) return false
+
+        // 시스템 키는 패스 (볼륨, 전원, 홈 등)
+        when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP,
+            KeyEvent.KEYCODE_VOLUME_DOWN,
+            KeyEvent.KEYCODE_VOLUME_MUTE,
+            KeyEvent.KEYCODE_POWER,
+            KeyEvent.KEYCODE_HOME -> return false
+        }
+
+        val isDown = event.action == KeyEvent.ACTION_DOWN
+        val glfwAction = if (isDown) 1 else 0
+
+        // 1) 특수키 우선 매핑 (androidKeyToGlfw 가 못 잡는 것들)
+        val specialKey = when (event.keyCode) {
+            KeyEvent.KEYCODE_DEL          -> 259  // Backspace
+            KeyEvent.KEYCODE_FORWARD_DEL  -> 261  // Delete
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_NUMPAD_ENTER -> 257
+            KeyEvent.KEYCODE_DPAD_LEFT    -> 263
+            KeyEvent.KEYCODE_DPAD_RIGHT   -> 262
+            KeyEvent.KEYCODE_DPAD_UP      -> 265
+            KeyEvent.KEYCODE_DPAD_DOWN    -> 264
+            else -> null
+        }
+
+        if (specialKey != null) {
+            sendKey(specialKey, glfwAction)
+            return true
+        }
+
+        // 2) 일반 키 → GLFW 매핑
+        // 일반 키 → GLFW 매핑
+        val glfwKey = androidKeyToGlfw(event.keyCode)
+        if (glfwKey != null) {
+            sendKey(glfwKey, glfwAction)
+
+            if (isDown) {
+                var unicodeChar = event.getUnicodeChar(event.metaState)
+
+                // ★ fallback: unicodeChar 가 0 이지만 우리가 아는 키면 직접 매핑
+                if (unicodeChar == 0) {
+                    unicodeChar = when (event.keyCode) {
+                        KeyEvent.KEYCODE_SPACE -> ' '.code
+                        KeyEvent.KEYCODE_TAB   -> '\t'.code
+                        else -> 0
+                    }
+                }
+
+                if (unicodeChar != 0) {
+                    val glfwMods = (
+                            (if (event.isShiftPressed) 0x0001 else 0) or
+                                    (if (event.isCtrlPressed)  0x0002 else 0) or
+                                    (if (event.isAltPressed)   0x0004 else 0)
+                            )
+                    sendCharToMc(unicodeChar.toChar(), glfwMods)
+                }
+            }
+            return true
+        }
+
+        // 4) GLFW 매핑은 없지만 unicodeChar 가 있으면 (예: 한글, 특수문자)
+        //    채팅창용으로 문자만 송신
+        if (isDown) {
+            val unicodeChar = event.getUnicodeChar(event.metaState)
+            if (unicodeChar != 0) {
+                sendCharToMc(unicodeChar.toChar())
+                return true
+            }
+        }
+
+        return false
+    }
+
+    private fun sendCharToMc(c: Char, mods: Int = 0) {
+        Log.d("PING_LAUNCHER", "📝 sendCharToMc: '$c' (0x${c.code.toString(16)}) mods=$mods")
+        try {
+            val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
+
+            // 1) Char 콜백 (1.12 이하 + 일부 모드용)
+            cb.getMethod("nativeSendChar", Char::class.java).invoke(null, c)
+
+            // 2) CharMods 콜백 (1.13+ MC 본체용)
+            cb.getMethod("nativeSendCharMods", Char::class.java, Int::class.java)
+                .invoke(null, c, mods)
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "📝 sendChar 예외", e)
+        }
     }
 
 
@@ -1200,30 +1419,41 @@ class MinecraftActivity : BaseActivity() {
     }
 
     fun androidKeyToGlfw(keyCode: Int): Int? = when (keyCode) {
-        android.view.KeyEvent.KEYCODE_W -> GLFW_KEY_W
-        android.view.KeyEvent.KEYCODE_A -> GLFW_KEY_A
-        android.view.KeyEvent.KEYCODE_S -> GLFW_KEY_S
-        android.view.KeyEvent.KEYCODE_D -> GLFW_KEY_D
-        android.view.KeyEvent.KEYCODE_E -> GLFW_KEY_E
-        android.view.KeyEvent.KEYCODE_SPACE -> GLFW_KEY_SPACE
-        android.view.KeyEvent.KEYCODE_SHIFT_LEFT -> GLFW_KEY_LEFT_SHIFT
-        android.view.KeyEvent.KEYCODE_CTRL_LEFT -> GLFW_KEY_LEFT_CONTROL
-        android.view.KeyEvent.KEYCODE_Q -> 81
-        android.view.KeyEvent.KEYCODE_F -> 70
-        android.view.KeyEvent.KEYCODE_R -> 82
-        android.view.KeyEvent.KEYCODE_T -> 84
-        android.view.KeyEvent.KEYCODE_ESCAPE -> GLFW_KEY_ESCAPE
-        android.view.KeyEvent.KEYCODE_ENTER -> GLFW_KEY_ENTER
-        android.view.KeyEvent.KEYCODE_TAB -> GLFW_KEY_TAB
-        android.view.KeyEvent.KEYCODE_1 -> 49
-        android.view.KeyEvent.KEYCODE_2 -> 50
-        android.view.KeyEvent.KEYCODE_3 -> 51
-        android.view.KeyEvent.KEYCODE_4 -> 52
-        android.view.KeyEvent.KEYCODE_5 -> 53
-        android.view.KeyEvent.KEYCODE_6 -> 54
-        android.view.KeyEvent.KEYCODE_7 -> 55
-        android.view.KeyEvent.KEYCODE_8 -> 56
-        android.view.KeyEvent.KEYCODE_9 -> 57
+        KeyEvent.KEYCODE_W -> GLFW_KEY_W
+        KeyEvent.KEYCODE_A -> GLFW_KEY_A
+        KeyEvent.KEYCODE_S -> GLFW_KEY_S
+        KeyEvent.KEYCODE_D -> GLFW_KEY_D
+        KeyEvent.KEYCODE_E -> GLFW_KEY_E
+        KeyEvent.KEYCODE_SPACE -> GLFW_KEY_SPACE
+        KeyEvent.KEYCODE_SHIFT_LEFT -> GLFW_KEY_LEFT_SHIFT
+        KeyEvent.KEYCODE_CTRL_LEFT -> GLFW_KEY_LEFT_CONTROL
+        KeyEvent.KEYCODE_Q -> 81
+        KeyEvent.KEYCODE_F -> 70
+        KeyEvent.KEYCODE_R -> 82
+        KeyEvent.KEYCODE_T -> 84
+        KeyEvent.KEYCODE_ESCAPE -> GLFW_KEY_ESCAPE
+        KeyEvent.KEYCODE_ENTER -> GLFW_KEY_ENTER
+        KeyEvent.KEYCODE_TAB -> GLFW_KEY_TAB
+        KeyEvent.KEYCODE_1 -> 49
+        KeyEvent.KEYCODE_2 -> 50
+        KeyEvent.KEYCODE_3 -> 51
+        KeyEvent.KEYCODE_4 -> 52
+        KeyEvent.KEYCODE_5 -> 53
+        KeyEvent.KEYCODE_6 -> 54
+        KeyEvent.KEYCODE_7 -> 55
+        KeyEvent.KEYCODE_8 -> 56
+        KeyEvent.KEYCODE_9 -> 57
+        KeyEvent.KEYCODE_SLASH       -> 47   // /
+        KeyEvent.KEYCODE_PERIOD      -> 46   // .
+        KeyEvent.KEYCODE_COMMA       -> 44   // ,
+        KeyEvent.KEYCODE_MINUS       -> 45   // -
+        KeyEvent.KEYCODE_EQUALS      -> 61   // =
+        KeyEvent.KEYCODE_SEMICOLON   -> 59   // ;
+        KeyEvent.KEYCODE_APOSTROPHE  -> 39   // '
+        KeyEvent.KEYCODE_LEFT_BRACKET  -> 91  // [
+        KeyEvent.KEYCODE_RIGHT_BRACKET -> 93  // ]
+        KeyEvent.KEYCODE_BACKSLASH   -> 92   // \
+        KeyEvent.KEYCODE_GRAVE       -> 96   // `
         else -> null
     }
 
@@ -1248,7 +1478,7 @@ class MinecraftActivity : BaseActivity() {
 
     override fun onResume() {
         super.onResume()
-        window.decorView.findViewWithTag<android.view.View>("minecraft_surface")
+        window.decorView.findViewWithTag<View>("minecraft_surface")
             ?.let { it.requestFocus() }
             ?: window.decorView.requestFocus()
 
@@ -1264,6 +1494,18 @@ class MinecraftActivity : BaseActivity() {
     }
 
     override fun onDestroy() {
+        currentInstance = null
+        // ★ 리스너 해제
+        inputDeviceListener?.let { listener ->
+            try {
+                val im = getSystemService(INPUT_SERVICE)
+                        as android.hardware.input.InputManager
+                im.unregisterInputDeviceListener(listener)
+            } catch (_: Throwable) {}
+        }
+        inputDeviceListener = null
+        gameControllerView = null
+
         currentInstance = null
         super.onDestroy()
     }
