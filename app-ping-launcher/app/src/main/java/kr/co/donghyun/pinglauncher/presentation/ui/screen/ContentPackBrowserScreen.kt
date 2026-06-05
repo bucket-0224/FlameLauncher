@@ -119,7 +119,7 @@ fun ContentPackBrowserScreen(
                 Text(
                     "컨텐츠 검색",
                     color = TextMain,
-                    fontSize = if (tablet) 18.sp else 14.sp,
+                    fontSize = if (tablet) 16.sp else 12.sp,
                     fontWeight = FontWeight.Bold
                 )
                 BasicTextField(
@@ -134,7 +134,7 @@ fun ContentPackBrowserScreen(
                         .weight(1f)
                         .background(BgDark, RoundedCornerShape(20.dp))
                         .border(1.dp, BgBorder, RoundedCornerShape(20.dp))
-                        .padding(horizontal = 14.dp, vertical = 10.dp)
+                        .padding(horizontal = 16.dp, vertical = 14.dp)
                 )
             }
 

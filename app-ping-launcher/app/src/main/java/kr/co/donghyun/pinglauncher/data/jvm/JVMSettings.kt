@@ -17,7 +17,8 @@ data class JvmSettings(
     val mouseSensitivity: Float = 1.5f,
     val renderDistance: Int = 8,
     val graphicsMode: Int = 0,       // 0=fast, 1=fancy, 2=fabulous
-    val cacheDirPath: String = ""
+    val cacheDirPath: String = "",
+    val unlockFps: Boolean = true,
 ) {
 
     fun toJvmArgArray(
@@ -46,6 +47,24 @@ data class JvmSettings(
                 "-XX:G1NewSizePercent=20",
                 "-XX:G1ReservePercent=20",
                 "-XX:G1HeapRegionSize=${heapRegionSizeMb}m",
+            )
+        }
+
+        // ── 프레임 일정성 개선용 JVM 인자 ───────────────────────
+        // FPS cap 해제 자체는 options.txt 가 하지만, 이 옵션들은 GC pause 가
+        // 프레임 사이에 끼어드는 걸 줄여서 unlocked FPS 가 실제로 매끄럽게 나오게 해줌.
+        if (unlockFps) {
+            args += listOf(
+                "-XX:+DisableExplicitGC",            // 모드가 System.gc() 호출해도 무시
+                "-XX:+AlwaysPreTouch",               // heap 페이지 미리 다 터치 → 런타임 page fault 제거
+                "-XX:+ParallelRefProcEnabled",
+                "-XX:+UseStringDeduplication",       // G1 의 중복 String 자동 dedupe
+                "-XX:G1MixedGCCountTarget=4",
+                "-XX:InitiatingHeapOccupancyPercent=15",
+                "-XX:G1RSetUpdatingPauseTimePercent=5",
+                "-XX:SurvivorRatio=32",
+                "-XX:+PerfDisableSharedMem",         // /tmp/hsperfdata 접근으로 stall 방지
+                "-XX:MaxTenuringThreshold=1",
             )
         }
 

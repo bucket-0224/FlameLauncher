@@ -15,6 +15,7 @@ import org.lwjgl.glfw.GLFW.GLFW_RELEASE
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
+import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftInputConnection
 
 // 드래그 판정 거리 (px) — 이 이상 움직여야 카메라 회전 시작
 private const val DRAG_SLOP = 20f
@@ -40,24 +41,16 @@ fun MinecraftSurface(
             val activity = ctx as MinecraftActivity
             object : SurfaceView(ctx) {
                 override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-                    outAttrs.inputType = android.text.InputType.TYPE_NULL
-                    return object : android.view.inputmethod.BaseInputConnection(this, false) {
-                        override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                            text?.forEach { char ->
-                                if (char == ' ') {
-                                    ctx.sendKey(32, GLFW_PRESS)
-                                    ctx.sendKey(32, GLFW_RELEASE)
-                                } else {
-                                    try {
-                                        Class.forName("org.lwjgl.glfw.CallbackBridge")
-                                            .getMethod("nativeSendChar", Char::class.java)
-                                            .invoke(null, char)
-                                    } catch (_: Exception) {}
-                                }
-                            }
-                            return true
-                        }
-                    }
+                    // ── 2) TYPE_NULL 금지. 일반 텍스트로 광고 ──
+                    outAttrs.inputType =
+                        android.text.InputType.TYPE_CLASS_TEXT or
+                                android.text.InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS  // 자동완성 꺼서 IME 가 조용히 chars 만 보내게
+                    outAttrs.imeOptions =
+                        EditorInfo.IME_FLAG_NO_EXTRACT_UI or       // 가로 모드에서 fullscreen 추출 UI 차단
+                                EditorInfo.IME_FLAG_NO_FULLSCREEN or
+                                EditorInfo.IME_ACTION_NONE
+
+                    return MinecraftInputConnection(this, activity)
                 }
             }.apply {
                 tag = "minecraft_surface"

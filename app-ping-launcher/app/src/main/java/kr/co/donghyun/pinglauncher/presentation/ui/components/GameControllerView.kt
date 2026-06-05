@@ -280,14 +280,29 @@ class GameControllerView(context: Context) : View(context) {
                 activity.sendKey(49 + next, GLFW_RELEASE)
             }
             glfwCode == -6 && action == GLFW_PRESS -> {
-                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager
-                val surfaceView = activity.window.decorView.findViewWithTag<View>("minecraft_surface")
-                surfaceView?.requestFocus()
-                @Suppress("DEPRECATION")
-                imm.toggleSoftInput(
-                    android.view.inputmethod.InputMethodManager.SHOW_FORCED,
-                    android.view.inputmethod.InputMethodManager.HIDE_IMPLICIT_ONLY
-                )
+                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                        as android.view.inputmethod.InputMethodManager
+                val surfaceView = activity.window.decorView
+                    .findViewWithTag<android.view.View>("minecraft_surface")
+
+                if (surfaceView != null) {
+                    if (imm.isActive(surfaceView)) {
+                        // 이미 surfaceView 에 IME 가 붙어있다 = 토글 = 닫기
+                        imm.hideSoftInputFromWindow(surfaceView.windowToken, 0)
+                    } else {
+                        // 닫혀있는 상태 = 열기.
+                        // requestFocus 가 한 프레임 지나야 실제 반영되므로 post 로 한 박자 늦춤.
+                        surfaceView.isFocusable = true
+                        surfaceView.isFocusableInTouchMode = true
+                        surfaceView.requestFocus()
+                        surfaceView.post {
+                            imm.showSoftInput(
+                                surfaceView,
+                                android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT
+                            )
+                        }
+                    }
+                }
             }
             glfwCode == -7 && action == GLFW_PRESS -> {
                 activity.combatMode = !activity.combatMode

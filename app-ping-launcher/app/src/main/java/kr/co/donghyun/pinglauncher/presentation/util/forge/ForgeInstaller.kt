@@ -181,6 +181,9 @@ class ForgeInstaller(
         var effectiveMainClass = profile.mainClass
         if (profile.requiresProcessors) {
             try {
+                onProgress("Mojang mappings 사전 다운로드 중...", 0, 0)
+                preDownloadMojmaps(installerFile, librariesDir, mcVersion)   // ← 추가
+
                 onProgress("Processor 메타 준비 중...", 0, 0)
                 extractInstallerDataDir(installerFile, instanceDir)
                 serializeProcessors(
@@ -261,6 +264,117 @@ class ForgeInstaller(
         } catch (e: Exception) {
             Log.w("PING_LAUNCHER", "bundled maven 추출 실패: ${e.message}")
         }
+    }
+
+    /**
+     * install_profile.json 의 data.MOJMAPS / MOJMAPS_SHA 를 보고
+     * Mojang client_mappings.txt 를 Android 쪽 OkHttp 로 미리 받아 둔다.
+     *
+     * 임베디드 OpenJDK 의 TLS 가 Mojang CDN 과 핸드셰이크 실패하는 케이스가 있어서,
+     * 미리 받아둠으로써 ProcessorLauncher 의 outputsValid 체크에 걸려 DOWNLOAD_MOJMAPS 가 skip 된다.
+     */
+    private fun preDownloadMojmaps(
+        installerFile: File,
+        librariesDir: File,
+        mcVersion: String,
+    ) {
+        val ipObj = try {
+            ZipFile(installerFile).use { zip ->
+                val entry = zip.getEntry("install_profile.json") ?: return
+                JsonParser.parseString(zip.getInputStream(entry).bufferedReader().readText())
+                    .asJsonObject
+            }
+        } catch (e: Exception) {
+            Log.w("PING_LAUNCHER", "🗺 install_profile.json 재파싱 실패: ${e.message}")
+            return
+        }
+
+        val data = ipObj["data"]?.asJsonObject ?: return
+        val mojmapsRaw = data["MOJMAPS"]?.asJsonObject?.get("client")?.asString ?: run {
+            Log.d("PING_LAUNCHER", "🗺 MOJMAPS data 항목 없음 — 이 버전은 mojmaps 안 씀")
+            return
+        }
+        val expectedSha = data["MOJMAPS_SHA"]?.asJsonObject?.get("client")?.asString?.trim('\'')
+
+        if (!mojmapsRaw.startsWith("[") || !mojmapsRaw.endsWith("]")) {
+            Log.w("PING_LAUNCHER", "🗺 MOJMAPS 좌표 형식 이상: $mojmapsRaw")
+            return
+        }
+        val coord = mojmapsRaw.substring(1, mojmapsRaw.length - 1)
+        val target = File(mavenCoordToPath(coord, librariesDir))
+
+        // 이미 받아져 있고 SHA 도 맞으면 스킵
+        if (target.exists() && target.length() > 0) {
+            val current = sha1Hex(target)
+            if (expectedSha == null || current.equals(expectedSha, ignoreCase = true)) {
+                Log.i("PING_LAUNCHER", "🗺 mojmaps 이미 OK ($current) — pre-download skip")
+                return
+            }
+            Log.w("PING_LAUNCHER", "🗺 mojmaps SHA 불일치 → 재다운로드")
+        }
+
+        // Mojang version.json 에서 client_mappings URL 추출
+        val versionEntry = try {
+            kr.co.donghyun.pinglauncher.presentation.util.minecraft.VersionRepository()
+                .fetchVersionList()
+                .firstOrNull { it.id == mcVersion }
+        } catch (_: Exception) { null } ?: run {
+            Log.w("PING_LAUNCHER", "🗺 version manifest 에서 $mcVersion 못 찾음"); return
+        }
+
+        val versionJson = try {
+            client.newCall(Request.Builder().url(versionEntry.url).build())
+                .execute().use { it.body?.string() }
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "🗺 version.json 실패: ${e.message}"); return
+        } ?: return
+
+        val cm = try {
+            JsonParser.parseString(versionJson).asJsonObject["downloads"]?.asJsonObject
+                ?.get("client_mappings")?.asJsonObject
+        } catch (_: Exception) { null }
+
+        if (cm == null) {
+            Log.w("PING_LAUNCHER", "🗺 client_mappings 없음 (구버전?) — processor 가 직접 받다가 또 실패할 수 있음")
+            return
+        }
+        val url = cm["url"]?.asString ?: return
+
+        Log.i("PING_LAUNCHER", "🗺 mojmaps pre-download: $url → ${target.absolutePath}")
+        target.parentFile?.mkdirs()
+        try {
+            client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.e("PING_LAUNCHER", "🗺 HTTP ${resp.code}"); return
+                }
+                resp.body?.byteStream()?.use { input ->
+                    FileOutputStream(target).use { input.copyTo(it) }
+                }
+            }
+            val actual = sha1Hex(target)
+            if (expectedSha != null && !actual.equals(expectedSha, ignoreCase = true)) {
+                Log.w("PING_LAUNCHER",
+                    "🗺 ⚠️ SHA 불일치 — actual=$actual expected=$expectedSha " +
+                            "(processor 가 다시 받으려 시도하다 또 실패할 수 있음)")
+            } else {
+                Log.i("PING_LAUNCHER", "🗺 ✅ pre-download OK (${target.length()}B, sha=$actual)")
+            }
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "🗺 OkHttp 다운로드 예외: ${e.message}", e)
+        }
+    }
+
+    private fun sha1Hex(f: File): String {
+        val md = java.security.MessageDigest.getInstance("SHA-1")
+        f.inputStream().use { input ->
+            val buf = ByteArray(8192)
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                md.update(buf, 0, n)
+            }
+        }
+        return md.digest().joinToString("") { "%02x".format(it) }
     }
 
     private fun downloadLibrary(lib: LibSpec, librariesDir: File): File? {

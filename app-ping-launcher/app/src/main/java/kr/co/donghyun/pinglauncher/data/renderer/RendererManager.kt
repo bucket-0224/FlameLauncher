@@ -22,10 +22,7 @@ enum class Renderer(
         libglString = "MobileGlues",
         libglEs = "3",
         emoji = "📱",
-        extraEnv = mapOf(
-            "FORCE_VSYNC" to "true",
-            "LIBGL_VSYNC" to "1"
-        )
+        extraEnv = mapOf()
     ),
     ZINK(
         id = "zink",

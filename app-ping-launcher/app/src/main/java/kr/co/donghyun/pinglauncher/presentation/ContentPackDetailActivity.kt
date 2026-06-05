@@ -30,12 +30,16 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.lifecycleScope
 import coil.compose.AsyncImage
+import com.google.gson.Gson
 import com.google.gson.JsonParser
+import com.google.gson.reflect.TypeToken
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kr.co.donghyun.pinglauncher.BuildConfig
+import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeFile
+import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeListResponse
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
 import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.screen.ContentType
@@ -84,6 +88,8 @@ class ContentPackDetailActivity : BaseActivity() {
     private val _fullscreenIndex = MutableStateFlow<Int?>(null)
     private val _showInstallTargetDialog = MutableStateFlow(false)
     private val _loaderInstances = MutableStateFlow<List<InstanceSummary>>(emptyList())
+
+    private val _supportedLoaders = MutableStateFlow<Set<ModLoader>>(emptySet())
 
     companion object {
         const val EXTRA_MOD_ID = "mod_id"
@@ -231,22 +237,23 @@ class ContentPackDetailActivity : BaseActivity() {
                     // 설치 타겟 선택 다이얼로그
                     val showInstallDialog by _showInstallTargetDialog.asStateFlow().collectAsState()
                     val loaderInstances by _loaderInstances.asStateFlow().collectAsState()
+                    val supportedLoaders by _supportedLoaders.asStateFlow().collectAsState()   // ★ 추가
 
                     if (showInstallDialog) {
                         InstallTargetDialog(
                             contentType = contentType,
-                            allowVanilla = !contentType.requiresModLoader,
+                            // allowVanilla: 텍스처/쉐이더 같이 로더 불문 콘텐츠이고
+                            //               감지된 로더도 없을 때만
+                            allowVanilla = !contentType.requiresModLoader && supportedLoaders.isEmpty(),
+                            supportedLoaders = supportedLoaders,         // ★ 추가
                             existingInstances = loaderInstances,
                             onDismiss = { _showInstallTargetDialog.value = false },
                             onUseExisting = { instance ->
                                 _showInstallTargetDialog.value = false
-                                setResult(
-                                    RESULT_OK,
-                                    Intent()
-                                        .putExtra(EXTRA_MOD_ID, modId)
-                                        .putExtra("action", "install")
-                                        .putExtra(EXTRA_TARGET_INSTANCE_ID, instance.id)
-                                )
+                                setResult(RESULT_OK, Intent()
+                                    .putExtra(EXTRA_MOD_ID, modId)
+                                    .putExtra("action", "install")
+                                    .putExtra(EXTRA_TARGET_INSTANCE_ID, instance.id))
                                 finish()
                             },
                             onCreateNew = { version, loader ->
@@ -255,7 +262,6 @@ class ContentPackDetailActivity : BaseActivity() {
                                     .putExtra(EXTRA_MOD_ID, modId)
                                     .putExtra("action", "install")
                                     .putExtra(EXTRA_TARGET_VERSION, version)
-                                // 바닐라(null)이면 EXTRA_TARGET_LOADER 생략 → 수신 측에서 null 처리
                                 if (loader != null) intent.putExtra(EXTRA_TARGET_LOADER, loader.name)
                                 setResult(RESULT_OK, intent)
                                 finish()
@@ -281,33 +287,96 @@ class ContentPackDetailActivity : BaseActivity() {
 
     private fun handleInstallRequest(modId: Int, contentType: ContentType) {
         if (!contentType.needsTargetInstance) {
-            // 모드팩: 그대로 진행
-            setResult(RESULT_OK, Intent().putExtra(EXTRA_MOD_ID, modId).putExtra("action", "install"))
+            setResult(RESULT_OK, Intent()
+                .putExtra(EXTRA_MOD_ID, modId)
+                .putExtra("action", "install"))
             finish()
             return
         }
-        // 모드 / 텍스처팩 / 쉐이더팩 — 타겟 선택 다이얼로그
+
         lifecycleScope.launch(Dispatchers.IO) {
-            // 텍스처/쉐이더는 바닐라 인스턴스도 후보로 OK
-            val includeVanilla = !contentType.requiresModLoader
-            _loaderInstances.value = scanInstances(includeVanilla)
+            // 1) 이 모드가 지원하는 로더 집합 감지
+            val supported = detectSupportedLoaders(modId)
+            _supportedLoaders.value = supported
+
+            // 2) Vanilla 허용 여부:
+            //    - 텍스처/쉐이더 (requiresModLoader=false) 이고
+            //    - 감지된 로더가 없는 경우 (= 로더 무관 자원)
+            //    두 조건 모두 만족할 때만 바닐라 후보
+            val includeVanilla = !contentType.requiresModLoader && supported.isEmpty()
+
+            // 3) 인스턴스 목록도 같은 로더 필터 적용
+            _loaderInstances.value = scanInstances(includeVanilla, supported)
             _showInstallTargetDialog.value = true
+        }
+    }
+
+    /**
+     * CurseForge files API 한 번 쳐서 gameVersions 의 로더 태그를 모은다.
+     *  - 최신 50개 파일을 보면 거의 모든 활성 모드는 지원 로더가 다 잡힘
+     *  - 네트워크 실패 / 응답 비어있음 → emptySet (호출자가 폴백 처리)
+     */
+    private fun detectSupportedLoaders(modId: Int): Set<ModLoader> {
+        val client = OkHttpClient()
+        val req = Request.Builder()
+            .url("https://api.curseforge.com/v1/mods/$modId/files?pageSize=50&index=0")
+            .header("x-api-key", BuildConfig.CURSEFORGE_API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return try {
+            client.newCall(req).execute().use { resp ->
+                val body = resp.body?.string() ?: return emptySet()
+                val type = object : TypeToken<CurseForgeListResponse<CurseForgeFile>>(){}.type
+                val files = Gson().fromJson<CurseForgeListResponse<CurseForgeFile>>(body, type).data
+
+                val out = mutableSetOf<ModLoader>()
+                files.forEach { f ->
+                    f.gameVersions.forEach { gv ->
+                        when (gv.lowercase()) {
+                            "forge"    -> out += ModLoader.FORGE
+                            "fabric"   -> out += ModLoader.FABRIC
+                            "neoforge" -> out += ModLoader.NEOFORGE
+                            // Quilt 는 ModLoader enum 에 없어서 skip
+                        }
+                    }
+                }
+                Log.d("PING_LAUNCHER",
+                    "🔍 mod $modId supported loaders: $out (files=${files.size})")
+                out
+            }
+        } catch (e: Exception) {
+            Log.w("PING_LAUNCHER", "로더 감지 실패: ${e.message}")
+            emptySet()
         }
     }
 
     /**
      * 설치된 인스턴스 목록. [includeVanilla]=true면 로더 없는 바닐라도 포함.
      */
-    private fun scanInstances(includeVanilla: Boolean): List<InstanceSummary> {
+    private fun scanInstances(
+        includeVanilla: Boolean,
+        supportedLoaders: Set<ModLoader> = emptySet(),
+    ): List<InstanceSummary> {
         return try {
             InstanceManager.listInstances(this).mapNotNull { meta ->
                 val loader = when (meta.loaderType?.lowercase()) {
                     "fabric"   -> ModLoader.FABRIC
                     "forge"    -> ModLoader.FORGE
                     "neoforge" -> ModLoader.NEOFORGE
-                    else       -> null   // 바닐라
+                    else       -> null   // Vanilla
                 }
-                if (loader == null && !includeVanilla) return@mapNotNull null
+
+                when {
+                    // 바닐라 인스턴스
+                    loader == null -> {
+                        if (!includeVanilla) return@mapNotNull null
+                    }
+                    // 로더 인스턴스 — supportedLoaders 가 비어있으면 (감지 실패)
+                    // 보수적으로 전부 통과시킴. 아니면 교집합만 통과.
+                    supportedLoaders.isNotEmpty() && loader !in supportedLoaders ->
+                        return@mapNotNull null
+                }
+
                 InstanceSummary(
                     id = meta.id,
                     name = meta.name,
@@ -398,14 +467,15 @@ class ContentPackDetailActivity : BaseActivity() {
 private fun InstallTargetDialog(
     contentType: ContentType,
     allowVanilla: Boolean,
+    supportedLoaders: Set<ModLoader>,           // ★ 추가
     existingInstances: List<InstanceSummary>,
     onDismiss: () -> Unit,
     onUseExisting: (InstanceSummary) -> Unit,
-    onCreateNew: (version: String, loader: ModLoader?) -> Unit
+    onCreateNew: (version: String, loader: ModLoader?) -> Unit,
 ) {
     val tablet = isTablet()
 
-    // ── 색상 / 디멘션은 이전과 동일 ──
+    // (색상/디멘션 변수들 — 기존 그대로)
     val Pink = Color(0xFFE91E8C)
     val BgDark = Color(0xFF120B10)
     val BgSurface = Color(0xFF1E0E1A)
@@ -435,11 +505,30 @@ private fun InstallTargetDialog(
     val actionButtonH     = if (tablet) 44.dp else 38.dp
     val maxExistingHeight = if (tablet) 220.dp else 160.dp
 
+    // ── 로더 후보 — supportedLoaders 가 비어있으면 (감지 실패) 폴백으로 전체 ──
+    val loaderOptions: List<ModLoader> = when {
+        supportedLoaders.isNotEmpty() -> ModLoader.entries.filter { it in supportedLoaders }
+        else -> ModLoader.entries.toList()
+    }
+
+    val supportedSingle = supportedLoaders.size == 1
+    val loaderLocked = supportedSingle    // 로더가 하나뿐이면 선택 불가, 표시만
+
     val supportedVersions = listOf("1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
     var selectedVersion by remember { mutableStateOf(supportedVersions.first()) }
-    // 바닐라 허용이면 기본은 바닐라(null), 아니면 Fabric
+
+    // ── 기본 선택 로더 ──
+    //   1) 지원 로더가 정확히 1개면 강제로 그것
+    //   2) Vanilla 허용이면 null
+    //   3) 아니면 후보 첫 번째 (없으면 Fabric)
     var selectedLoader by remember {
-        mutableStateOf<ModLoader?>(if (allowVanilla) null else ModLoader.FABRIC)
+        mutableStateOf<ModLoader?>(
+            when {
+                supportedSingle -> supportedLoaders.first()
+                allowVanilla    -> null
+                else            -> loaderOptions.firstOrNull() ?: ModLoader.FABRIC
+            }
+        )
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -462,6 +551,20 @@ private fun InstallTargetDialog(
             ) {
                 Text("${contentType.label} 설치 대상 선택",
                     color = TextMain, fontSize = titleSize, fontWeight = FontWeight.Bold)
+
+                // ── 지원 로더 안내 줄 ──
+                val supportLine = when {
+                    supportedLoaders.isEmpty() && contentType.requiresModLoader ->
+                        "지원 로더 정보를 가져올 수 없어 모든 로더를 표시합니다."
+                    supportedLoaders.isEmpty() ->
+                        "이 콘텐츠는 로더와 무관합니다."
+                    supportedSingle ->
+                        "이 모드는 ${supportedLoaders.first().displayName} 전용입니다."
+                    else ->
+                        "지원 로더: ${supportedLoaders.joinToString(", ") { it.displayName }}"
+                }
+                Text(supportLine, color = TextSub, fontSize = descSize)
+
                 Text(
                     text = if (existingInstances.isEmpty())
                         "호환 인스턴스 없음 — 새로 만듭니다."
@@ -471,7 +574,8 @@ private fun InstallTargetDialog(
 
                 // ── 기존 인스턴스 ─────────────────────────────
                 if (existingInstances.isNotEmpty()) {
-                    Text("기존 인스턴스", color = TextMain, fontSize = sectionSize, fontWeight = FontWeight.Bold)
+                    Text("기존 인스턴스 (호환되는 것만)", color = TextMain,
+                        fontSize = sectionSize, fontWeight = FontWeight.Bold)
                     LazyColumn(
                         modifier = Modifier.heightIn(max = maxExistingHeight),
                         verticalArrangement = Arrangement.spacedBy(sectionGap)
@@ -495,7 +599,8 @@ private fun InstallTargetDialog(
                                         color = TextSub, fontSize = itemSubSize
                                     )
                                 }
-                                Text("선택", color = Pink, fontSize = labelSize, fontWeight = FontWeight.Bold)
+                                Text("선택", color = Pink,
+                                    fontSize = labelSize, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -503,7 +608,8 @@ private fun InstallTargetDialog(
                 }
 
                 // ── 새 인스턴스 만들기 ────────────────────────
-                Text("새 인스턴스 만들기", color = TextMain, fontSize = sectionSize, fontWeight = FontWeight.Bold)
+                Text("새 인스턴스 만들기", color = TextMain,
+                    fontSize = sectionSize, fontWeight = FontWeight.Bold)
 
                 Text("버전", color = TextSub, fontSize = pickerLabelSize)
                 androidx.compose.foundation.lazy.LazyRow(
@@ -527,15 +633,20 @@ private fun InstallTargetDialog(
                     }
                 }
 
+                // ── 로더 칩 — supportedLoaders 가 1개면 잠금 표시 ──
                 Text(
-                    if (allowVanilla) "타입" else "모드 로더",
+                    when {
+                        loaderLocked -> "로더 (이 모드 전용)"
+                        allowVanilla -> "타입"
+                        else         -> "모드 로더"
+                    },
                     color = TextSub, fontSize = pickerLabelSize
                 )
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(sectionGap)
                 ) {
-                    // 바닐라 칩 (allowVanilla 일 때만)
+                    // Vanilla 칩 — allowVanilla 일 때만
                     if (allowVanilla) {
                         val sel = selectedLoader == null
                         Box(
@@ -554,7 +665,8 @@ private fun InstallTargetDialog(
                                 fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
                         }
                     }
-                    ModLoader.entries.forEach { loader ->
+
+                    loaderOptions.forEach { loader ->
                         val sel = loader == selectedLoader
                         Box(
                             modifier = Modifier
@@ -562,7 +674,11 @@ private fun InstallTargetDialog(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (sel) Pink else BgDark)
                                 .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
-                                .clickable { selectedLoader = loader }
+                                .let {
+                                    // 잠금 상태면 클릭 막음
+                                    if (loaderLocked) it
+                                    else it.clickable { selectedLoader = loader }
+                                }
                                 .padding(vertical = loaderRowPadV),
                             contentAlignment = Alignment.Center
                         ) {

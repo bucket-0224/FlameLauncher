@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
+import kr.co.donghyun.pinglauncher.data.jvm.JvmSettings
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.pinglauncher.data.jvm.isLegacyVersion
 import kr.co.donghyun.pinglauncher.data.renderer.Renderer
@@ -812,19 +813,12 @@ class MinecraftActivity : BaseActivity() {
             irisConfig.writeText("shaders.enabled=false\n")
         }
 
-        val optionsFile = File(mcDir, "options.txt")
-        if (!optionsFile.exists()) {
-            val jvmSettings = JvmSettingsManager.load(this)
-            optionsFile.writeText("""
-            renderClouds:false
-            renderDistance:${jvmSettings.renderDistance}
-            graphicsMode:${jvmSettings.graphicsMode}
-        """.trimIndent())
-        }
 
         // ★ versionId 전달
         val libJvmPath = MinecraftJREPreparer.prepareJreAndGetPath(this, versionId)
         val jvmSettings = JvmSettingsManager.load(this)
+
+        syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings)
 
 // ★ JDK 9+ 전용 플래그는 javaMajor>=9 일 때만 부착
         val isModularJre = javaMajor >= 9
@@ -1094,6 +1088,13 @@ class MinecraftActivity : BaseActivity() {
                         this["VTEST_SOCKET_NAME"] =
                             VirGLLauncher.socketPath(this@MinecraftActivity)
                     }
+
+                    if (jvmSettings.unlockFps) {
+                        this["FORCE_VSYNC"]       = "false"
+                        this["POJAV_VSYNC"]       = "0"
+                        this["LIBGL_VSYNC"]       = "0"     // GL4ES 계열
+                        this["POJAV_VSYNC_IN_ZINK"] = "0"   // Zink/OSMesa 경로 (swap_interval_no_egl.c)
+                    }
                 }
 
                 Log.d("PING_LAUNCHER", "🎨 적용된 렌더러: ${renderer.displayName}")
@@ -1166,6 +1167,38 @@ class MinecraftActivity : BaseActivity() {
         return PROCESSOR_ONLY_JAR_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
     }
 
+    /**
+     * options.txt 의 maxFps / enableVsync 만 강제로 우리 설정에 맞춰 덮어쓴다.
+     * 나머지 옵션(키 바인딩, 볼륨 등) 은 사용자 변경을 보존.
+     */
+    private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings) {
+        val targetMaxFps   = if (settings.unlockFps) 260 else 120
+        val targetVsync    = if (settings.unlockFps) "false" else "true"
+        val targetRenderD  = settings.renderDistance
+        val targetGfxMode  = settings.graphicsMode
+
+        val existing: MutableList<String> = if (optionsFile.exists())
+            optionsFile.readLines().toMutableList()
+        else
+            mutableListOf()
+
+        fun upsert(key: String, value: String) {
+            val idx = existing.indexOfFirst { it.startsWith("$key:") }
+            val line = "$key:$value"
+            if (idx >= 0) existing[idx] = line else existing.add(line)
+        }
+
+        upsert("maxFps",         targetMaxFps.toString())
+        upsert("enableVsync",    targetVsync)
+        upsert("renderDistance", targetRenderD.toString())
+        upsert("graphicsMode",   targetGfxMode.toString())
+        upsert("renderClouds",   "false")
+
+        optionsFile.writeText(existing.joinToString("\n"))
+        Log.d("PING_LAUNCHER",
+            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD")
+    }
+
     fun androidKeyToGlfw(keyCode: Int): Int? = when (keyCode) {
         android.view.KeyEvent.KEYCODE_W -> GLFW_KEY_W
         android.view.KeyEvent.KEYCODE_A -> GLFW_KEY_A
@@ -1215,7 +1248,9 @@ class MinecraftActivity : BaseActivity() {
 
     override fun onResume() {
         super.onResume()
-        window.decorView.requestFocus()
+        window.decorView.findViewWithTag<android.view.View>("minecraft_surface")
+            ?.let { it.requestFocus() }
+            ?: window.decorView.requestFocus()
 
         Log.d("PING_LAUNCHER", "onResume — surface 재바인딩 대기")
     }
