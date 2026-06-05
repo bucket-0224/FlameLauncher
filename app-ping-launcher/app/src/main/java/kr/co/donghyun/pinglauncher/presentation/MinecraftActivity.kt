@@ -865,7 +865,8 @@ class MinecraftActivity : BaseActivity() {
 // ── Modern Forge / NeoForge 감지 (1.17+) ──
         val isModernForge = (instanceMeta?.loaderType == "forge" || instanceMeta?.loaderType == "neoforge")
                 && (mainClass.startsWith("cpw.mods")
-                || mainClass.contains("BootstrapLauncher", ignoreCase = true))
+                || mainClass.contains("BootstrapLauncher", ignoreCase = true)
+                || mainClass.contains("ProcessorLauncher", ignoreCase = true))   // ← 추가
 
 // ── ${library_directory} 등 placeholder 해석 ──
         val forgeLibrariesDir = File(instanceBase, "libraries")
@@ -982,18 +983,11 @@ class MinecraftActivity : BaseActivity() {
             dedupedJars = dedupedJars.filter { abs ->
                 val name = File(abs).name
                 when {
-                    // module-path 에 명시된 것만 classpath 에서 제외 (BSL/SJH 인프라)
                     name in moduleJarsFromMp -> {
                         Log.d("PING_LAUNCHER", "🚫 module-path 에 있어 classpath 제외: $name")
                         false
                     }
-                    // BootstrapLauncher 가 main 이므로 processor-launcher 는 불필요
-                    name.startsWith("processor-launcher") -> {
-                        Log.d("PING_LAUNCHER", "🚫 BootstrapLauncher 사용 → processor-launcher 제외: $name")
-                        false
-                    }
-                    // fmlloader / fmlcore / *language / forge-universal / vanilla client / fmlearlydisplay
-                    // 는 전부 classpath 에 남겨야 BSL 이 발견해서 module layer 로 승격 가능
+                    // processor-launcher 분기 자체를 삭제 — 이 jar 는 mainClass 일 때 classpath 필수
                     else -> true
                 }
             }

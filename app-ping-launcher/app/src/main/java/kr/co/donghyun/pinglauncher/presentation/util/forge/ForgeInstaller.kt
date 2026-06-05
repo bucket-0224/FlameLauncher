@@ -205,7 +205,7 @@ class ForgeInstaller(
 
         return ForgeInstallResult(
             success = true,
-            mainClass = profile.mainClass,
+            mainClass = effectiveMainClass,
             extraJars = jarList,
             mcVersion = mcVersion,
             forgeVersion = forgeVersion,
