@@ -942,33 +942,68 @@ class MinecraftActivity : BaseActivity() {
         Log.i("PingLauncherJVM", "🎨 Selected glLibName=$glLibName (renderer=${renderer.id})")
 
         // ── classpath 중복 제거 ─────────────────────────────────────
-        //   Modern Forge 는 version.json 과 install_profile.json 양쪽에 같은
-        //   라이브러리 좌표(특히 fmlloader)를 기재하는 경우가 있다. 결과적으로
-        //   jarList 에 같은 절대경로가 두 번 들어가고, BootstrapLauncher 가
-        //   UnionFileSystem 에 같은 path 를 두 번 등록하려다 IllegalStateException 으로 죽는다.
-        //
-        //   1) 같은 절대경로 dedupe — 가장 흔한 케이스
-        //   2) 같은 파일명(= 같은 group:artifact:version) dedupe — 다른 디렉토리로
-        //      들어온 동일 jar 보호 (예: extraJars vs walkTopDown)
         val seenAbs = HashSet<String>()
         val seenFileName = HashSet<String>()
         val originalSize = jarList.size
-        val dedupedJars = jarList.filter { abs ->
+        var dedupedJars = jarList.filter { abs ->
             if (!seenAbs.add(abs)) {
                 Log.d("PING_LAUNCHER", "🗑 절대경로 중복 jar 제거: $abs")
                 return@filter false
             }
             val fname = File(abs).name
             if (!seenFileName.add(fname)) {
-                Log.d("PING_LAUNCHER", "🗑 동일 파일명 jar 중복 제거: $fname (이미 다른 경로에 있음)")
+                Log.d("PING_LAUNCHER", "🗑 동일 파일명 jar 중복 제거: $fname")
                 return@filter false
             }
             true
         }
-        if (dedupedJars.size != originalSize) {
-            Log.d("PING_LAUNCHER", "📦 classpath dedupe: $originalSize → ${dedupedJars.size}")
+
+        if (isModernForge) {
+            val moduleJarsFromMp = mutableSetOf<String>()
+            var i = 0
+            while (i < metaJvmArgs.size) {
+                val a = metaJvmArgs[i]
+                val mpValue: String? = when {
+                    a.startsWith("--module-path=") -> a.removePrefix("--module-path=")
+                    a == "--module-path" || a == "-p" -> metaJvmArgs.getOrNull(i + 1)
+                    else -> null
+                }
+                if (mpValue != null) {
+                    mpValue.split(File.pathSeparator)
+                        .map { File(it).name }
+                        .filter { it.isNotBlank() }
+                        .forEach { moduleJarsFromMp.add(it) }
+                }
+                i++
+            }
+            Log.d("PING_LAUNCHER", "🎯 module-path jars (${moduleJarsFromMp.size}): $moduleJarsFromMp")
+
+            val before = dedupedJars.size
+            dedupedJars = dedupedJars.filter { abs ->
+                val name = File(abs).name
+                when {
+                    // module-path 에 명시된 것만 classpath 에서 제외 (BSL/SJH 인프라)
+                    name in moduleJarsFromMp -> {
+                        Log.d("PING_LAUNCHER", "🚫 module-path 에 있어 classpath 제외: $name")
+                        false
+                    }
+                    // BootstrapLauncher 가 main 이므로 processor-launcher 는 불필요
+                    name.startsWith("processor-launcher") -> {
+                        Log.d("PING_LAUNCHER", "🚫 BootstrapLauncher 사용 → processor-launcher 제외: $name")
+                        false
+                    }
+                    // fmlloader / fmlcore / *language / forge-universal / vanilla client / fmlearlydisplay
+                    // 는 전부 classpath 에 남겨야 BSL 이 발견해서 module layer 로 승격 가능
+                    else -> true
+                }
+            }
+            Log.d("PING_LAUNCHER", "📦 modern Forge classpath 정리: $before → ${dedupedJars.size}")
         }
-        val classPathStr = dedupedJars.joinToString(":")
+
+        if (dedupedJars.size != originalSize) {
+            Log.d("PING_LAUNCHER", "📦 classpath dedupe total: $originalSize → ${dedupedJars.size}")
+        }
+        val classPathStr = dedupedJars.joinToString(File.pathSeparator)
 
         val jvmArgs = jvm8CompatArgs +
                 jvmSettings.toJvmArgArray(
@@ -986,6 +1021,13 @@ class MinecraftActivity : BaseActivity() {
                 metaJvmArgs
 
         Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}, isFabric=$isFabric, javaMajor=$javaMajor")
+
+        Log.d("PING_LAUNCHER", "═══ classpath 항목 ${dedupedJars.size}개 ═══")
+        dedupedJars.forEachIndexed { i, p -> Log.d("PING_LAUNCHER", "  [$i] ${File(p).name}") }
+        Log.d("PING_LAUNCHER", "═══ mods/ 폴더 ═══")
+        File(mcDir, "mods").listFiles()?.forEach {
+            Log.d("PING_LAUNCHER", "  ${it.name} (${it.length()}B)")
+        }
 
         Thread {
             try {
