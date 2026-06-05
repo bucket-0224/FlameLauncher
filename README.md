@@ -1,257 +1,254 @@
-# PingLauncher
+# 🌸 PingLauncher
 
-Android에서 Minecraft: Java Edition을 실행하는 런처입니다. [PojavLauncher](https://github.com/PojavLauncherTeam/PojavLauncher)를 기반으로 제작되었습니다.
-
-## ⚠️ 주의사항
-
-> **이 런처는 현재 Fabric 모드로더만 지원합니다.**
+> Android-native Minecraft Java Edition launcher — PojavLauncher 코어 위에 올린 한국어 친화 UI
 >
-> - Forge 1.17 이상은 Android JRE의 한계로 지원되지 않습니다.
-> - Forge 1.12.2는 부분적으로 지원되나 LWJGL2 미지원으로 인해 정상 동작을 보장하지 않습니다.
-> - **모드팩 브라우저는 Fabric 전용 모드팩만 표시합니다.**
-> - 일부 Fabric 모드팩도 포함된 모드에 따라 정상 실행되지 않을 수 있습니다. OpenGL 셰이더, 특정 렌더링 모드, 플랫폼별 네이티브 라이브러리를 사용하는 모드는 자동으로 비활성화되거나 크래시를 유발할 수 있습니다.
-> - 실행 중 크래시가 발생하면 앱 내 **크래시 리포트 뷰어**에서 원인 모드를 비활성화하고 재시도하세요.
+> An Android-native launcher for Minecraft: Java Edition, built on top of the PojavLauncher core with a Korean-friendly UI.
 
-## 기능
-
-- **바닐라 마인크래프트** 지원 (1.21.4 이하)
-- **Fabric 모드팩** — CurseForge API를 통한 설치
-- **터치 컨트롤** — 커스터마이징 가능한 키 레이아웃 에디터
-- **인스턴스 관리** — 모드팩/바닐라 버전별 독립 디렉토리
-- **크래시 리포트 뷰어** — 크래시 감지 후 앱 내에서 모드 ON/OFF 토글
-- **JVM 설정** — 힙 크기, 렌더 거리, 그래픽 모드 조정
-- **핫바 슬롯 이동** — 화면 버튼(← / →)으로 슬롯 전환, 월드별 마지막 슬롯 저장
-- **AWT 지원** — `java.awt`를 사용하는 모드(FancyMenu 등) 호환
-- JRE 21 호환을 위한 `launchwrapper` 자동 바이트코드 패치 (Forge 1.12.2)
-
-## 요구사항
-
-- Android 8.0 이상 (API 26)
-- ARM64-v8a 기기
-- 여유 저장 공간 4GB 이상 권장
-- JRE 21 (앱 에셋으로 번들 포함 `jre21.zip`)
-
-## 아키텍처
-
-```
-MainActivity
-└── 버전 선택 / 다운로드 UI
-    └── MinecraftActivity
-        ├── MinecraftSurface (SurfaceView — 게임 렌더링)
-        ├── GameControllerView (Android View — 터치 버튼)
-        └── JavaNativeLauncher → JNI → libjvm.so
-```
-
-### 주요 컴포넌트
-
-| 파일 | 설명 |
-|------|------|
-| `MinecraftActivity.kt` | 게임 실행 액티비티, JVM 부트스트랩, 터치/키 처리 |
-| `MinecraftSurface.kt` | SurfaceView 컴포저블, 터치 이벤트 처리 |
-| `GameControllerView.kt` | 화면 컨트롤러 (Android View, 멀티터치 지원) |
-| `MinecraftActivityBridge.kt` | JVM 콜백과 Android 브릿지 (그랩 상태, GUI scale, 월드 이름) |
-| `ModPackBrowserActivity.kt` | CurseForge 모드팩 브라우저 (Fabric 전용) |
-| `ModPackDetailActivity.kt` | 모드팩 상세 페이지 (스크린샷, 설명) |
-| `CrashReportActivity.kt` | 크래시 리포트 뷰어 및 모드 토글 |
-| `ForgeInstaller.kt` | Fabric 로더 설치 |
-| `ModPackInstaller.kt` | CurseForge 모드팩 압축 해제 및 모드 다운로드 |
-| `InstanceManager.kt` | 인스턴스 디렉토리 및 메타데이터 관리 |
-| `pingjvm.cpp` | JNI 브릿지 — JVM 라이프사이클, `nativeSetGrabbing` 후킹, 윈도우 설정 |
-
-## 기반 프로젝트 / 크레딧
-
-이 프로젝트는 **[PojavLauncher](https://github.com/PojavLauncherTeam/PojavLauncher)** (LGPLv3)를 기반으로 하며, 다음과 같은 수정 및 추가 사항이 있습니다.
-
-### PojavLauncher에서 가져온 것
-- `jre_lwjgl3glfw` — 커스텀 LWJGL3/GLFW 스텁 JAR (`lwjgl-glfw-classes.jar`), 다음 항목 추가:
-  - `sendKeycode()` / `sendKeyPress()` 메서드
-  - `onGrabStateChanged()` Android 브릿지 콜백
-  - `tryNotifyGuiScale()` — reflection으로 `net.minecraft.class_310`에서 GUI scale 읽기
-- 네이티브 라이브러리: `libpojavexec.so`, `libglfw.so`, `liblwjgl.so`, `liblwjgl_opengl.so`, `libopenal.so`
-- PojavLauncher APK에서 추출한 AWT 라이브러리: `libawt_xawt.so`, `libawt_headless.so`, `libpojavexec_awt.so`
-- JRE 21 런타임 (`jre21.zip`)
-
-### 자체 추가 사항
-- Jetpack Compose 기반 전체 UI (핑크 테마)
-- 인스턴스 기반 게임 디렉토리 구조 (`instances/<name>/`)
-- CurseForge 모드팩 브라우저 (Fabric 전용 필터링)
-- 비호환 모드 자동 감지 및 비활성화
-- ASM을 이용한 `launchwrapper` 바이트코드 패치 (JRE 9+ 호환)
-- `pingjvm.cpp`의 ARM64 함수 후킹으로 `nativeSetGrabbing` 그랩 상태 추적
-- 커스텀 터치 처리: 카메라 회전, 롱프레스 블록 파괴, 우클릭 설치, 핫바 슬롯 선택
-- 월드별 핫바 슬롯 저장
-- OpenGL 호환성을 위한 NG-GL4ES (`libng_gl4es.so`) 통합
-
-### 서드파티 라이브러리
-- [NG-GL4ES (BZLZHH fork)](https://github.com/BZLZHH/NG-GL4ES) — OpenGL ES 변환기
-- [lwjgl-boat](https://github.com/AOF-Dev/lwjgl-boat) — LWJGL2 연구 참고
-- [ASM](https://asm.ow2.io/) — launchwrapper 패치를 위한 바이트코드 조작
-- [Coil](https://coil-kt.github.io/coil/) — 이미지 로딩
-- [Gson](https://github.com/google/gson) — JSON 직렬화
-- [OkHttp](https://square.github.io/okhttp/) — HTTP 클라이언트
-
-## 지원 환경
-
-| 로더 | 버전 | 상태 |
-|------|------|------|
-| Vanilla | 1.8 – 1.21.4 | ✅ |
-| Fabric | 전 버전 | ✅ |
-| Forge | 1.12.2 | ⚠️ 부분 지원 (launchwrapper 패치됨, LWJGL2 미지원) |
-| Forge | 1.17+ | ❌ Android JRE에 `jdk.nio.zipfs` 없음 |
-
-## 알려진 비호환 모드
-
-설치 시 자동으로 비활성화되는 모드 목록:
-
-- `sodium`, `iris`, `reeses-sodium`, `sodium-extra` — OpenGL/셰이더 비호환
-- `xaerominimap`, `xaeroworldmap` — OpenGL 프레임버퍼 비호환
-- `create-fabric` 및 관련 모드 — 스텐실 버퍼 미지원
-- `fabricskyboxes`, `fsb-interop` — 초기화 순서 크래시
-- `fancymenu`, `drippyloadingscreen`, `welcomescreen` — `/data/.minecraft` 경로 접근 불가
-- `colorwheel`, `colorwheel_patcher` — iris 의존
-- `friendsforlife` — 서버 전용 네트워크 핸들러
-- `particlerain` / `aaa_particles` — AMD64 네이티브 라이브러리로 ARM64 비호환
-
-## 라이선스
-
-이 프로젝트는 PojavLauncher를 계승하여 **GNU Lesser General Public License v3.0 (LGPLv3)** 라이선스를 따릅니다.
-
-자세한 내용은 [LICENSE](LICENSE)를 참고하세요.
-
-> PojavLauncher는 PojavLauncher Team의 저작물이며 LGPLv3 라이선스로 배포됩니다.
-> 이 프로젝트는 PojavLauncher의 수정된 부분을 포함합니다. 모든 수정 사항은 위에 명시되어 있습니다.
-
-## 면책 조항
-
-이 런처는 정품 Minecraft: Java Edition을 구매한 사용자를 위한 것입니다.
-Minecraft는 Mojang Studios / Microsoft의 상표입니다. 이 프로젝트는 Mojang 또는 Microsoft와 무관하며 공식적으로 승인된 것이 아닙니다.
+[한국어](#-한국어) · [English](#-english)
 
 ---
 
-# PingLauncher (English)
+## 🇰🇷 한국어
 
-An Android launcher for Minecraft: Java Edition, built on top of [PojavLauncher](https://github.com/PojavLauncherTeam/PojavLauncher).
+### 개요
 
-## ⚠️ Important Notes
+PingLauncher는 안드로이드 기기에서 마인크래프트 자바 에디션을 실행하는 런처입니다. PojavLauncher의 검증된 네이티브 브릿지(JNI/EGL/AWT 스텁)를 기반으로, Jetpack Compose로 새로 그린 UI와 CurseForge 통합, 자동 로더 설치, 가상 키패드 편집기를 얹었습니다.
 
-> **This launcher currently supports Fabric mod loader only.**
->
-> - Forge 1.17+ is not supported due to Android JRE limitations (`jdk.nio.zipfs` missing).
-> - Forge 1.12.2 is partially supported but not guaranteed to work due to missing LWJGL2 support.
-> - **The modpack browser only shows Fabric-based modpacks.**
-> - Some Fabric modpacks may not work correctly depending on the mods included. Mods that use OpenGL shaders, specific rendering features, or platform-specific native libraries may be automatically disabled or cause crashes.
-> - If a crash occurs, use the built-in **Crash Report Viewer** to identify and disable the problematic mod, then retry.
+핑크 테마와 한국어 우선 UX가 기본이고, 폰/태블릿 둘 다 반응형으로 대응합니다.
 
-## Features
+### ✨ 주요 기능
 
-- **Vanilla Minecraft** support (up to 1.21.4)
-- **Fabric modpack** installation via CurseForge API
-- **Touch controls** with customizable key layout editor
-- **Instance management** — each modpack/vanilla version in its own isolated directory
-- **Crash report viewer** — detects crashes and lets you toggle mods on/off without leaving the app
-- **JVM settings** — configurable heap size, render distance, and graphics mode
-- **Hotbar slot navigation** via on-screen buttons (← / →), persisted per world save
-- **AWT support** for mods that depend on `java.awt` (e.g. FancyMenu)
-- Automatic patching of `launchwrapper` for JRE 21 compatibility (Forge 1.12.2)
+- 🎮 **바닐라 / Fabric / Forge / NeoForge** 자동 설치 및 실행
+- 📦 **CurseForge 통합** — 모드팩 · 모드 · 텍스처팩 · 쉐이더팩 · 월드 검색/설치
+- 🔑 **Microsoft 정식 인증** (Xbox Live → XSTS → Minecraft Services)
+- 🎨 **렌더러 선택** — MobileGlues / Zink / Holy-GL4ES / GL4ES Desktop / LTW
+- ⚙️ **JVM 설정** — 힙 메모리, G1GC 튜닝, FPS 언락, 커스텀 인자
+- ⌨️ **가상 키패드 편집기** — 드래그 앤 드롭으로 자유 배치, 폰/태블릿 자동 스케일
+- ⚔️ **전투/일반 모드 토글** — 탭과 롱프레스 동작을 상황에 맞게 자동 스위칭
+- 🌍 **물리 키보드 / 마우스** 자동 감지 및 IME 한글 입력 지원
+- 💥 **크래시 복구 센터** — 의심 모드 자동 식별 및 토글 비활성화
+- 🩹 **Sodium → Podium 자동 보강** — Pojav 환경 호환성 패치 자동 동봉
 
-## Requirements
+### 🏗️ 빌드
 
-- Android 8.0+ (API 26)
-- ARM64-v8a device
-- ~4 GB free storage recommended
-- JRE 21 (bundled as `jre21.zip` asset)
+#### 요구사항
 
-## Architecture
+- Android Studio Hedgehog 이상
+- Android SDK 36, NDK r27 (27.0.12077973)
+- CMake 3.22.1
+- JDK 11+
 
-```
-MainActivity
-└── Version selection / download UI
-    └── MinecraftActivity
-        ├── MinecraftSurface (SurfaceView — renders game)
-        ├── GameControllerView (Android View — touch buttons)
-        └── JavaNativeLauncher → JNI → libjvm.so
+#### `local.properties` 설정
+
+```properties
+sdk.dir=/path/to/Android/Sdk
+curseforge.api.key="YOUR_CURSEFORGE_API_KEY"
 ```
 
-### Key Components
+CurseForge API 키는 [console.curseforge.com](https://console.curseforge.com/)에서 발급받으세요.
 
-| File | Description |
-|------|-------------|
-| `MinecraftActivity.kt` | Game launch activity, JVM bootstrap, touch/key routing |
-| `MinecraftSurface.kt` | SurfaceView composable, touch event handling |
-| `GameControllerView.kt` | On-screen controller (Android View, multi-touch) |
-| `MinecraftActivityBridge.kt` | Bridge between JVM callbacks and Android (grab state, GUI scale, world name) |
-| `ModPackBrowserActivity.kt` | CurseForge modpack browser (Fabric only) |
-| `ModPackDetailActivity.kt` | Modpack detail page (screenshots, description) |
-| `CrashReportActivity.kt` | Crash report viewer with per-mod toggle |
-| `ForgeInstaller.kt` | Fabric loader installer |
-| `ModPackInstaller.kt` | CurseForge modpack unpacker and mod downloader |
-| `InstanceManager.kt` | Per-instance directory and metadata management |
-| `pingjvm.cpp` | JNI bridge — JVM lifecycle, `nativeSetGrabbing` hook, window setup |
+#### `assets/` 에 넣어야 할 것
 
-## Based On / Credits
+- `jre8.zip`, `jre17.zip`, `jre21.zip` — 마인크래프트 버전에 따라 사용됨 (1.16 이하 → 8, 1.17 → 16/17, 1.20.5+ → 21)
+- `caciocavallo/` — 1.12.2 이하 Legacy AWT 지원용 (`cacio-shared`, `cacio-androidnw`, `ResConfHack`)
+- `lwjgl3/lwjgl-glfw-classes.jar` — PojavLauncher 패치 LWJGL
+- `forge-runtime/processor-launcher.jar` — 빌드 시 자동 생성됨
 
-This project is heavily based on **[PojavLauncher](https://github.com/PojavLauncherTeam/PojavLauncher)** (LGPLv3), with the following modifications and additions:
+#### 빌드 명령
 
-### From PojavLauncher
-- `jre_lwjgl3glfw` — Custom LWJGL3/GLFW stub JAR (`lwjgl-glfw-classes.jar`), modified to add:
-  - `sendKeycode()` / `sendKeyPress()` methods
-  - `onGrabStateChanged()` callback to Android bridge
-  - `tryNotifyGuiScale()` — reads GUI scale from `net.minecraft.class_310` via reflection
-- Native libraries: `libpojavexec.so`, `libglfw.so`, `liblwjgl.so`, `liblwjgl_opengl.so`, `libopenal.so`
-- AWT libraries extracted from PojavLauncher APK: `libawt_xawt.so`, `libawt_headless.so`, `libpojavexec_awt.so`
-- JRE 21 runtime (`jre21.zip`)
+```bash
+./gradlew :app:assembleDebug
+# 또는 릴리즈
+./gradlew :app:assembleRelease
+```
 
-### Custom Additions
-- Full Jetpack Compose UI (pink theme)
-- Instance-based game directory structure (`instances/<name>/`)
-- CurseForge modpack browser with Fabric-only filtering
-- Automatic incompatible mod detection and disabling
-- `launchwrapper` bytecode patching via ASM for JRE 9+ compatibility
-- `nativeSetGrabbing` ARM64 function hook in `pingjvm.cpp` for grab state tracking
-- Custom touch handling: camera rotation, long-press block break, right-click place, hotbar slot selection
-- Per-world hotbar slot persistence
-- NG-GL4ES (`libng_gl4es.so`) integration for OpenGL compatibility
+ABI는 `arm64-v8a` 단일 — 다른 ABI는 빌드 시 자동 제외됩니다.
 
-### Third-party Libraries
-- [NG-GL4ES (BZLZHH fork)](https://github.com/BZLZHH/NG-GL4ES) — OpenGL ES translator
-- [lwjgl-boat](https://github.com/AOF-Dev/lwjgl-boat) — Referenced for LWJGL2 research
-- [ASM](https://asm.ow2.io/) — Bytecode manipulation for launchwrapper patching
-- [Coil](https://coil-kt.github.io/coil/) — Image loading
-- [Gson](https://github.com/google/gson) — JSON serialization
-- [OkHttp](https://square.github.io/okhttp/) — HTTP client
+### 📂 프로젝트 구조
 
-## Supported Configurations
+```
+app/
+├── src/main/
+│   ├── cpp/                          # 네이티브 코어 (C/C++)
+│   │   ├── pingjvm.cpp               # JVM 부팅 + 후킹 + showingWindow 워치독
+│   │   ├── pojav_jni/                # PojavLauncher core
+│   │   │   ├── ctxbridges/           # GL/EGL/OSMesa 컨텍스트 브릿지
+│   │   │   ├── jvm_hooks/            # LWJGL dlopen / forkAndExec / EMUI 후킹
+│   │   │   ├── native_hooks/         # exit / chmod 후킹 (bytehook)
+│   │   │   ├── awt_xawt/             # libfontmanager.so 의 X11FontScaler 스텁
+│   │   │   └── driver_helper/        # Adreno Turnip 로더
+│   │   └── CMakeLists.txt
+│   │
+│   ├── java/kr/co/donghyun/pinglauncher/
+│   │   ├── data/                     # 도메인 모델
+│   │   │   ├── auth/                 # Microsoft OAuth 세션
+│   │   │   ├── curseforge/           # CurseForge API 모델
+│   │   │   ├── instance/             # 인스턴스 메타 (vanilla/fabric/forge/modpack)
+│   │   │   ├── jvm/                  # JVM 설정
+│   │   │   ├── key/                  # 가상 키패드 레이아웃
+│   │   │   ├── mojang/               # 버전 매니페스트
+│   │   │   └── renderer/             # 렌더러 프리셋
+│   │   │
+│   │   └── presentation/             # UI + 실행 로직
+│   │       ├── MainActivity.kt       # 버전 목록 + 실행 디스패처
+│   │       ├── MinecraftActivity.kt  # 실제 JVM 부팅 + 입력 라우팅
+│   │       ├── ContentPackBrowserActivity.kt   # CurseForge 검색
+│   │       ├── CrashReportActivity.kt
+│   │       └── util/
+│   │           ├── curseforge/       # ModPack 설치, 의존성 해결
+│   │           ├── fabric/           # Fabric meta + installer
+│   │           ├── forge/            # Forge / NeoForge installer + processor 직렬화
+│   │           ├── minecraft/        # Mojang downloader + JRE 추출
+│   │           └── jni/              # JavaNativeLauncher (JNI 진입)
+│   │
+│   └── java/
+│       ├── net/kdt/pojavlaunch/      # PojavLauncher 호환 진입점
+│       ├── org/lwjgl/glfw/           # CallbackBridge
+│       └── kr/.../forge/             # ProcessorLauncher (임베디드 JVM용)
+│
+├── build.gradle.kts                  # NDK 27, ABI arm64-v8a, processor-launcher.jar 자동 빌드
+└── local.properties                  # API 키 (gitignore)
+```
 
-| Loader | Version | Status |
-|--------|---------|--------|
-| Vanilla | 1.8 – 1.21.4 | ✅ |
-| Fabric | All versions | ✅ |
-| Forge | 1.12.2 | ⚠️ Partial (launchwrapper patched, LWJGL2 not supported) |
-| Forge | 1.17+ | ❌ Requires `jdk.nio.zipfs` (not in Android JRE) |
+### 🚀 실행 흐름 (요약)
 
-## Known Incompatible Mods
+1. **버전 선택** → Mojang `version_manifest.json` 에서 메타 조회
+2. **로더 선택** → Fabric/Forge/NeoForge 메타 API 호출
+3. **MinecraftDownloader** → client jar + libraries + assets 받음 (인스턴스 디렉토리 안)
+4. **로더 설치** → FabricInstaller / ForgeInstaller가 libraries 머지
+5. **JRE 추출** → `assets/jreN.zip` → `filesDir/jreN_runtime/`
+6. **MinecraftActivity** → 렌더러별 `.so` 로드 → `pingjvm.cpp::bootMinecraftJVM` 호출
+7. **JNI_CreateJavaVM** → mainClass.main(args) 호출 → 게임 부팅
 
-The following mods are automatically disabled on install:
+### 📝 라이선스 및 기여
 
-- `sodium`, `iris`, `reeses-sodium`, `sodium-extra` — OpenGL/shader incompatibility
-- `xaerominimap`, `xaeroworldmap` — OpenGL framebuffer incompatibility
-- `create-fabric` and related — Stencil buffer not supported
-- `fabricskyboxes`, `fsb-interop` — Initialization order crash
-- `fancymenu`, `drippyloadingscreen`, `welcomescreen` — `/data/.minecraft` path inaccessible
-- `colorwheel`, `colorwheel_patcher` — Requires iris
-- `friendsforlife` — Server-only network handlers
-- `particlerain` / `aaa_particles` — AMD64 native library incompatible with ARM64
+- PojavLauncher 코어: GPLv3
+- 본 프로젝트의 추가 코드: 별도 라이선스 명시 전까지 저자에게 문의
 
-## License
+---
 
-This project is licensed under the **GNU Lesser General Public License v3.0 (LGPLv3)**, inherited from PojavLauncher.
+## 🇺🇸 English
 
-See [LICENSE](LICENSE) for details.
+### Overview
 
-> PojavLauncher is Copyright (C) 2020-2024 PojavLauncher Team, licensed under LGPLv3.
-> This project includes modified portions of PojavLauncher. All modifications are documented above.
+PingLauncher is an Android launcher for Minecraft: Java Edition. It builds on PojavLauncher's battle-tested native bridges (JNI / EGL / AWT stubs) and adds a Jetpack Compose UI, CurseForge integration, automatic loader installation, and a draggable virtual keypad editor.
 
-## Disclaimer
+Pink-themed, Korean-first UX by default, with responsive layouts for both phones and tablets.
 
-This launcher is intended for use with legitimately purchased copies of Minecraft: Java Edition.
-Minecraft is a trademark of Mojang Studios / Microsoft. This project is not affiliated with or endorsed by Mojang or Microsoft.
+### ✨ Features
+
+- 🎮 **Vanilla / Fabric / Forge / NeoForge** auto-install and launch
+- 📦 **CurseForge integration** — search and install modpacks, mods, resource packs, shader packs, worlds
+- 🔑 **Microsoft official auth** (Xbox Live → XSTS → Minecraft Services)
+- 🎨 **Renderer picker** — MobileGlues / Zink / Holy-GL4ES / GL4ES Desktop / LTW
+- ⚙️ **JVM tuning** — heap, G1GC, FPS unlock, custom args
+- ⌨️ **Virtual keypad editor** — drag-and-drop placement with phone/tablet auto-scaling
+- ⚔️ **Combat / normal mode toggle** — tap and long-press swap depending on context
+- 🌍 **Hardware keyboard / mouse** auto-detection plus IME Korean composition support
+- 💥 **Crash recovery center** — identifies suspect mods and disables them with one tap
+- 🩹 **Sodium → Podium auto-augment** — automatically bundles the Pojav compatibility patch
+
+### 🏗️ Build
+
+#### Requirements
+
+- Android Studio Hedgehog or newer
+- Android SDK 36, NDK r27 (27.0.12077973)
+- CMake 3.22.1
+- JDK 11+
+
+#### `local.properties`
+
+```properties
+sdk.dir=/path/to/Android/Sdk
+curseforge.api.key="YOUR_CURSEFORGE_API_KEY"
+```
+
+Grab a CurseForge API key from [console.curseforge.com](https://console.curseforge.com/).
+
+#### Assets you need to drop in
+
+- `jre8.zip`, `jre17.zip`, `jre21.zip` — picked by MC version (≤1.16 → 8, 1.17 → 16/17, 1.20.5+ → 21)
+- `caciocavallo/` — AWT support for legacy MC (≤1.12.2): `cacio-shared`, `cacio-androidnw`, `ResConfHack`
+- `lwjgl3/lwjgl-glfw-classes.jar` — PojavLauncher-patched LWJGL
+- `forge-runtime/processor-launcher.jar` — auto-built by Gradle
+
+#### Build commands
+
+```bash
+./gradlew :app:assembleDebug
+# or release
+./gradlew :app:assembleRelease
+```
+
+Only `arm64-v8a` is shipped — other ABIs are filtered out at build time.
+
+### 📂 Project Layout
+
+```
+app/
+├── src/main/
+│   ├── cpp/                          # Native core (C/C++)
+│   │   ├── pingjvm.cpp               # JVM boot + hooks + showingWindow watchdog
+│   │   ├── pojav_jni/                # PojavLauncher core
+│   │   │   ├── ctxbridges/           # GL / EGL / OSMesa context bridges
+│   │   │   ├── jvm_hooks/            # LWJGL dlopen / forkAndExec / EMUI hooks
+│   │   │   ├── native_hooks/         # exit / chmod hooks (via bytehook)
+│   │   │   ├── awt_xawt/             # X11FontScaler stubs for libfontmanager.so
+│   │   │   └── driver_helper/        # Adreno Turnip loader
+│   │   └── CMakeLists.txt
+│   │
+│   ├── java/kr/co/donghyun/pinglauncher/
+│   │   ├── data/                     # Domain models
+│   │   │   ├── auth/                 # Microsoft OAuth session
+│   │   │   ├── curseforge/           # CurseForge API models
+│   │   │   ├── instance/             # Instance metadata (vanilla/fabric/forge/modpack)
+│   │   │   ├── jvm/                  # JVM settings
+│   │   │   ├── key/                  # Virtual keypad layout
+│   │   │   ├── mojang/               # Version manifests
+│   │   │   └── renderer/             # Renderer presets
+│   │   │
+│   │   └── presentation/             # UI + launch orchestration
+│   │       ├── MainActivity.kt
+│   │       ├── MinecraftActivity.kt  # Actually boots the JVM and routes input
+│   │       ├── ContentPackBrowserActivity.kt
+│   │       ├── CrashReportActivity.kt
+│   │       └── util/
+│   │           ├── curseforge/       # Modpack installer, dependency resolver
+│   │           ├── fabric/           # Fabric meta + installer
+│   │           ├── forge/            # Forge / NeoForge installer + processor serializer
+│   │           ├── minecraft/        # Mojang downloader + JRE extractor
+│   │           └── jni/              # JavaNativeLauncher (JNI entry)
+│   │
+│   └── java/
+│       ├── net/kdt/pojavlaunch/      # PojavLauncher-compat entry points
+│       ├── org/lwjgl/glfw/           # CallbackBridge
+│       └── kr/.../forge/             # ProcessorLauncher (runs inside the embedded JVM)
+│
+├── build.gradle.kts                  # NDK 27, ABI arm64-v8a, auto-builds processor-launcher.jar
+└── local.properties                  # API keys (gitignored)
+```
+
+### 🚀 Launch Flow (TL;DR)
+
+1. **Pick a version** → fetch from Mojang `version_manifest.json`
+2. **Pick a loader** → query Fabric / Forge / NeoForge meta APIs
+3. **MinecraftDownloader** → download client jar + libraries + assets (into the instance dir)
+4. **Loader install** → FabricInstaller / ForgeInstaller merges libraries
+5. **Extract JRE** → `assets/jreN.zip` → `filesDir/jreN_runtime/`
+6. **MinecraftActivity** → load renderer `.so`s → call `pingjvm.cpp::bootMinecraftJVM`
+7. **JNI_CreateJavaVM** → invoke `mainClass.main(args)` → game boots
+
+### 📝 License & Contribution
+
+- PojavLauncher core: GPLv3
+- Additional code in this project: contact the author until a license is declared
+
+---
+
+<sub>🌸 Made with too much caffeine and not enough sleep.</sub>
+
+[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://coff.ee/ydh878787)
+
+
+
