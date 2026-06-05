@@ -19,9 +19,21 @@ class MinecraftJREPreparer {
          */
         fun pickJavaMajor(mcVersion: String): Int {
             // "1.16.5", "1.20.4", "1.21" ... 스냅샷("23w14a")은 21로 처리
+            val snapshotMatch = Regex("^(\\d{2})w\\d+[a-z]$").matchEntire(mcVersion)
+            if (snapshotMatch != null) {
+                val year = snapshotMatch.groupValues[1].toInt()
+                return when {
+                    year >= 26 -> 25
+                    year >= 24 -> 21
+                    else       -> 17
+                }
+            }
             val parts = mcVersion.split(".")
+            val major = parts.getOrNull(0)?.toIntOrNull() ?: 1
+            if (major >= 26) return 25
             val minor = parts.getOrNull(1)?.toIntOrNull() ?: return 21
             val patch = parts.getOrNull(2)?.toIntOrNull() ?: 0
+
             return when {
                 minor <= 16 -> 8
                 minor == 17 -> 16
@@ -40,9 +52,9 @@ class MinecraftJREPreparer {
          * 8 → 17 → 21 순으로 시도.
          */
         private fun resolveAvailableMajor(context: Context, requested: Int): Int {
-            val order = linkedSetOf(requested, 17, 21).toList()
-            return order.firstOrNull { assetExists(context, "jre${it}.zip") }
-                ?: throw Exception("assets/에 jre{8,17,21}.zip이 하나도 없습니다.")
+            val order = linkedSetOf(requested, 25, 21, 17).toList()
+            return order.firstOrNull { assetExists(context, "jre/jre${it}.zip") }
+                ?: throw Exception("assets/jre/에 jre{8,17,21,25}.zip이 하나도 없습니다.")
         }
 
         @JvmStatic
@@ -50,7 +62,7 @@ class MinecraftJREPreparer {
             val requestedMajor = pickJavaMajor(mcVersion)
             val major = resolveAvailableMajor(context, requestedMajor)
             if (major != requestedMajor) {
-                Log.w(TAG, "jre${requestedMajor}.zip 없음 → jre${major}.zip 로 폴백 (mcVersion=$mcVersion)")
+                Log.w(TAG, "jre/jre${requestedMajor}.zip 없음 → jre/jre${major}.zip 로 폴백 (mcVersion=$mcVersion)")
             }
 
             val targetDir = File(context.filesDir, "jre${major}_runtime")
@@ -58,7 +70,7 @@ class MinecraftJREPreparer {
             if (!targetDir.exists() || targetDir.listFiles()?.isEmpty() == true) {
                 targetDir.mkdirs()
                 Log.i(TAG, "📦 JRE $major 최초 압축 해제 시작...")
-                context.assets.open("jre${major}.zip").use { input ->
+                context.assets.open("jre/jre${major}.zip").use { input ->
                     ZipInputStream(input).use { zip ->
                         var entry = zip.nextEntry
                         while (entry != null) {

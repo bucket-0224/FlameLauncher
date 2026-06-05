@@ -123,6 +123,7 @@ class MinecraftActivity : BaseActivity() {
 
 
     override fun onCreated() {
+        hideNavigation()
         currentInstance = this
 
         versionId = intent.getStringExtra(EXTRA_VERSION_ID) ?: "1.16.2"

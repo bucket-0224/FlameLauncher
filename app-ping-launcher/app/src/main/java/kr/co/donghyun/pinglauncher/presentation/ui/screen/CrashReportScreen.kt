@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kr.co.donghyun.pinglauncher.data.key.KeyLayoutManager
 import kr.co.donghyun.pinglauncher.presentation.ModEntry
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgBorder
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.BgDark
@@ -58,25 +59,29 @@ fun CrashReportScreen(
     val TextSub = Color(0xFFBB86A0)
 
     Column(modifier = Modifier.fillMaxSize().background(BgDark).systemBarsPadding()) {
-        // 툴바 반응형 처리
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(BgSurface)
-                .border(1.dp, BgBorder, RoundedCornerShape(0.dp))
-                .padding(horizontal = if (tablet) 16.dp else 10.dp, vertical = if (tablet) 10.dp else 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            TextButton(onClick = onBack) {
-                Text("뒤로", color = TextSub, fontSize = if (tablet) 14.sp else 11.sp)
+        Column(modifier = Modifier.fillMaxSize().background(BgDark).systemBarsPadding()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(BgSurface)
+                    .border(1.dp, BgBorder, RoundedCornerShape(0.dp))
+                    .padding(
+                        horizontal = if (tablet) 16.dp else 10.dp,
+                        vertical = if (tablet) 12.dp else 8.dp
+                    ),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onBack) {
+                    Text("뒤로", color = TextSub, fontSize = if (tablet) 16.sp else 13.sp)
+                }
+                Text(
+                    text = "크래시 복구 센터",
+                    color = TextMain,
+                    fontSize = if (tablet) 18.sp else 14.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
-            Text(
-                text = "크래시 복구 센터",
-                color = TextMain,
-                fontSize = if (tablet) 18.sp else 14.sp,
-                fontWeight = FontWeight.Bold
-            )
         }
 
         LazyColumn(

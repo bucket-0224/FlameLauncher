@@ -22,7 +22,13 @@ abstract class BaseActivity : ComponentActivity() {
         onCreated()
     }
 
+    var hideNavigation = false
     abstract fun onCreated()
+
+    fun hideNavigation() {
+        hideNavigation = true
+        applyWindowFlags()
+    }
 
     private fun applyWindowFlags() {
         // 전체 화면 및 화면 켜짐 유지 설정
@@ -31,7 +37,9 @@ abstract class BaseActivity : ComponentActivity() {
 
         // 내비게이션 바 제어
         val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
-        windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
+        if(hideNavigation) {
+            windowInsetsController.hide(WindowInsetsCompat.Type.navigationBars())
+        }
         windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
     }
 }

@@ -374,7 +374,7 @@ private fun InstalledPanel(count: Int) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("설치된 인스턴스", color = TextSecondary, fontSize = 12.sp)
         Text(
-            "$count 개",
+            "${count}개",
             color = TextPrimary,
             fontSize = 28.sp,
             fontWeight = FontWeight.Bold,

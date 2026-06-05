@@ -65,6 +65,7 @@ enum class ContentType(val classId: Int, val label: String) {
 
 @Composable
 fun ContentPackBrowserScreen(
+    onBack : () -> Unit,
     contentPacks: List<CurseForgeMod>,
     progress: DownloadProgress,
     isLoading: Boolean,
@@ -116,9 +117,9 @@ fun ContentPackBrowserScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "컨텐츠 검색",
+                    text = "컨텐츠 검색",
                     color = TextMain,
-                    fontSize = if (tablet) 16.sp else 12.sp,
+                    fontSize = if (tablet) 18.sp else 14.sp,
                     fontWeight = FontWeight.Bold
                 )
             }

@@ -160,6 +160,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                 val hasMore by _hasMore.asStateFlow().collectAsState()
 
                 ContentPackBrowserScreen(
+                    onBack = { finish() },
                     contentPacks = contentPacks,
                     progress = progress,
                     isLoading = isLoading,

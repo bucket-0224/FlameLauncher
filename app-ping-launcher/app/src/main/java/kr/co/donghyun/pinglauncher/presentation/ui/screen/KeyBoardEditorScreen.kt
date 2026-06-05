@@ -39,9 +39,9 @@ private val TextSub = Color(0xFFBB86A0)
 // ────────────────────────────────────────────────────────────────────────
 // 공통 스케일 상수 (GameControllerView 와 반드시 동일하게 유지)
 // ────────────────────────────────────────────────────────────────────────
-internal const val BASE_BUTTON_UNIT = 52f
-private const val TARGET_DP_PHONE = 48f      // 폰: 48dp (Material 표준)
-private const val TARGET_DP_TABLET = 96f     // 태블릿: 96dp
+private const val BASE_BUTTON_UNIT = 52f
+private const val TARGET_DP_PHONE = 48f
+private const val TARGET_DP_TABLET = 76f
 
 private fun calcBaseScale(tablet: Boolean, density: Float): Float {
     val targetDp = if (tablet) TARGET_DP_TABLET else TARGET_DP_PHONE

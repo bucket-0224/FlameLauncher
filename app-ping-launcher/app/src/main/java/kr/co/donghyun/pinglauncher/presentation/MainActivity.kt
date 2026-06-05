@@ -62,6 +62,7 @@ class MainActivity : BaseActivity() {
 
     override fun onCreated() {
         refreshLoginState()
+        hideNavigation()
 
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(
