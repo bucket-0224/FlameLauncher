@@ -1,9 +1,11 @@
 //
-// /etc/resolv.conf 접근을 사용자 정의 경로로 리다이렉트.
-// JDK 의 sun.net.dns.ResolverConfigurationImpl 가 부팅 후 첫 DNS 조회 시점에
-// 이 파일을 hardcode 로 읽는다. Android 에는 이 파일이 없거나 비어있어서
-// JNDI DNS (SRV 레코드 조회) 가 실패한다. open()/openat()/fopen() 을
-// bytehook 으로 후킹해서 우리가 만든 resolv.conf 로 돌린다.
+// /etc/resolv.conf 및 /etc/hosts 접근을 사용자 정의 경로로 리다이렉트.
+//
+// 두 가지 케이스 모두 커버:
+//  1) JDK 의 sun.net.dns.ResolverConfigurationImpl 가 /etc/resolv.conf 를 읽음
+//     → SRV 레코드(=KR 마인크래프트 서버에서 많이 씀) 조회용
+//  2) glibc/bionic 의 getaddrinfo 가 /etc/hosts 를 먼저 본 다음 DNS 로 fallback
+//     → Hamachi 25.x.x.x IP 같은 수동 매핑용
 //
 
 #include "native_hooks.h"
@@ -20,18 +22,25 @@
 #include <log.h>
 
 static char g_resolv_redirect[512] = {0};
+static char g_hosts_redirect[512]  = {0};
 static bool g_hooks_installed = false;
+
 static const char* RESOLV_TARGET = "/etc/resolv.conf";
+static const char* HOSTS_TARGET  = "/etc/hosts";
 
 static inline const char* maybe_redirect(const char* path) {
-    if (path && g_resolv_redirect[0] && strcmp(path, RESOLV_TARGET) == 0) {
+    if (!path) return path;
+    if (g_resolv_redirect[0] && strcmp(path, RESOLV_TARGET) == 0) {
         return g_resolv_redirect;
+    }
+    if (g_hosts_redirect[0] && strcmp(path, HOSTS_TARGET) == 0) {
+        return g_hosts_redirect;
     }
     return path;
 }
 
-typedef int (*open_func)(const char*, int, mode_t);
-typedef int (*openat_func)(int, const char*, int, mode_t);
+typedef int   (*open_func)(const char*, int, mode_t);
+typedef int   (*openat_func)(int, const char*, int, mode_t);
 typedef FILE* (*fopen_func)(const char*, const char*);
 
 static int custom_open(const char* pathname, int flags, mode_t mode) {
@@ -66,26 +75,9 @@ static FILE* custom_fopen(const char* pathname, const char* mode) {
     return result;
 }
 
-/**
- * Kotlin/Java 에서 호출. resolv.conf 가 있을 경로를 설정하고,
- * 아직 설치 안 됐으면 open* fopen 후킹을 설치한다.
-*/
-JNIEXPORT void JNICALL
-Java_kr_co_donghyun_pinglauncher_presentation_util_dns_DnsHookNative_installResolvConfRedirect(
-        JNIEnv* env, jclass clazz, jstring jpath) {
-    const char* path = (*env)->GetStringUTFChars(env, jpath, NULL);
-    strncpy(g_resolv_redirect, path, sizeof(g_resolv_redirect) - 1);
-    g_resolv_redirect[sizeof(g_resolv_redirect) - 1] = 0;
-    LOGI("resolv.conf 리다이렉트 대상 설정: %s", g_resolv_redirect);
-    (*env)->ReleaseStringUTFChars(env, jpath, path);
+static void install_hooks_once(void) {
+    if (g_hooks_installed) return;
 
-    if (g_hooks_installed) {
-        LOGI("후킹 이미 설치됨 — 경로만 갱신");
-        return;
-    }
-
-    // bytehook init — 이미 다른 곳에서 init 됐어도 그 결과는 무시하고 진행.
-    // hook_all 자체는 init 안 돼있으면 그냥 NULL 반환할 뿐이라 안전.
     bytehook_init(BYTEHOOK_MODE_AUTOMATIC, false);
 
     bytehook_stub_t s1 = bytehook_hook_all(NULL, "open",    &custom_open,    NULL, NULL);
@@ -94,7 +86,37 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_dns_DnsHookNative_installReso
     bytehook_stub_t s4 = bytehook_hook_all(NULL, "fopen",   &custom_fopen,   NULL, NULL);
     bytehook_stub_t s5 = bytehook_hook_all(NULL, "fopen64", &custom_fopen,   NULL, NULL);
 
-    LOGI("resolv.conf hooks 설치: open=%p open64=%p openat=%p fopen=%p fopen64=%p",
+    LOGI("network hooks 설치: open=%p open64=%p openat=%p fopen=%p fopen64=%p",
          s1, s2, s3, s4, s5);
     g_hooks_installed = true;
+}
+
+/**
+ * resolv.conf 리다이렉트 — KR 도메인 SRV 레코드 조회용
+ */
+JNIEXPORT void JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_util_dns_DnsHookNative_installResolvConfRedirect(
+        JNIEnv* env, jclass clazz, jstring jpath) {
+    const char* path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    strncpy(g_resolv_redirect, path, sizeof(g_resolv_redirect) - 1);
+    g_resolv_redirect[sizeof(g_resolv_redirect) - 1] = 0;
+    LOGI("resolv.conf 리다이렉트 대상: %s", g_resolv_redirect);
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+
+    install_hooks_once();
+}
+
+/**
+ * hosts 리다이렉트 — Hamachi/LAN 등 수동 호스트 매핑용
+ */
+JNIEXPORT void JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_util_dns_DnsHookNative_installHostsRedirect(
+        JNIEnv* env, jclass clazz, jstring jpath) {
+    const char* path = (*env)->GetStringUTFChars(env, jpath, NULL);
+    strncpy(g_hosts_redirect, path, sizeof(g_hosts_redirect) - 1);
+    g_hosts_redirect[sizeof(g_hosts_redirect) - 1] = 0;
+    LOGI("hosts 리다이렉트 대상: %s", g_hosts_redirect);
+    (*env)->ReleaseStringUTFChars(env, jpath, path);
+
+    install_hooks_once();
 }

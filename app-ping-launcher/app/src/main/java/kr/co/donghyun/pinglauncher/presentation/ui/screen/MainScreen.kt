@@ -62,6 +62,7 @@ fun MainScreen(
     onLaunchInstance: (InstanceMeta) -> Unit,
     onDeleteInstance: (InstanceMeta) -> Unit,
     onOpenContents: () -> Unit,
+    onOpenNetworkSettings: () -> Unit,
     onOpenKeySettings: () -> Unit,
     onOpenJVMSettings: () -> Unit,
     onOpenRendererSettings: () -> Unit,
@@ -93,7 +94,7 @@ fun MainScreen(
         Column(modifier = Modifier.fillMaxSize().padding(bottom = if (tablet) 0.dp else 40.dp)) {
             ProfileHeader(
                 isLoggedIn, username, uuid, onLogin,
-                onOpenContents, onOpenKeySettings, onOpenJVMSettings, onOpenRendererSettings
+                onOpenContents, onOpenKeySettings, onOpenNetworkSettings, onOpenJVMSettings, onOpenRendererSettings
             )
 
             // ── 3-way 탭 ──
@@ -463,7 +464,7 @@ private fun SidePlayPanel(
 
             Button(
                 onClick = onPlayClick,
-                enabled = selectedVersion != null && !isDownloading && isSupported && (BuildConfig.DEBUG || isLoggedIn),
+                enabled = selectedVersion != null && !isDownloading && isSupported,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = PinkPrimary,
                     disabledContainerColor = BgBorder
@@ -507,6 +508,7 @@ fun ProfileHeader(
     onLogin: () -> Unit,
     onOpenContents: () -> Unit,
     onOpenKeySettings: () -> Unit,
+    onOpenNetworkSettings: () -> Unit,
     onOpenJVMSettings: () -> Unit,
     onOpenRendererSettings: () -> Unit,
 ) {
@@ -569,6 +571,7 @@ fun ProfileHeader(
                     "🎮 키 설정" to onOpenKeySettings,
                     "🎨 렌더러" to onOpenRendererSettings,
                     "⚙️ JVM" to onOpenJVMSettings,
+                    "🌐 네트워크" to onOpenNetworkSettings,
                 ).forEach { (label, action) ->
                     Box(
                         modifier = Modifier.clip(RoundedCornerShape(8.dp))

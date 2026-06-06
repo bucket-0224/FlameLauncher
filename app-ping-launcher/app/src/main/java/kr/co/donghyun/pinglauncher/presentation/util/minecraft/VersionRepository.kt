@@ -17,7 +17,6 @@ class VersionRepository {
         client.newCall(request).execute().use { response ->
             val json = response.body?.string() ?: throw Exception("버전 목록을 읽을 수 없음")
             return gson.fromJson(json, VersionManifestIndex::class.java).versions
-                .filter { !it.id.matches(Regex("^\\d{2,}\\..*")) }
         }
     }
 

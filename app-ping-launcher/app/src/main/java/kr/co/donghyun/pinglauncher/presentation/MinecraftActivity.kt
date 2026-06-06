@@ -447,26 +447,76 @@ class MinecraftActivity : BaseActivity() {
      * 노옵 스텁이 있어도 MC 가 부팅 단계는 통과한다. HiDPI / IME 같은 부가 기능은
      * 동작 안 할 수 있지만 게임 자체는 켜짐.
      */
+    /**
+     * lwjgl-glfw-classes.jar 안에 GLFW 3.4 신규 API 스텁이 들어있는지
+     * 실제 클래스 바이트를 검사해서 보장한다. 마커 파일에 의존하지 않음 —
+     * 런처 업데이트로 필요한 스텁 목록이 늘어나도 자동 재패치되도록.
+     */
     private fun patchLwjglGlfwIfNeeded(lwjgl3Dir: File) {
         if (!lwjgl3Dir.exists()) return
         val candidates = lwjgl3Dir.listFiles()
             ?.filter { it.name.startsWith("lwjgl-glfw-classes") && it.extension == "jar" }
             ?: return
 
+        // 26.1.x 부팅에 필요한 GLFW 3.4 API 들
+        val required = setOf(
+            "glfwPlatformSupported(I)Z",
+            "glfwGetPlatform()I",
+            "glfwFocusWindow(J)V",
+            "glfwHideWindow(J)V",
+            "glfwMaximizeWindow(J)V",
+            "glfwRestoreWindow(J)V",
+            "glfwRequestWindowAttention(J)V",
+        )
+
         for (jar in candidates) {
-            val marker = File(jar.parent, "${jar.name}.patched_glfw34")
-            if (marker.exists()) {
-                Log.d("PING_LAUNCHER", "GLFW 3.4 패치 이미 적용됨: ${jar.name}")
+            val missing = findMissingMethods(jar, required)
+            if (missing.isEmpty()) {
+                Log.d("PING_LAUNCHER", "✅ GLFW 3.4 stubs 이미 있음: ${jar.name}")
+                // 옛 마커 파일 청소 (있을 수도 없을 수도)
+                File(jar.parent, "${jar.name}.patched_glfw34").delete()
                 continue
             }
-            Log.d("PING_LAUNCHER", "GLFW 3.4 스텁 주입 시작: ${jar.name}")
+            Log.w("PING_LAUNCHER", "🩹 GLFW 패치 필요: ${jar.name} — 누락 메서드 $missing")
             try {
                 patchGlfwJar(jar)
-                marker.createNewFile()
-                Log.d("PING_LAUNCHER", "✅ GLFW 3.4 스텁 주입 완료: ${jar.name}")
+                Log.d("PING_LAUNCHER", "✅ 패치 완료: ${jar.name}")
+                // 검증
+                val stillMissing = findMissingMethods(jar, required)
+                if (stillMissing.isNotEmpty()) {
+                    Log.e("PING_LAUNCHER", "❌ 패치 후에도 여전히 누락: $stillMissing — patcher 버그 의심")
+                }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "GLFW 3.4 패치 실패: ${e.message}", e)
+                Log.e("PING_LAUNCHER", "❌ GLFW 패치 실패: ${e.message}", e)
             }
+        }
+    }
+
+    /**
+     * jar 안의 org/lwjgl/glfw/GLFW.class 를 열어서 [required] 중 빠진 메서드 시그니처 목록 반환.
+     * jar 가 깨졌거나 GLFW.class 가 없으면 required 전체를 반환 (= 무조건 패치 시도).
+     */
+    private fun findMissingMethods(jar: File, required: Set<String>): Set<String> {
+        return try {
+            ZipFile(jar).use { zip ->
+                val entry = zip.getEntry("org/lwjgl/glfw/GLFW.class")
+                    ?: return required
+                val bytes = zip.getInputStream(entry).readBytes()
+                val found = HashSet<String>()
+                ClassReader(bytes).accept(object : ClassVisitor(Opcodes.ASM9) {
+                    override fun visitMethod(
+                        access: Int, name: String, descriptor: String,
+                        signature: String?, exceptions: Array<out String>?
+                    ): org.objectweb.asm.MethodVisitor? {
+                        found.add("$name$descriptor")
+                        return null
+                    }
+                }, ClassReader.SKIP_CODE)
+                required - found
+            }
+        } catch (e: Exception) {
+            Log.w("PING_LAUNCHER", "jar 메서드 스캔 실패 (${jar.name}): ${e.message}")
+            required
         }
     }
 

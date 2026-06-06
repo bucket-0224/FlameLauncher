@@ -95,6 +95,7 @@ class MainActivity : BaseActivity() {
                     onLaunchInstance = { meta -> launchInstance(meta) },   // ★ 추가
                     onDeleteInstance = { meta -> deleteInstance(meta) },   // ★ 추가
                     onOpenContents = { ContentPackBrowserActivity.start(this@MainActivity) },
+                    onOpenNetworkSettings = { NetworkSettingsActivity.start(this@MainActivity) },
                     onOpenKeySettings = { KeyboardLayoutEditorActivity.start(this@MainActivity) },
                     onOpenJVMSettings = { JvmSettingsActivity.start(this@MainActivity) },
                     onOpenRendererSettings = { RendererSettingsActivity.start(this@MainActivity) },
