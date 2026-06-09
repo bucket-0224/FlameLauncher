@@ -75,21 +75,23 @@ static FILE* custom_fopen(const char* pathname, const char* mode) {
     return result;
 }
 
-static void install_hooks_once(void) {
-    if (g_hooks_installed) return;
-
-    bytehook_init(BYTEHOOK_MODE_AUTOMATIC, false);
-
-    bytehook_stub_t s1 = bytehook_hook_all(NULL, "open",    &custom_open,    NULL, NULL);
-    bytehook_stub_t s2 = bytehook_hook_all(NULL, "open64",  &custom_open64,  NULL, NULL);
-    bytehook_stub_t s3 = bytehook_hook_all(NULL, "openat",  &custom_openat,  NULL, NULL);
-    bytehook_stub_t s4 = bytehook_hook_all(NULL, "fopen",   &custom_fopen,   NULL, NULL);
-    bytehook_stub_t s5 = bytehook_hook_all(NULL, "fopen64", &custom_fopen,   NULL, NULL);
-
-    LOGI("network hooks 설치: open=%p open64=%p openat=%p fopen=%p fopen64=%p",
-         s1, s2, s3, s4, s5);
-    g_hooks_installed = true;
-}
+//static void install_hooks_once(void) {
+//    if (g_hooks_installed) return;
+//
+//    bytehook_init(BYTEHOOK_MODE_AUTOMATIC, false);
+//
+//    bytehook_stub_t s1 = bytehook_hook_all(NULL, "open",    &custom_open,    NULL, NULL);
+//    bytehook_stub_t s2 = bytehook_hook_all(NULL, "open64",  &custom_open64,  NULL, NULL);
+//    bytehook_stub_t s3 = bytehook_hook_all(NULL, "openat",  &custom_openat,  NULL, NULL);
+//    bytehook_stub_t s4 = bytehook_hook_all(NULL, "fopen",   &custom_fopen,   NULL, NULL);
+//    bytehook_stub_t s5 = bytehook_hook_all(NULL, "fopen64", &custom_fopen,   NULL, NULL);
+//
+//    LOGI("network hooks 설치: open=%p open64=%p openat=%p fopen=%p fopen64=%p",
+//         s1, s2, s3, s4, s5);
+//
+//    create_resolver_hooks(bytehook_hook_all);
+//    g_hooks_installed = true;
+//}
 
 /**
  * resolv.conf 리다이렉트 — KR 도메인 SRV 레코드 조회용
@@ -103,7 +105,7 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_dns_DnsHookNative_installReso
     LOGI("resolv.conf 리다이렉트 대상: %s", g_resolv_redirect);
     (*env)->ReleaseStringUTFChars(env, jpath, path);
 
-    install_hooks_once();
+//    install_hooks_once();
 }
 
 /**
@@ -118,5 +120,5 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_dns_DnsHookNative_installHost
     LOGI("hosts 리다이렉트 대상: %s", g_hosts_redirect);
     (*env)->ReleaseStringUTFChars(env, jpath, path);
 
-    install_hooks_once();
+//    install_hooks_once();
 }

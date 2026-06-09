@@ -25,6 +25,7 @@ static void custom_exit(int code) {
     BYTEHOOK_POP_STACK();
 }
 
+
 static void custom_atexit() {
     if(exit_tripped) {
         return;
@@ -41,6 +42,7 @@ static void create_hooks(bytehook_hook_all_t bytehook_hook_all_p) {
     if(android_get_device_api_level() < 29) {
         create_chmod_hooks(bytehook_hook_all_p);
     }
+    create_resolver_hooks(bytehook_hook_all_p);  // ★ 추가
 }
 
 static bool init_hooks() {

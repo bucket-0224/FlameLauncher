@@ -75,6 +75,10 @@ public class CallbackBridge {
         }
     }
 
+    public static void onGrabStateChanged(boolean grabbing, boolean ignoreSameValue) {
+        onGrabStateChanged(grabbing);
+    }
+
     /** 컨트롤러 direct input 활성화 요청. 미지원이라 no-op. */
     public static void onDirectInputEnable() {
         Log.d(TAG, "onDirectInputEnable (no-op)");

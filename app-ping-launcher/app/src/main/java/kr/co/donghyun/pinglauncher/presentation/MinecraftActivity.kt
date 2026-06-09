@@ -25,6 +25,7 @@ import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.components.GameControllerView
 import kr.co.donghyun.pinglauncher.presentation.ui.components.MinecraftSurface
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.pinglauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.pinglauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftJREPreparer
@@ -259,15 +260,12 @@ class MinecraftActivity : BaseActivity() {
      *  - 마우스: SOURCE_MOUSE 비트 (또는 SOURCE_MOUSE_RELATIVE)
      *  - 둘 중 하나라도 있으면 숨김
      */
-    private fun updateGameControllerVisibility() {
-        val shouldHide = hasHardwareKeyboardOrMouse()
-
-        Log.e("PING_LAUNCHER",   // ← Debug → Error 로 변경 (디버그용 일시 변경)
-            "🎮 GameController visibility: → ${if (shouldHide) "HIDE" else "SHOW"}")
+    internal fun updateGameControllerVisibility() {
+        val hasExternalInput = hasHardwareKeyboardOrMouse()
+        val shouldShow = !hasExternalInput
 
         runOnUiThread {
-            gameControllerView?.visibility =
-                if (shouldHide) View.GONE else View.VISIBLE
+            gameControllerView?.visibility = if (shouldShow) View.VISIBLE else View.GONE
         }
     }
 
@@ -1273,21 +1271,12 @@ class MinecraftActivity : BaseActivity() {
         }
         val classPathStr = dedupedJars.joinToString(File.pathSeparator)
 
-        val jndiDnsArgs: Array<String> = if (isModularJre) {
-            arrayOf(
-                "--add-exports", "jdk.naming.dns/com.sun.jndi.dns=java.naming",
-                "--add-modules", "jdk.naming.dns",
-            )
-        } else emptyArray()
-
-        val dnsServers = DnsHookNative.getActiveDnsServers()
-        val dnsProviderUrl = dnsServers.joinToString(" ") { "dns://$it" }
 
         val dnsArgs = arrayOf(
+            "-Djava.net.preferIPv4Stack=true",          // ★ 추가 — IPv6 시도 자체를 막음
+            "-Djava.net.preferIPv4Addresses=true",      // ★ 추가 (보강)
             // JNDI DNS 공급자 강제 설정 (SRV 조회 해결의 핵심)
-            "-Djava.naming.provider.url=$dnsProviderUrl",
-            "-Dsun.net.spi.nameservice.nameservers=${dnsServers.first()}",
-            "-Dsun.net.spi.nameservice.provider.1=dns,sun",
+            "-Djava.naming.provider.url=${DnsHookNative.getActiveDnsServers().joinToString(" ") { "dns://$it" }}",
             "-Dnetworkaddress.cache.ttl=0",
             "-Dnetworkaddress.cache.negative.ttl=0",
             "-Dsun.net.inetaddr.ttl=0",
@@ -1307,7 +1296,6 @@ class MinecraftActivity : BaseActivity() {
                 dnsArgs +
                 launchWrapperArgs +
                 fabricJvmArgs +
-                jndiDnsArgs +
                 modernForgeArgs +     // ★ 추가 — metaJvmArgs 보다 앞에 둬서 version.json 인자가 덮어쓰도록
                 metaJvmArgs
 

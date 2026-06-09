@@ -11,5 +11,6 @@ typedef bytehook_stub_t (*bytehook_hook_all_t)(const char *callee_path_name, con
                                                bytehook_hooked_t hooked, void *hooked_arg);
 
 void create_chmod_hooks(bytehook_hook_all_t bytehook_hook_all_p);
+void create_resolver_hooks(bytehook_hook_all_t bytehook_hook_all_p);  // ★ 추가
 
-#endif //POJAVLAUNCHER_NATIVE_HOOKS_H
+#endif

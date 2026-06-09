@@ -76,6 +76,7 @@ struct pojav_environ_s {
 
 #undef ADD_CALLBACK_WWIN
 };
+
 extern struct pojav_environ_s *pojav_environ;
 
 #endif //POJAVLAUNCHER_ENVIRON_H

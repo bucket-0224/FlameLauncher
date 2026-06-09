@@ -247,7 +247,13 @@ fun ContentPackDetailScreen(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Button(
-                onClick = { if (isInstalled) onLaunch() else showCautionDialog = true },
+                onClick = { if (isInstalled) onLaunch() else {
+                    if(setting.neverShowCautionAgain) {
+                        onInstall()
+                    } else {
+                        showCautionDialog = true
+                    }
+                }},
                 colors = ButtonDefaults.buttonColors(containerColor = Pink),
                 shape = RoundedCornerShape(10.dp),
                 modifier = Modifier
@@ -262,7 +268,7 @@ fun ContentPackDetailScreen(
                 )
             }
         }
-        if (showCautionDialog) {
+        if (showCautionDialog && !setting.neverShowCautionAgain) {
             AlertDialog(
                 onDismissRequest = { showCautionDialog = false },
                 title = { Text("⚠️: 모드팩은 완전하지 않습니다.", color = TextPrimary) },
@@ -311,7 +317,7 @@ fun ContentPackDetailScreen(
                 confirmButton = {
                     TextButton(onClick = {
                         showCautionDialog = false
-
+                        onInstall()
                         SettingManager.save(context, setting.copy(neverShowCautionAgain = doNotShowAgain))
                     }) { Text("이해했습니다.", color = TextMain) }
                 },

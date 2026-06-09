@@ -19,6 +19,7 @@ target_include_directories(pingjvm PRIVATE
 )
 target_link_libraries(pingjvm ${log-lib})
 
+
 # ── PojavLauncher core 소스 (awt_bridge.c 제외) ───────────────
 set(POJAV_SOURCES
         pojav_jni/egl_bridge.c
@@ -41,6 +42,7 @@ set(POJAV_SOURCES
         pojav_jni/native_hooks/exit_hook.c
         pojav_jni/native_hooks/chmod_hook.c
         pojav_jni/native_hooks/resolvconf_hook.c
+        pojav_jni/native_hooks/resolver_hook.c
         pojav_jni/jre_launcher.c
 )
 

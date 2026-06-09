@@ -10,9 +10,20 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <stdio.h>
+#include "environ.h"
+#include "log.h"
 
-#include "environ/environ.h"  // 기존 include 옆에
+#include <resolv.h>
+#include <arpa/nameser.h>
+#include <netinet/in.h>
+#include <dlfcn.h>
+#include <poll.h>
+#include <unistd.h>
 
+#include <map>
+#include <string>
+#include <mutex>
+#include <dlfcn.h>
 
 #ifndef JNI_VERSION_1_8
 #define JNI_VERSION_1_8 0x00010008
@@ -23,10 +34,253 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 // JNI_CreateJavaVM 함수 포인터 타입 정의
 typedef jint (*CreateJavaVM_t)(JavaVM**, void**, void*);
-
 // 💡 [핵심 추가] stdout/stderr에 찍히는 자바 로그를 실시간으로 낚아채 로그캣에 뿌려주는 백그라운드 쓰레드
 static int pfd[2];
 static pthread_t logging_thread;
+// android_res_n* 는 API 29+ 라 dlsym 으로 런타임 lookup
+typedef int  (*android_res_nquery_fn)(uint64_t network, const char* dname,
+                                      int ns_class, int ns_type, uint32_t flags);
+typedef int  (*android_res_nresult_fn)(int fd, int* rcode,
+                                       uint8_t* answer, size_t anslen);
+typedef void (*android_res_cancel_fn)(int fd);
+
+// hostname → SRV port. lookupAllHostAddr 가 SRV 성공 시 채워두고,
+// connect0 후킹이 lookup 해서 port 치환.
+static std::map<std::string, uint16_t> g_srv_port_cache;
+static std::mutex g_srv_cache_mutex;
+
+// 원본 Net.connect0 (시그니처 두 가지 — JDK8 / JDK17+)
+static jint (*g_orig_connect0_v1)(JNIEnv*, jclass, jobject, jobject, jint) = nullptr;
+static jint (*g_orig_connect0_v2)(JNIEnv*, jclass, jboolean, jobject, jobject, jint) = nullptr;
+
+static android_res_nquery_fn  s_res_nquery  = nullptr;
+static android_res_nresult_fn s_res_nresult = nullptr;
+static android_res_cancel_fn  s_res_cancel  = nullptr;
+static bool s_res_resolved = false;
+
+static struct pojav_environ_s* get_pojav_environ() {
+    const char* s = getenv("POJAV_ENVIRON");
+    if (!s) return nullptr;
+    char* endptr = nullptr;
+    uintptr_t p = strtoul(s, &endptr, 16);
+    if (endptr && *endptr != 0) return nullptr;
+    if (p == 0) return nullptr;
+    return (struct pojav_environ_s*)p;
+}
+
+static void resolve_android_res_symbols() {
+    if (s_res_resolved) return;
+    s_res_resolved = true;
+    void* h = dlopen("libandroid.so", RTLD_NOW);
+    if (!h) {
+        LOGW("dlopen libandroid.so failed: %s", dlerror());
+        return;
+    }
+    s_res_nquery  = (android_res_nquery_fn)  dlsym(h, "android_res_nquery");
+    s_res_nresult = (android_res_nresult_fn) dlsym(h, "android_res_nresult");
+    s_res_cancel  = (android_res_cancel_fn)  dlsym(h, "android_res_cancel");
+    LOGI("android_res_n*: query=%p result=%p cancel=%p",
+         s_res_nquery, s_res_nresult, s_res_cancel);
+}
+
+static bool query_minecraft_srv(const char* host,
+                                char* out_target, size_t out_target_size,
+                                uint16_t* out_port) {
+    if (!host || !out_target) return false;
+    if (host[0] == '_') return false;
+
+    resolve_android_res_symbols();
+    if (!s_res_nquery || !s_res_nresult) {
+        LOGW("android_res_n* unavailable (device API < 29?)");
+        return false;
+    }
+
+    char qname[300];
+    int qn = snprintf(qname, sizeof(qname), "_minecraft._tcp.%s", host);
+    if (qn <= 0 || qn >= (int)sizeof(qname)) return false;
+
+    // network=0 → 시스템 기본 네트워크 사용
+    int fd = s_res_nquery(0, qname, ns_c_in, ns_t_srv, 0);
+    if (fd < 0) {
+        LOGI("res_nquery failed for %s: %d", qname, fd);
+        return false;
+    }
+
+    struct pollfd pfd = { .fd = fd, .events = POLLIN, .revents = 0 };
+    int pret = poll(&pfd, 1, 3000);   // 3초 timeout
+    if (pret <= 0) {
+        LOGI("res_nquery poll timeout for %s", qname);
+        if (s_res_cancel) s_res_cancel(fd);
+        else close(fd);
+        return false;
+    }
+
+    int rcode = 0;
+    uint8_t answer[NS_PACKETSZ];
+    int len = s_res_nresult(fd, &rcode, answer, sizeof(answer));
+    // res_nresult 가 fd 자동 close
+
+    if (len <= 0 || rcode != 0) {
+        LOGI("res_nresult: len=%d rcode=%d for %s", len, rcode, qname);
+        return false;
+    }
+
+    ns_msg msg;
+    if (ns_initparse(answer, len, &msg) < 0) return false;
+
+    int count = ns_msg_count(msg, ns_s_an);
+    uint16_t best_prio = 0xFFFF;
+    bool found = false;
+    for (int i = 0; i < count; i++) {
+        ns_rr rr;
+        if (ns_parserr(&msg, ns_s_an, i, &rr) < 0) continue;
+        if (ns_rr_type(rr) != ns_t_srv) continue;
+        if (ns_rr_rdlen(rr) < 7) continue;
+
+        const unsigned char* rdata = ns_rr_rdata(rr);
+        uint16_t priority = ntohs(*(const uint16_t*)(rdata + 0));
+        uint16_t port     = ntohs(*(const uint16_t*)(rdata + 4));
+
+        char target[256];
+        if (dn_expand(ns_msg_base(msg), ns_msg_end(msg),
+                      rdata + 6, target, sizeof(target)) < 0) continue;
+
+        size_t tlen = strlen(target);
+        if (tlen > 0 && target[tlen - 1] == '.') target[tlen - 1] = 0;
+        if (target[0] == 0) continue;
+
+        if (priority < best_prio) {
+            strncpy(out_target, target, out_target_size - 1);
+            out_target[out_target_size - 1] = 0;
+            *out_port = port;
+            best_prio = priority;
+            found = true;
+        }
+    }
+
+    if (found) {
+        std::lock_guard<std::mutex> lock(g_srv_cache_mutex);
+        g_srv_port_cache[std::string(host)] = *out_port;
+        LOGI("   💾 cached SRV port: %s → :%u", host, *out_port);
+    }
+    return found;
+}
+
+static jobjectArray pingLookupCore(JNIEnv* env, jstring hostname) {
+    const char* host = env->GetStringUTFChars(hostname, nullptr);
+    LOGI("🌐 lookupAllHostAddr('%s')", host);
+
+    // localhost / IP literal / 짧은 이름은 SRV 시도 건너뛰기 (잡음 줄임)
+    bool skip_srv = (!strcmp(host, "localhost") || !strchr(host, '.'));
+
+    char srv_target[256];
+    uint16_t srv_port = 0;
+    const char* effective_host = host;
+    if (!skip_srv && query_minecraft_srv(host, srv_target, sizeof(srv_target), &srv_port)) {
+        LOGI("   📌 SRV: _minecraft._tcp.%s → %s:%u", host, srv_target, srv_port);
+        effective_host = srv_target;
+    }
+
+    struct pojav_environ_s* environ_ptr = get_pojav_environ();
+    JavaVM* dvm = environ_ptr ? environ_ptr->dalvikJavaVMPtr : nullptr;
+    if (!dvm) {
+        env->ReleaseStringUTFChars(hostname, host);
+        jclass uhe = env->FindClass("java/net/UnknownHostException");
+        env->ThrowNew(uhe, "Dalvik VM unavailable (environ not ready)");
+        return nullptr;
+    }
+
+    JNIEnv* dEnv = nullptr;
+    bool detach = false;
+    if (dvm->GetEnv((void**)&dEnv, JNI_VERSION_1_6) == JNI_EDETACHED) {
+        dvm->AttachCurrentThread(&dEnv, nullptr);
+        detach = true;
+    }
+
+    jclass dCls = dEnv->FindClass("java/net/InetAddress");
+    jmethodID dGetAllByName = dEnv->GetStaticMethodID(dCls, "getAllByName",
+                                                      "(Ljava/lang/String;)[Ljava/net/InetAddress;");
+    jmethodID dGetAddress = dEnv->GetMethodID(dCls, "getAddress", "()[B");
+
+    // ★ effective_host 로 resolve (SRV target 또는 원본)
+    jstring dHost = dEnv->NewStringUTF(effective_host);
+    jobjectArray dResults = (jobjectArray)dEnv->CallStaticObjectMethod(
+            dCls, dGetAllByName, dHost);
+    bool failed = dEnv->ExceptionCheck();
+    if (failed) dEnv->ExceptionClear();
+    dEnv->DeleteLocalRef(dHost);
+
+    if (failed || !dResults) {
+        dEnv->DeleteLocalRef(dCls);
+        if (detach) dvm->DetachCurrentThread();
+        LOGI("   ✗ unknown host: '%s'", effective_host);
+        jclass uhe = env->FindClass("java/net/UnknownHostException");
+        env->ThrowNew(uhe, host);
+        env->ReleaseStringUTFChars(hostname, host);
+        return nullptr;
+    }
+
+    jsize count = dEnv->GetArrayLength(dResults);
+
+    jclass jvmCls = env->FindClass("java/net/InetAddress");
+    jmethodID jvmGetByAddr = env->GetStaticMethodID(jvmCls, "getByAddress",
+                                                    "(Ljava/lang/String;[B)Ljava/net/InetAddress;");
+
+    // 일단 IPv4 우선 — KR ISP 에서 IPv6 unreachable 흔함
+    // 그래서 IPv4 만 골라서 반환 (없으면 IPv6 라도)
+    int ipv4_count = 0;
+    for (jsize i = 0; i < count; i++) {
+        jobject a = dEnv->GetObjectArrayElement(dResults, i);
+        jbyteArray b = (jbyteArray)dEnv->CallObjectMethod(a, dGetAddress);
+        if (dEnv->GetArrayLength(b) == 4) ipv4_count++;
+        dEnv->DeleteLocalRef(b);
+        dEnv->DeleteLocalRef(a);
+    }
+    bool ipv4_only = ipv4_count > 0;
+    int out_count = ipv4_only ? ipv4_count : count;
+
+    jobjectArray result = env->NewObjectArray(out_count, jvmCls, nullptr);
+    int out_idx = 0;
+
+    for (jsize i = 0; i < count; i++) {
+        jobject dAddr = dEnv->GetObjectArrayElement(dResults, i);
+        jbyteArray dBytes = (jbyteArray)dEnv->CallObjectMethod(dAddr, dGetAddress);
+        jsize blen = dEnv->GetArrayLength(dBytes);
+
+        if (ipv4_only && blen != 4) {
+            dEnv->DeleteLocalRef(dBytes);
+            dEnv->DeleteLocalRef(dAddr);
+            continue;
+        }
+
+        jbyte tmp[16];
+        dEnv->GetByteArrayRegion(dBytes, 0, blen, tmp);
+
+        jbyteArray jvmBytes = env->NewByteArray(blen);
+        env->SetByteArrayRegion(jvmBytes, 0, blen, tmp);
+
+        // ★ 원본 hostname 으로 저장 — 마인크래프트가 나중에 hostname 비교할 때 일치하도록
+        jobject jvmAddr = env->CallStaticObjectMethod(
+                jvmCls, jvmGetByAddr, hostname, jvmBytes);
+        env->SetObjectArrayElement(result, out_idx++, jvmAddr);
+
+        env->DeleteLocalRef(jvmBytes);
+        env->DeleteLocalRef(jvmAddr);
+        dEnv->DeleteLocalRef(dBytes);
+        dEnv->DeleteLocalRef(dAddr);
+    }
+
+    dEnv->DeleteLocalRef(dResults);
+    dEnv->DeleteLocalRef(dCls);
+    env->DeleteLocalRef(jvmCls);
+    if (detach) dvm->DetachCurrentThread();
+
+    LOGI("   ✓ resolved %d address(es) for '%s' (effective='%s')",
+         out_idx, host, effective_host);
+    env->ReleaseStringUTFChars(hostname, host);
+    return result;
+}
+
 
 
 void* stdout_logger_thread_func(void*) {
@@ -48,6 +302,18 @@ static SetGrabbing_t g_originalSetGrabbing = nullptr;
 static int g_guiScale = 0;
 
 
+// JDK 8/17 시그니처: (String) -> InetAddress[]
+extern "C" jobjectArray pingLookupAllHostAddr_v1(
+        JNIEnv* env, jobject self, jstring hostname) {
+    return pingLookupCore(env, hostname);
+}
+
+// JDK 18+ 시그니처: (String, int) -> InetAddress[]  (characteristics 무시)
+extern "C" jobjectArray pingLookupAllHostAddr_v2(
+        JNIEnv* env, jobject self, jstring hostname, jint /*chars*/) {
+    return pingLookupCore(env, hostname);
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSetGuiScale(
         JNIEnv* env, jobject thiz, jint scale) {
@@ -60,6 +326,7 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeGetGuiScal
         JNIEnv* env, jobject thiz) {
     return g_guiScale;
 }
+
 
 // 우리가 실제로 실행할 함수
 void hookedSetGrabbing(JNIEnv* env, jclass clazz, jboolean grabbing) {
@@ -102,6 +369,151 @@ void hookedSetGrabbing(JNIEnv* env, jclass clazz, jboolean grabbing) {
     }
 
     env->DeleteLocalRef(cbClass);
+}
+
+
+// ──────────────────────────────────────────────────────────────────
+// java.net.Inet{4,6}AddressImpl.lookupAllHostAddr 를 우리 구현으로 교체.
+// JVM 의 libnet.so getaddrinfo 가 PLT 우회 경로를 타도, Java 측 시작점에서
+// 갈아끼우니까 모든 호출이 우리에게 들어온다. 안에서는 Dalvik(Android) JVM 의
+// InetAddress.getAllByName 으로 위임 → Android 의 정상 DNS resolver 사용.
+// ──────────────────────────────────────────────────────────────────
+
+static jint JNICALL pingConnect0_common(JNIEnv* env, jobject remote, jint port,
+                                        int* out_effective_port) {
+    *out_effective_port = port;
+
+    jclass iaCls = env->GetObjectClass(remote);
+    jmethodID mGetHostName = env->GetMethodID(iaCls, "getHostName", "()Ljava/lang/String;");
+    jstring jhost = (jstring) env->CallObjectMethod(remote, mGetHostName);
+    env->DeleteLocalRef(iaCls);
+
+    if (!jhost) return 0;
+    const char* host = env->GetStringUTFChars(jhost, nullptr);
+
+    {
+        std::lock_guard<std::mutex> lock(g_srv_cache_mutex);
+        auto it = g_srv_port_cache.find(std::string(host));
+        if (it != g_srv_port_cache.end() && it->second != 0) {
+            *out_effective_port = it->second;
+            LOGI("📌 connect0 port override: %s :%d → :%d", host, port, *out_effective_port);
+        }
+    }
+
+    env->ReleaseStringUTFChars(jhost, host);
+    env->DeleteLocalRef(jhost);
+    return 0;
+}
+
+// JDK 17+ 시그니처
+static jint JNICALL pingConnect0_v2(JNIEnv* env, jclass cls,
+                                    jboolean preferIPv6,
+                                    jobject fd, jobject remote, jint port) {
+    int eff = port;
+    pingConnect0_common(env, remote, port, &eff);
+    return g_orig_connect0_v2
+           ? g_orig_connect0_v2(env, cls, preferIPv6, fd, remote, eff)
+           : -1;
+}
+
+// JDK 8 시그니처
+static jint JNICALL pingConnect0_v1(JNIEnv* env, jclass cls,
+                                    jobject fd, jobject remote, jint port) {
+    int eff = port;
+    pingConnect0_common(env, remote, port, &eff);
+    return g_orig_connect0_v1
+           ? g_orig_connect0_v1(env, cls, fd, remote, eff)
+           : -1;
+}
+
+static void installNetConnectHook(JNIEnv* env) {
+    // 원본 함수 dlsym (RegisterNatives 이전에)
+    void* sym = nullptr;
+    void* hNio = dlopen("libnio.so", RTLD_NOW);
+    if (hNio) sym = dlsym(hNio, "Java_sun_nio_ch_Net_connect0");
+    if (!sym)  sym = dlsym(RTLD_DEFAULT, "Java_sun_nio_ch_Net_connect0");
+    if (!sym) {
+        LOGW("⚠️  Net.connect0 원본 심볼 dlsym 실패: %s", dlerror());
+        return;
+    }
+
+    jclass netCls = env->FindClass("sun/nio/ch/Net");
+    if (!netCls) {
+        env->ExceptionClear();
+        LOGW("⚠️  sun/nio/ch/Net 클래스 못 찾음");
+        return;
+    }
+
+    // JDK 17+ 시그니처 먼저 시도
+    JNINativeMethod m_v2[] = {
+            { (char*)"connect0",
+              (char*)"(ZLjava/io/FileDescriptor;Ljava/net/InetAddress;I)I",
+              (void*)pingConnect0_v2 }
+    };
+    if (env->RegisterNatives(netCls, m_v2, 1) == JNI_OK) {
+        g_orig_connect0_v2 =
+                (decltype(g_orig_connect0_v2)) sym;
+        LOGI("✅ Hooked sun/nio/ch/Net.connect0(Z,FD,IA,I) [JDK17+]");
+        env->DeleteLocalRef(netCls);
+        return;
+    }
+    env->ExceptionClear();
+
+    // JDK 8 시그니처 fallback
+    JNINativeMethod m_v1[] = {
+            { (char*)"connect0",
+              (char*)"(Ljava/io/FileDescriptor;Ljava/net/InetAddress;I)I",
+              (void*)pingConnect0_v1 }
+    };
+    if (env->RegisterNatives(netCls, m_v1, 1) == JNI_OK) {
+        g_orig_connect0_v1 =
+                (decltype(g_orig_connect0_v1)) sym;
+        LOGI("✅ Hooked sun/nio/ch/Net.connect0(FD,IA,I) [JDK8]");
+    } else {
+        env->ExceptionClear();
+        LOGW("⚠️  Net.connect0 후킹 실패 (양쪽 시그니처 모두)");
+    }
+    env->DeleteLocalRef(netCls);
+}
+
+static void installInetAddressHook(JNIEnv* env) {
+    const char* classes[] = {
+            "java/net/Inet6AddressImpl",
+            "java/net/Inet4AddressImpl",
+    };
+
+    JNINativeMethod m_v1[] = {
+            { (char*)"lookupAllHostAddr",
+              (char*)"(Ljava/lang/String;)[Ljava/net/InetAddress;",
+              (void*)&pingLookupAllHostAddr_v1 }
+    };
+    JNINativeMethod m_v2[] = {
+            { (char*)"lookupAllHostAddr",
+              (char*)"(Ljava/lang/String;I)[Ljava/net/InetAddress;",
+              (void*)&pingLookupAllHostAddr_v2 }
+    };
+
+    for (const char* cn : classes) {
+        jclass cls = env->FindClass(cn);
+        if (env->ExceptionCheck()) { env->ExceptionClear(); cls = nullptr; }
+        if (!cls) {
+            LOGI("InetAddressHook: %s not found (skip)", cn);
+            continue;
+        }
+
+        // JDK 별로 둘 중 하나만 존재. 둘 다 시도하고 ExceptionClear.
+        if (env->RegisterNatives(cls, m_v1, 1) == 0) {
+            LOGI("✅ Hooked %s.lookupAllHostAddr(String)", cn);
+        } else if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+        if (env->RegisterNatives(cls, m_v2, 1) == 0) {
+            LOGI("✅ Hooked %s.lookupAllHostAddr(String,int)", cn);
+        } else if (env->ExceptionCheck()) {
+            env->ExceptionClear();
+        }
+        env->DeleteLocalRef(cls);
+    }
 }
 
 // JVM 생성 후 후킹 설치
@@ -512,6 +924,8 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
     }
     LOGI("✅ 내장 JVM 부팅 성공!");
     installGrabbingHook();
+    installInetAddressHook(customEnv);   // ★ 추가
+    installNetConnectHook(customEnv);
 
     // ── 마인크래프트 메인 클래스 로드 ───────────────────────────
     // 시스템 프로퍼티에서 mainClass 읽기
@@ -580,6 +994,7 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
 
     return 0;
 }
+
 
 // 한 방에 처리: environ 에서 mainWindowBundle 꺼내서 nglfwSetShowingWindow 호출
 extern "C" JNIEXPORT jboolean JNICALL
