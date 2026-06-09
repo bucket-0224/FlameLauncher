@@ -26,6 +26,7 @@ import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricLoaderEntry
 import kr.co.donghyun.pinglauncher.presentation.util.fabric.FabricMetaAPI
 import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeLoaderEntry
 import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeMetaAPI
+import kr.co.donghyun.pinglauncher.presentation.util.forge.NeoForgeMetaAPI
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 
 private val Pink     = Color(0xFFE91E8C)
@@ -40,6 +41,7 @@ fun LoaderSelectDialog(
     onLaunchVanilla: () -> Unit,
     onLaunchFabric: (loaderVersion: String) -> Unit,
     onLaunchForge:  (forgeVersion: String) -> Unit,
+    onLaunchNeoForge: (neoforgeVersion: String) -> Unit,   // ★ 추가
 ) {
     var choice by remember { mutableStateOf("vanilla") }
     val tablet = isTablet()
@@ -53,6 +55,11 @@ fun LoaderSelectDialog(
     var forgeList     by remember { mutableStateOf<List<ForgeLoaderEntry>>(emptyList()) }
     var selectedForge by remember { mutableStateOf<String?>(null) }
     var showAllForge  by remember { mutableStateOf(false) }
+
+    // ─── NeoForge ───
+    var neoforgeList     by remember { mutableStateOf<List<ForgeLoaderEntry>>(emptyList()) }
+    var selectedNeoForge by remember { mutableStateOf<String?>(null) }
+    var showAllNeoForge  by remember { mutableStateOf(false) }
 
     var loading by remember { mutableStateOf(false) }
     var error   by remember { mutableStateOf<String?>(null) }
@@ -69,6 +76,27 @@ fun LoaderSelectDialog(
                     ?: list.firstOrNull()?.loader?.version
             } catch (e: Exception) {
                 error = e.message ?: "Fabric 로더 목록 불러오기 실패"
+            }
+            loading = false
+        }
+    }
+
+    fun loadNeoForge() {
+        if (neoforgeList.isNotEmpty() || loading) return
+        loading = true; error = null
+        scope.launch {
+            try {
+                val list = withContext(Dispatchers.IO) { NeoForgeMetaAPI().listLoaders(versionId) }
+                if (list.isEmpty()) {
+                    error = "$versionId 에 사용 가능한 NeoForge 빌드가 없음 (1.20.1 은 별도 fork)"
+                } else {
+                    neoforgeList = list
+                    selectedNeoForge = list.firstOrNull { it.recommended }?.forgeVersion
+                        ?: list.firstOrNull { it.latest }?.forgeVersion
+                                ?: list.first().forgeVersion
+                }
+            } catch (e: Exception) {
+                error = e.message ?: "NeoForge 로더 목록 불러오기 실패"
             }
             loading = false
         }
@@ -110,8 +138,7 @@ fun LoaderSelectDialog(
         ) {
             Text("로더 선택 — $versionId", color = TextMain, fontSize = if(tablet) 17.sp else 13.sp, fontWeight = FontWeight.Bold)
 
-            // ─── 3탭 ───
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 LoaderTab(
                     label = "🌿 바닐라",
                     selected = choice == "vanilla",
@@ -128,6 +155,52 @@ fun LoaderSelectDialog(
                     modifier = Modifier.weight(1f),
                     accent = Orange
                 ) { choice = "forge"; error = null; loadForge() }
+                LoaderTab(
+                    label = "🟢 NeoForge",
+                    selected = choice == "neoforge",
+                    modifier = Modifier.weight(1f),
+                    accent = Color(0xFF4CAF50)
+                ) { choice = "neoforge"; error = null; loadNeoForge() }
+            }
+
+            // ─── NeoForge 패널 ───
+            if (choice == "neoforge") {
+                val NeoGreen = Color(0xFF4CAF50)
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("NeoForge 빌드", color = TextSub, fontSize = if(tablet) 14.sp else 10.sp)
+                    when {
+                        loading -> CenterSpinner(NeoGreen)
+                        error != null -> ErrorText(error!!)
+                        else -> {
+                            val visible =
+                                if (showAllNeoForge) neoforgeList
+                                else neoforgeList.filter { it.recommended || it.latest }
+                                    .ifEmpty { neoforgeList.take(5) }
+
+                            LazyColumn(
+                                modifier = Modifier.heightIn(max = 240.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                items(visible, key = { it.forgeVersion }) { entry ->
+                                    val isSel = selectedNeoForge == entry.forgeVersion
+                                    val label = when {
+                                        entry.recommended && entry.latest -> "recommended·latest"
+                                        entry.recommended -> "recommended"
+                                        entry.latest -> "latest"
+                                        else -> ""
+                                    }
+                                    LoaderRow(
+                                        version = entry.forgeVersion,
+                                        rightLabel = label,
+                                        rightColor = if (entry.recommended || entry.latest) NeoGreen else TextSub,
+                                        selected = isSel,
+                                        accent = NeoGreen
+                                    ) { selectedNeoForge = entry.forgeVersion }
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // ─── Fabric 패널 ───
@@ -242,22 +315,28 @@ fun LoaderSelectDialog(
             ) {
                 TextButton(onClick = onDismiss) { Text("취소", color = TextSub, fontSize = if(tablet) 13.sp else 9.sp) }
                 val canRun = when (choice) {
-                    "vanilla" -> true
-                    "fabric"  -> selectedLoader != null
-                    "forge"   -> selectedForge  != null
+                    "vanilla"  -> true
+                    "fabric"   -> selectedLoader != null
+                    "forge"    -> selectedForge  != null
+                    "neoforge" -> selectedNeoForge != null
                     else -> false
                 }
                 Button(
                     onClick = {
                         when (choice) {
-                            "vanilla" -> onLaunchVanilla()
-                            "fabric"  -> selectedLoader?.let(onLaunchFabric)
-                            "forge"   -> selectedForge?.let(onLaunchForge)
+                            "vanilla"  -> onLaunchVanilla()
+                            "fabric"   -> selectedLoader?.let(onLaunchFabric)
+                            "forge"    -> selectedForge?.let(onLaunchForge)
+                            "neoforge" -> selectedNeoForge?.let(onLaunchNeoForge)
                         }
                     },
                     enabled = canRun,
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (choice == "forge") Orange else Pink,
+                        containerColor = when (choice) {
+                            "forge"    -> Orange
+                            "neoforge" -> Color(0xFF4CAF50)
+                            else       -> Pink
+                        },
                         disabledContainerColor = BgBorder
                     ),
                     shape = RoundedCornerShape(8.dp)

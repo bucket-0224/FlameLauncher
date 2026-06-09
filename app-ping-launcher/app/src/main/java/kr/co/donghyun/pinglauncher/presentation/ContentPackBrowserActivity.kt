@@ -961,13 +961,20 @@ class ContentPackBrowserActivity : BaseActivity() {
         versionEntry: VersionEntry,
         isNeoForge: Boolean
     ): String? {
-        val forgeApi = ForgeMetaAPI()
         val loaderList = withContext(Dispatchers.IO) {
-            runCatching { forgeApi.listLoaders(mcVersion) }.getOrDefault(emptyList())
+            runCatching {
+                if (isNeoForge) {
+                    kr.co.donghyun.pinglauncher.presentation.util.forge
+                        .NeoForgeMetaAPI().listLoaders(mcVersion)
+                } else {
+                    ForgeMetaAPI().listLoaders(mcVersion)
+                }
+            }.getOrDefault(emptyList())
         }
         if (loaderList.isEmpty()) {
-            Log.e("PING_LAUNCHER", "Forge 후보 없음 mc=$mcVersion")
-            _statusMessage.value = "$mcVersion 용 Forge 빌드가 없습니다."
+            val name = if (isNeoForge) "NeoForge" else "Forge"
+            Log.e("PING_LAUNCHER", "$name 후보 없음 mc=$mcVersion")
+            _statusMessage.value = "$mcVersion 용 $name 빌드가 없습니다."
             return null
         }
         val forgeVersion = loaderList.firstOrNull { it.recommended }?.forgeVersion

@@ -103,6 +103,7 @@ class MainActivity : BaseActivity() {
                     isLoggedIn = isLoggedIn,
                     username = username,
                     onLogin = { loginLauncher.launch(Intent(this, LoginActivity::class.java)) },
+                    onLaunchNeoForge = { v, f -> startForgeDownloadAndPlay(v, f, true) },
                 )
             }
         }

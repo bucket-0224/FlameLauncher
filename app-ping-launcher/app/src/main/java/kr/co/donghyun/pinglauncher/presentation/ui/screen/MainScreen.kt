@@ -59,6 +59,7 @@ fun MainScreen(
     onDownloadAndPlay: (VersionEntry) -> Unit,
     onLaunchFabric: (VersionEntry, String) -> Unit,
     onLaunchForge: (VersionEntry, String) -> Unit,
+    onLaunchNeoForge: (VersionEntry, String) -> Unit,
     onLaunchInstance: (InstanceMeta) -> Unit,
     onDeleteInstance: (InstanceMeta) -> Unit,
     onOpenContents: () -> Unit,
@@ -203,6 +204,7 @@ fun MainScreen(
                 onLaunchVanilla = { showLoaderDialog = false; onDownloadAndPlay(selectedVersion) },
                 onLaunchFabric  = { v -> showLoaderDialog = false; onLaunchFabric(selectedVersion, v) },
                 onLaunchForge   = { v -> showLoaderDialog = false; onLaunchForge(selectedVersion, v) },
+                onLaunchNeoForge= { v -> showLoaderDialog = false; onLaunchNeoForge(selectedVersion, v) },
             )
         }
     }

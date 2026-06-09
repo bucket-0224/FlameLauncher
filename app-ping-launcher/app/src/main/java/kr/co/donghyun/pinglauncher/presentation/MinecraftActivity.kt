@@ -959,6 +959,14 @@ class MinecraftActivity : BaseActivity() {
                 || instanceMeta?.loaderType == "fabric"
         Log.d("PING_LAUNCHER", "isFabric=$isFabric, loaderType=${instanceMeta?.loaderType}, mainClass=$mainClass")
 
+        // ★ 추가 — Forge/NeoForge 의 BootstrapLauncher 경유 부팅 감지
+        //   libraries 워커 / versionJar 분기에서 동시에 쓰기 위해 여기서 한 번만 계산
+        val isModernLoader = (instanceMeta?.loaderType == "forge"
+                || instanceMeta?.loaderType == "neoforge")
+                && (mainClass.startsWith("cpw.mods")
+                || mainClass.contains("BootstrapLauncher", ignoreCase = true)
+                || mainClass.contains("ProcessorLauncher", ignoreCase = true)
+                || mainClass.contains("net.neoforged", ignoreCase = true))
         // PojavLauncher 패치 LWJGL은 모든 MC 버전에 필요 (libglfw.so가 pojavInit 라우팅을 가정함)
         copyLwjglJars(base)
         patchLwjglGlfwIfNeeded(File(base, "lwjgl3"))
@@ -1012,6 +1020,23 @@ class MinecraftActivity : BaseActivity() {
                 librariesDir.walkTopDown().forEach { f ->
                     if (!f.isFile || f.extension != "jar") return@forEach
                     if (f.name.contains("natives-linux")) return@forEach
+
+                    if (isModernLoader && f.absolutePath.contains("/net/minecraft/")) {
+                        val n = f.name
+                        val gameLayerOnly = n.contains("-srg.")
+                                || n.contains("-slim.")
+                                || n.contains("-srg-and-extra.")
+                        if (gameLayerOnly) {
+                            Log.d("PING_LAUNCHER", "🚫 modern Forge/NeoForge — game-layer 전용 jar classpath 제외: ${f.name}")
+                            return@forEach
+                        }
+                    }
+
+                    if (isProcessorOnlyJar(f)) {
+                        Log.d("PING_LAUNCHER", "🚫 processor-only jar 제외: ${f.name}")
+                        return@forEach
+                    }
+
                     if (jarList.contains(f.absolutePath)) return@forEach
                     if (isProcessorOnlyJar(f)) {
                         Log.d("PING_LAUNCHER", "🚫 processor-only jar 제외: ${f.name}")
@@ -1077,8 +1102,14 @@ class MinecraftActivity : BaseActivity() {
         val versionJar = searchDirs
             .map { File(it, "versions/$versionId/$versionId.jar") }
             .firstOrNull { it.exists() }
+
         versionJar?.let {
-            if (!jarList.contains(it.absolutePath)) jarList.add(it.absolutePath)
+            if (isModernLoader) {
+                Log.d("PING_LAUNCHER",
+                    "🚫 modern Forge/NeoForge — 바닐라 ${it.name} 는 processor 입력 전용, classpath 제외")
+            } else if (!jarList.contains(it.absolutePath)) {
+                jarList.add(it.absolutePath)
+            }
         }
 
         val assetsDir = searchDirs
@@ -1135,11 +1166,6 @@ class MinecraftActivity : BaseActivity() {
         } else emptyArray()
 
 
-// ── Modern Forge / NeoForge 감지 (1.17+) ──
-        val isModernForge = (instanceMeta?.loaderType == "forge" || instanceMeta?.loaderType == "neoforge")
-                && (mainClass.startsWith("cpw.mods")
-                || mainClass.contains("BootstrapLauncher", ignoreCase = true)
-                || mainClass.contains("ProcessorLauncher", ignoreCase = true))   // ← 추가
 
 // ── ${library_directory} 등 placeholder 해석 ──
         val forgeLibrariesDir = File(instanceBase, "libraries")
@@ -1158,7 +1184,7 @@ class MinecraftActivity : BaseActivity() {
 //   클래스도 통합 포함되어 있어서 자동 모듈로 잡히면 split package 충돌 발생.
 //   ignoreList 에 prefix 매칭시키면 classpath unnamed module 로 남아 충돌 회피.
         val metaJvmArgs: Array<String> = metaJvmArgsRaw.map { arg ->
-            if (isModernForge && arg.startsWith("-DignoreList=")) {
+            if (isModernLoader && arg.startsWith("-DignoreList=")) {
                 // 이미 들어있는지 확인 후 없으면 추가. lwjgl 한 prefix 로 lwjgl-glfw-classes,
                 // lwjgl-openal, lwjgl-opengl, lwjgl-stb 등 한 번에 커버.
                 val needed = listOf(
@@ -1175,7 +1201,7 @@ class MinecraftActivity : BaseActivity() {
         }.toTypedArray()
 
 // ── Modern Forge fallback: 모듈 안 로드돼도 reflection 통과시키는 ALL-UNNAMED opens ──
-        val modernForgeArgs: Array<String> = if (isModularJre && isModernForge) {
+        val modernForgeArgs: Array<String> = if (isModularJre && isModernLoader) {
             arrayOf(
                 "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
@@ -1189,7 +1215,7 @@ class MinecraftActivity : BaseActivity() {
         } else emptyArray()
 
         Log.d("PING_LAUNCHER",
-            "isModernForge=$isModernForge metaJvmArgs(resolved)=${metaJvmArgs.toList()}")
+            "isModernForge=$isModernLoader metaJvmArgs(resolved)=${metaJvmArgs.toList()}")
 
         val rendererPreference = RendererManager.load(this@MinecraftActivity)
         // MinecraftActivity.startMinecraft 안에서
@@ -1231,7 +1257,7 @@ class MinecraftActivity : BaseActivity() {
             true
         }
 
-        if (isModernForge) {
+        if (isModernLoader) {
             val moduleJarsFromMp = mutableSetOf<String>()
             var i = 0
             while (i < metaJvmArgs.size) {
