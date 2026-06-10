@@ -242,11 +242,7 @@ fun ContentPackBrowserScreen(
                     isInstalled = installedIds.contains(mod.id),
                     onInstall = { onInstall(mod) },
                     onLaunch = { onLaunch(mod) },
-                    onDetail = {
-                        ContentPackDetailActivity.start(
-                            ctx, mod.id, mod.name, mod.summary, mod.logo?.url, mod.downloadCount, selectedContentType
-                        )
-                    },
+                    onDetail = { onInstall(mod) },
                     tablet = tablet
                 )
             }

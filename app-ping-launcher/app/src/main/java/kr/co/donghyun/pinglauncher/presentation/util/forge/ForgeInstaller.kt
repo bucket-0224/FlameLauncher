@@ -291,10 +291,13 @@ class ForgeInstaller(
 
         val data = ipObj["data"]?.asJsonObject ?: return
         val mojmapsRaw = data["MOJMAPS"]?.asJsonObject?.get("client")?.asString ?: run {
-            Log.d("PING_LAUNCHER", "🗺 MOJMAPS data 항목 없음 — 이 버전은 mojmaps 안 씀")
+            Log.d("PING_LAUNCHER", "🗺 MOJMAPS data 항목 없음")
             return
         }
-        val expectedSha = data["MOJMAPS_SHA"]?.asJsonObject?.get("client")?.asString?.trim('\'')
+        // ★ install_profile 의 expected SHA — 작은따옴표/큰따옴표 둘 다 제거
+        val installProfileExpectedSha = data["MOJMAPS_SHA"]?.asJsonObject
+            ?.get("client")?.asString
+            ?.trim('\'', '"')
 
         if (!mojmapsRaw.startsWith("[") || !mojmapsRaw.endsWith("]")) {
             Log.w("PING_LAUNCHER", "🗺 MOJMAPS 좌표 형식 이상: $mojmapsRaw")
@@ -303,17 +306,7 @@ class ForgeInstaller(
         val coord = mojmapsRaw.substring(1, mojmapsRaw.length - 1)
         val target = File(mavenCoordToPath(coord, librariesDir))
 
-        // 이미 받아져 있고 SHA 도 맞으면 스킵
-        if (target.exists() && target.length() > 0) {
-            val current = sha1Hex(target)
-            if (expectedSha == null || current.equals(expectedSha, ignoreCase = true)) {
-                Log.i("PING_LAUNCHER", "🗺 mojmaps 이미 OK ($current) — pre-download skip")
-                return
-            }
-            Log.w("PING_LAUNCHER", "🗺 mojmaps SHA 불일치 → 재다운로드")
-        }
-
-        // Mojang version.json 에서 client_mappings URL 추출
+        // Mojang version.json 에서 client_mappings 정보 가져오기
         val versionEntry = try {
             kr.co.donghyun.pinglauncher.presentation.util.minecraft.VersionRepository()
                 .fetchVersionList()
@@ -335,10 +328,39 @@ class ForgeInstaller(
         } catch (_: Exception) { null }
 
         if (cm == null) {
-            Log.w("PING_LAUNCHER", "🗺 client_mappings 없음 (구버전?) — processor 가 직접 받다가 또 실패할 수 있음")
+            Log.w("PING_LAUNCHER", "🗺 client_mappings 없음 (구버전?)")
             return
         }
         val url = cm["url"]?.asString ?: return
+        val mojangSha = cm["sha1"]?.asString
+        val mojangSize = cm["size"]?.asLong ?: -1L
+
+        Log.i("PING_LAUNCHER",
+            "🗺 MOJMAPS expected SHA — install_profile=$installProfileExpectedSha  " +
+                    "mojang_version_json=$mojangSha")
+
+        if (installProfileExpectedSha != null && mojangSha != null
+            && !installProfileExpectedSha.equals(mojangSha, ignoreCase = true)) {
+            Log.w("PING_LAUNCHER",
+                "🗺 ⚠️ install_profile 의 MOJMAPS_SHA 가 Mojang 현재 client_mappings 와 다름. " +
+                        "Forge installer 가 stale 한 SHA 를 박아둔 상황 — Mojang 측이 mappings 재배포한 듯.")
+            // 이 경우 Mojang 의 현재 SHA 를 우선 신뢰. ProcessorLauncher 의 outputsValid 는
+            // install_profile SHA 로 검증하기 때문에 어차피 fail 하므로, 사용자에게 명확히 알린다.
+        }
+
+        // 이미 받아져 있으면 SHA 비교
+        if (target.exists() && target.length() > 0) {
+            val current = sha1Hex(target)
+            Log.i("PING_LAUNCHER",
+                "🗺 현재 디스크 mojmaps: size=${target.length()} (expected=$mojangSize) sha=$current")
+            val matchesInstallProfile = installProfileExpectedSha?.equals(current, ignoreCase = true) == true
+            val matchesMojang = mojangSha?.equals(current, ignoreCase = true) == true
+            if (matchesInstallProfile || matchesMojang) {
+                Log.i("PING_LAUNCHER", "🗺 ✅ mojmaps OK — pre-download skip")
+                return
+            }
+            Log.w("PING_LAUNCHER", "🗺 mojmaps SHA 양쪽 모두 불일치 → 재다운로드")
+        }
 
         Log.i("PING_LAUNCHER", "🗺 mojmaps pre-download: $url → ${target.absolutePath}")
         target.parentFile?.mkdirs()
@@ -352,12 +374,29 @@ class ForgeInstaller(
                 }
             }
             val actual = sha1Hex(target)
-            if (expectedSha != null && !actual.equals(expectedSha, ignoreCase = true)) {
-                Log.w("PING_LAUNCHER",
-                    "🗺 ⚠️ SHA 불일치 — actual=$actual expected=$expectedSha " +
-                            "(processor 가 다시 받으려 시도하다 또 실패할 수 있음)")
-            } else {
-                Log.i("PING_LAUNCHER", "🗺 ✅ pre-download OK (${target.length()}B, sha=$actual)")
+            val actualSize = target.length()
+            Log.i("PING_LAUNCHER",
+                "🗺 다운로드 완료: size=$actualSize sha=$actual")
+
+            when {
+                mojangSha?.equals(actual, ignoreCase = true) == true -> {
+                    Log.i("PING_LAUNCHER", "🗺 ✅ Mojang version.json SHA 와 일치")
+                    if (installProfileExpectedSha != null
+                        && !installProfileExpectedSha.equals(actual, ignoreCase = true)) {
+                        Log.w("PING_LAUNCHER",
+                            "🗺 ⚠️ 하지만 install_profile.json 의 MOJMAPS_SHA 와는 불일치. " +
+                                    "ProcessorLauncher.outputsValid() 가 fail 처리할 것 — " +
+                                    "이건 Forge installer 의 stale SHA 문제로, " +
+                                    "더 최신 Forge 빌드를 쓰거나 Forge 측 수정이 필요.")
+                    }
+                }
+                installProfileExpectedSha?.equals(actual, ignoreCase = true) == true -> {
+                    Log.i("PING_LAUNCHER", "🗺 ✅ install_profile SHA 일치")
+                }
+                else -> {
+                    Log.e("PING_LAUNCHER",
+                        "🗺 ❌ 양쪽 SHA 모두 불일치 — 네트워크 손상 또는 redirect 문제")
+                }
             }
         } catch (e: Exception) {
             Log.e("PING_LAUNCHER", "🗺 OkHttp 다운로드 예외: ${e.message}", e)

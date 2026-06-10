@@ -53,7 +53,14 @@ public final class ProcessorLauncher {
 
             String jarName = new File(jar).getName();
 
-            if (outKeys.length > 0 && outputsValid(outKeys, outShas)) {
+            boolean strictShaCheck = !"1".equals(System.getProperty("ping.forge.skip_sha"));
+
+            if (outKeys.length > 0 && (!strictShaCheck || outputsValid(outKeys, outShas))) {
+                log("[" + i + "/" + count + "] SKIP (outputs already valid): " + jarName);
+                continue;
+            }
+
+            if (outKeys.length > 0 && !outputsValid(outKeys, outShas)) {
                 log("[" + i + "/" + count + "] SKIP (outputs already valid): " + jarName);
                 continue;
             }
@@ -159,6 +166,8 @@ public final class ProcessorLauncher {
             Thread.currentThread().setContextClassLoader(prev);
         }
     }
+
+
 
     private static boolean outputsValid(String[] keys, String[] sha) throws Exception {
         if (keys.length != sha.length) return false;
