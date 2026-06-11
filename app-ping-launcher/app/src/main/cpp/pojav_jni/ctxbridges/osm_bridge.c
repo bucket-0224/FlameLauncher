@@ -10,7 +10,7 @@
 
 static __thread osm_render_window_t* currentBundle;
 // a tiny buffer for rendering when there's nowhere t render
-static char no_render_buffer[4];
+static char no_render_buffer[16 * 16 * 4] __attribute__((aligned(16)));
 
 // Its not in a .h file because it is not supposed to be used outsife of this file.
 void setNativeWindowSwapInterval(struct ANativeWindow* nativeWindow, int swapInterval);
@@ -41,9 +41,9 @@ osm_render_window_t* osm_init_context(osm_render_window_t* share) {
 
 void osm_set_no_render_buffer(ANativeWindow_Buffer* buffer) {
     buffer->bits = &no_render_buffer;
-    buffer->width = 1;
-    buffer->height = 1;
-    buffer->stride = 0;
+    buffer->width = 16;
+    buffer->height = 16;
+    buffer->stride = 16;  // RGBA row 길이를 픽셀 단위로
 }
 
 void osm_swap_surfaces(osm_render_window_t* bundle) {
@@ -78,7 +78,11 @@ void osm_release_window() {
 
 void osm_apply_current_ll() {
     ANativeWindow_Buffer* buffer = &currentBundle->buffer;
-    OSMesaMakeCurrent_p(currentBundle->context, buffer->bits, GL_UNSIGNED_BYTE, buffer->width, buffer->height);
+    GLboolean ok = OSMesaMakeCurrent_p(currentBundle->context, buffer->bits,
+                                       GL_UNSIGNED_BYTE, buffer->width, buffer->height);
+    LOGI("osm_apply_current_ll: OSMesaMakeCurrent(ctx=%p, bits=%p, %dx%d) -> %d, current_after=%p",
+         currentBundle->context, buffer->bits, buffer->width, buffer->height,
+         (int)ok, OSMesaGetCurrentContext_p());
     if(buffer->stride != currentBundle->last_stride)
         OSMesaPixelStore_p(OSMESA_ROW_LENGTH, buffer->stride);
     currentBundle->last_stride = buffer->stride;

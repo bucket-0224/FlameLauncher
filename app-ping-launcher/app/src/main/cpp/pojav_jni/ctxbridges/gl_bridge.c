@@ -15,8 +15,6 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
-#include <signal.h>
-#include <setjmp.h>
 
 
 //
@@ -27,137 +25,8 @@ static __thread gl_render_window_t* currentBundle;
 static EGLDisplay g_EglDisplay;
 
 // 파일 상단 어디든 추가
-static bool ltw_initialized = false;
 static gl_render_window_t* g_lastInitializedBundle = NULL;
 
-
-static sigjmp_buf g_ltw_jmp;
-static volatile sig_atomic_t g_ltw_in_protected = 0;
-
-static void ltw_segv_handler(int sig) {
-    if (g_ltw_in_protected) {
-        siglongjmp(g_ltw_jmp, 1);
-    }
-    // protected 가 아닐 때는 default 동작 (process kill)
-    signal(sig, SIG_DFL);
-    raise(sig);
-}
-
-static int call_with_sigsegv_guard(void (*fn)(void), const char* name) {
-    if (!fn) return -1;
-    struct sigaction old_sa, new_sa;
-    memset(&new_sa, 0, sizeof(new_sa));
-    new_sa.sa_handler = ltw_segv_handler;
-    sigemptyset(&new_sa.sa_mask);
-    new_sa.sa_flags = 0;
-    sigaction(SIGSEGV, &new_sa, &old_sa);
-
-    int result = 0;
-    g_ltw_in_protected = 1;
-    if (sigsetjmp(g_ltw_jmp, 1) == 0) {
-        fn();
-        LOGI("LTW: %s() returned normally", name);
-    } else {
-        LOGE("LTW: %s() raised SIGSEGV — skipped", name);
-        result = -1;
-    }
-    g_ltw_in_protected = 0;
-
-    sigaction(SIGSEGV, &old_sa, NULL);
-    return result;
-}
-
-static void try_init_ltw_once(void) {
-    if (ltw_initialized) return;
-
-    void* handle = dlopen("libltw.so", RTLD_NOLOAD | RTLD_NOW);
-    if (!handle) return;
-
-    if (eglGetCurrentContext_p() == EGL_NO_CONTEXT) {
-        LOGI("LTW: ctx not active yet — defer init");
-        return;
-    }
-
-    dlerror();   // 이전 error clear
-    void* gles2 = dlopen("libGLESv2.so", RTLD_NOW | RTLD_GLOBAL);
-    const char* gles2_err = dlerror();
-    void* gles3 = dlopen("libGLESv3.so", RTLD_NOW | RTLD_GLOBAL);
-    const char* gles3_err = dlerror();
-    void* egl   = dlopen("libEGL.so",    RTLD_NOW | RTLD_GLOBAL);
-    const char* egl_err = dlerror();
-
-    LOGI("LTW preload: GLESv2=%p (%s) GLESv3=%p (%s) EGL=%p (%s)",
-         gles2, gles2_err ? gles2_err : "ok",
-         gles3, gles3_err ? gles3_err : "ok",
-         egl,   egl_err   ? egl_err   : "ok");
-
-// 검증 — GLES3 시그니처 함수가 dlsym 으로 잡히는지
-    void* p_inst = dlsym(RTLD_DEFAULT, "glDrawArraysInstanced");
-    void* p_divisor = dlsym(RTLD_DEFAULT, "glVertexAttribDivisor");
-    void* p_genvao = dlsym(RTLD_DEFAULT, "glGenVertexArrays");
-    LOGI("LTW GLES3 syms: glDrawArraysInstanced=%p glVertexAttribDivisor=%p glGenVertexArrays=%p",
-         p_inst, p_divisor, p_genvao);
-
-    void (*p_init_egl)(void)     = (void(*)(void)) dlsym(handle, "init_egl");
-    void (*p_proc_init)(void)    = (void(*)(void)) dlsym(handle, "proc_init");
-    void (*p_init_noerror)(void) = (void(*)(void)) dlsym(handle, "init_noerror");
-
-    if (!p_init_egl || !p_proc_init) {
-        LOGE("LTW: missing required init symbols");
-        ltw_initialized = true;
-        return;
-    }
-
-    // ★ 미니멀 init — 공개 entry point 만
-    LOGI("LTW: calling init_egl()");
-    p_init_egl();
-
-    LOGI("LTW: calling proc_init()");
-    p_proc_init();
-
-    LOGI("LTW: calling proc_init()");
-    p_proc_init();
-
-// ★ 추가 init 함수들 — LTW 가 정상 dispatch 하려면 모두 필요
-    void (*p_init_extra_ext)(void) = (void(*)(void)) dlsym(handle, "init_extra_extensions");
-    void (*p_basevertex_init)(void) = (void(*)(void)) dlsym(handle, "basevertex_init");
-    void (*p_buffer_copier_init)(void) = (void(*)(void)) dlsym(handle, "buffer_copier_init");
-
-    LOGI("LTW additional inits: extra_ext=%p basevertex=%p buffer_copier=%p",
-         p_init_extra_ext, p_basevertex_init, p_buffer_copier_init);
-
-    call_with_sigsegv_guard(p_init_extra_ext,   "init_extra_extensions");
-    call_with_sigsegv_guard(p_basevertex_init,  "basevertex_init");
-    call_with_sigsegv_guard(p_buffer_copier_init, "buffer_copier_init");
-
-    // LIBGL_NOERROR=1 일 때만 (기존 로직 그대로)
-    const char* noerror = getenv("LIBGL_NOERROR");
-    if (p_init_noerror && noerror && noerror[0] == '1') {
-        LOGI("LTW: calling init_noerror()");
-        p_init_noerror();
-    }
-
-    // ★ basevertex_init / buffer_copier_init / init_extra_extensions 호출 안 함
-    //   - 앞 두 개는 *_init 접미사 = LTW 내부 서브시스템 헬퍼 (외부 호출 시 NULL deref)
-    //   - init_extra_extensions 는 이전에 SIGSEGV 발생, 일단 보류
-
-    // 진단
-    typedef const unsigned char* (*pGS)(unsigned int);
-    pGS gs = (pGS) dlsym(handle, "glGetString");
-
-    typedef const unsigned char* (*pGS)(unsigned int);
-    pGS native_gs = (pGS) dlsym(RTLD_DEFAULT, "glGetString");
-    LOGI("Native GLES glGetString symbol = %p (LTW override = %p)", native_gs, gs);
-    if (native_gs && native_gs != gs) {
-        const unsigned char* gles_ver = native_gs(0x1F02);
-        const unsigned char* gles_ren = native_gs(0x1F01);
-        LOGI("Native GLES: GL_VERSION=%s  GL_RENDERER=%s",
-             gles_ver ? (const char*)gles_ver : "(NULL)",
-             gles_ren ? (const char*)gles_ren : "(NULL)");
-    }
-
-    ltw_initialized = true;
-}
 
 bool gl_init() {
     if(!dlsym_EGL()) return false;
@@ -297,15 +166,11 @@ void gl_swap_surface(gl_render_window_t* bundle) {
 
 void gl_make_current(gl_render_window_t* bundle) {
     if(bundle == NULL) {
-        // ★ 변경: NULL makeCurrent 를 무시하지 말고 정말로 detach 한다.
-        //   LTW/LWJGL 이 cross-thread context 이관할 때 필수.
         if(eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
             currentBundle = NULL;
         }
         return;
     }
-
-    // ── 이하 기존 코드 ──
 
     bool hasSetMainWindow = false;
     if(pojav_environ->mainWindowBundle == NULL) {
@@ -334,13 +199,7 @@ void gl_make_current(gl_render_window_t* bundle) {
     EGLint mc_error = eglGetError_p();
     LOGI("eglMakeCurrent result=%d error=0x%04x", mc_result, mc_error);
 
-    // ★ LTW init 을 여기서, makeCurrent 직후 동일 스레드에서
-    if (mc_result == EGL_TRUE) {
-        const char* renderer = getenv("POJAV_RENDERER");
-        if (renderer && strcmp(renderer, "ltw") == 0) {
-            try_init_ltw_once();   // ← 같은 thread, current EGL context 상태
-        }
-    }
+    // ★ 끝. LTW init 호출 절대 안 함.
 }
 
 void gl_swap_buffers() {

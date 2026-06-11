@@ -19,8 +19,15 @@ void (*glClearColor_p) (GLclampf red, GLclampf green, GLclampf blue, GLclampf al
 void (*glClear_p) (GLbitfield mask);
 void (*glReadPixels_p) (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void * data);
 void* (*OSMesaGetProcAddress_p)(const char* funcName);
+void* gPojavOSMesaHandle = NULL;
 
 bool dlsym_OSMesa() {
+    if (gPojavOSMesaHandle == NULL) {
+        // RTLD_GLOBAL 추가: symbol이 다른 dlopen에도 보이게
+        gPojavOSMesaHandle = dlopen("libOSMesa.so", RTLD_NOW | RTLD_GLOBAL);
+        if (!gPojavOSMesaHandle) return false;
+    }
+
     void* dl_handle = loader_dlopen("libOSMesa.so.8", "libOSMesa.so", RTLD_LOCAL | RTLD_LAZY);
     if(dl_handle == NULL) return false;
     OSMesaGetProcAddress_p = dlsym(dl_handle, "OSMesaGetProcAddress");

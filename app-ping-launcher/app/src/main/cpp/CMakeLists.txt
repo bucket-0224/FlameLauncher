@@ -16,8 +16,9 @@ add_library(pingjvm SHARED pingjvm.cpp)
 target_include_directories(pingjvm PRIVATE
         pojav_jni
         pojav_jni/environ
+        pojav_jni/egl_bridge
 )
-target_link_libraries(pingjvm ${log-lib})
+target_link_libraries(pingjvm ${log-lib} vulkan)
 
 
 # ── PojavLauncher core 소스 (awt_bridge.c 제외) ───────────────
@@ -88,6 +89,7 @@ target_link_libraries(pojavexec
         ${GLESv2-lib}
         ${android-lib}
         ${dl-lib}
+        vulkan
         bytehook::bytehook
 )
 

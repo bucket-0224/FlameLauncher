@@ -74,7 +74,6 @@ data class JvmSettings(
             "mobileglues" -> "libmobileglues.so"
             "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
-            "ltw"  -> "libltw.so"     // ★ 추가
             else   -> "libgl4es_114.so"
         }
 
@@ -99,7 +98,7 @@ data class JvmSettings(
 
 
 
-        if (renderer.id == "mobileglues" || renderer.id == "ltw") {
+        if (renderer.id == "mobileglues") {
             args += listOf(
                 "-Dnet.caffeinemc.sodium.checks.skip=true",
                 "-Dsodium.checks.issue2561=false"

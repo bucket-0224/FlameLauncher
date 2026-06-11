@@ -24,51 +24,32 @@ enum class Renderer(
         emoji = "📱",
         extraEnv = mapOf()
     ),
-    LTW(
-        id = "ltw",
-        displayName = "LTW (Desktop GL 4.x)",
-        description = "LWJGL Tinker Wrapper. GLSL 150+ 셰이더 직접 컴파일. " +
-                "Vulkan 없이도 동작. 한국 RPG 마인팜처럼 셰이더 강제 서버에 추천. 1.17+ 권장.",
-        pojavRenderer = "ltw",
-        libglName = "libltw.so",
+    ZINK(
+        id = "zink",
+        displayName = "Zink (Vulkan)",
+        description = "Vulkan을 OpenGL로 변환. 모던 GPU에서 가장 호환성 좋음. 1.17+ 추천.",
+        pojavRenderer = "vulkan_zink",
+        libglName = "libOSMesa.so",
         libglString = "VulkanGL",
         libglEs = "3",
-        emoji = "🚀",
+        emoji = "🌋",
         extraEnv = mapOf(
-            "LIBGL_ES" to "3",
-            "POJAV_RENDERER" to "ltw",           // ★ 동일하게 통일
-            "DLOPEN" to "libltw.so",
-            "LIBGL_MIPMAP" to "3",
-            "LIBGL_NORMALIZE" to "1",
-            "LIBGL_VSYNC" to "1"
+            "MESA_GL_VERSION_OVERRIDE" to "4.6",
+            "MESA_GLSL_VERSION_OVERRIDE" to "460",
+            "force_glsl_extensions_warn" to "true",
+            "allow_higher_compat_version" to "true",
+            "allow_glsl_extension_directive_midshader" to "true",
+            "MESA_LOADER_DRIVER_OVERRIDE" to "zink",
+            "GALLIUM_DRIVER" to "zink",
+//            "POJAV_LOAD_TURNIP" to "1"  // Adreno면 Turnip 시도
+            "MESA_VK_WSI_PRESENT_MODE" to "mailbox",
+            "VK_ICD_FILENAMES" to "",         // 시스템 ICD 무시
+            "ZINK_DEBUG" to "noreorder",      // zink 의 일부 reorder 최적화 비활성 (안정성)
+            "LIBGL_KOPPER_DRI2" to "1",       // kopper(=zink WSI) 가 DRI2 없이 동작
+            "LIBGL_DRI3_DISABLE" to "1",      // DRI3 도 끔
+            "GALLIUM_HUD" to "",
         )
     ),
-//    ZINK(
-//        id = "zink",
-//        displayName = "Zink (Vulkan)",
-//        description = "Vulkan을 OpenGL로 변환. 모던 GPU에서 가장 호환성 좋음. 1.17+ 추천.",
-//        pojavRenderer = "vulkan_zink",
-//        libglName = "libltw.so",
-//        libglString = "VulkanGL",
-//        libglEs = "3",
-//        emoji = "🌋",
-//        extraEnv = mapOf(
-//            "MESA_GL_VERSION_OVERRIDE" to "4.6",
-//            "MESA_GLSL_VERSION_OVERRIDE" to "460",
-//            "force_glsl_extensions_warn" to "true",
-//            "allow_higher_compat_version" to "true",
-//            "allow_glsl_extension_directive_midshader" to "true",
-//            "MESA_LOADER_DRIVER_OVERRIDE" to "zink",
-//            "GALLIUM_DRIVER" to "zink",
-////            "POJAV_LOAD_TURNIP" to "1"  // Adreno면 Turnip 시도
-//            "MESA_VK_WSI_PRESENT_MODE" to "mailbox",
-//            "VK_ICD_FILENAMES" to "",         // 시스템 ICD 무시
-//            "ZINK_DEBUG" to "noreorder",      // zink 의 일부 reorder 최적화 비활성 (안정성)
-//            "LIBGL_KOPPER_DRI2" to "1",       // kopper(=zink WSI) 가 DRI2 없이 동작
-//            "LIBGL_DRI3_DISABLE" to "1",      // DRI3 도 끔
-//            "GALLIUM_HUD" to "",
-//        )
-//    ),
     HOLY_GL4ES(
         id = "gl4es",
         displayName = "Holy-GL4ES",

@@ -27,6 +27,7 @@ static jlong ndlopen_bugfix(__attribute__((unused)) JNIEnv *env,
                      jlong filename_ptr,
                      jint jmode) {
     const char* filename = (const char*) filename_ptr;
+    LOGI("LWJGL ndlopen: \"%s\" mode=0x%x", filename, (int)jmode);
 
     // Oveeride vulkan loading to let us load vulkan ourselves
     if(strstr(filename, "libvulkan.so") == filename) {

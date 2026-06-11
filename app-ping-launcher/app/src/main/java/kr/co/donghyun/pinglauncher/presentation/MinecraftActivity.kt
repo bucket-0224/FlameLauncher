@@ -2,12 +2,14 @@ package kr.co.donghyun.pinglauncher.presentation
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.input.InputManager.InputDeviceListener
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.Surface
 import android.view.View
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
@@ -29,7 +31,7 @@ import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.pinglauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.pinglauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftJREPreparer
-import kr.co.donghyun.pinglauncher.presentation.util.renderer.VirGLLauncher
+import kr.co.donghyun.pinglauncher.presentation.util.renderer.RendererProbe
 import org.lwjgl.glfw.GLFW.GLFW_KEY_A
 import org.lwjgl.glfw.GLFW.GLFW_KEY_D
 import org.lwjgl.glfw.GLFW.GLFW_KEY_E
@@ -225,6 +227,21 @@ class MinecraftActivity : BaseActivity() {
         im.registerInputDeviceListener(inputDeviceListener, null)
     }
 
+    private fun canUseZink(): Boolean {
+        // Vulkan 1.1 헤더 존재 확인
+        val hasVk11 = packageManager.hasSystemFeature(
+            PackageManager.FEATURE_VULKAN_HARDWARE_VERSION,
+            0x401000  // VK_API_VERSION_1_1
+        )
+        if (!hasVk11) {
+            Log.w("PING_LAUNCHER", "Zink probe: Vulkan 1.1 system feature 없음")
+            return false
+        }
+        // 추가로 vkEnumeratePhysicalDevices 가 1개 이상 리턴하는지 확인하면 더 정확하지만
+        // 일단 system feature 만으로도 에뮬레이터는 거의 다 걸러짐
+        return true
+    }
+
     /** 현재 물리 키보드 또는 마우스가 연결되어 있는지 */
     private fun hasHardwareKeyboardOrMouse(): Boolean {
         val im = getSystemService(INPUT_SERVICE)
@@ -284,10 +301,26 @@ class MinecraftActivity : BaseActivity() {
             return
         }
 
+
+
         // ── 렌더러별 .so 먼저 로드 (preloadAwtStubs 이전에) ───────────────
         // preloadAwtStubs 같은 JNI 바인딩 함수에서 실패가 나더라도,
         // 핵심 .so 들은 이미 메모리에 올라와 있어야 JVM 부팅이 가능하다.
-        val renderer = RendererManager.load(this)
+        var renderer = RendererManager.load(this)
+
+        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
+            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
+            runOnUiThread {
+                Toast.makeText(
+                    this,
+                    "이 기기의 GPU는 Zink 미지원 — GL4ES로 전환합니다",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            renderer = Renderer.fromId("holy_gl4es")  // 또는 "gl4es" — 둘 중 가용한 것
+        }
+
+
         when (renderer.id) {
             "mobileglues" -> {
                 // info_getter 가 먼저! libmobileglues.so 의 의존성임
@@ -303,15 +336,6 @@ class MinecraftActivity : BaseActivity() {
                 if (loadSoSafely(File(nativesDir, "libOSMesa.so"), required = true)) {
                     Log.d("PING_LAUNCHER", "✅ 렌더러: Zink")
                 }
-            }
-            "ltw" -> {
-                try {
-                    System.loadLibrary("GLESv2")
-                    Log.d("PING_LAUNCHER", "✅ libGLESv2.so preloaded for LTW")
-                } catch (e: Throwable) {
-                    Log.w("PING_LAUNCHER", "⚠️ libGLESv2.so preload 실패: ${e.message}")
-                }
-                Log.d("PING_LAUNCHER", "✅ 렌더러: LTW (LWJGL 측에서 자체 로드)")
             }
             else -> {
                 // gl4es / gl4es_desktop / holy_gl4es
@@ -1234,7 +1258,6 @@ class MinecraftActivity : BaseActivity() {
             "mobileglues" -> "libmobileglues.so"
             "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
-            "ltw"  -> "libltw.so"     // ★ 추가
             else   -> "libgl4es_114.so"
         }
 
@@ -1401,11 +1424,6 @@ class MinecraftActivity : BaseActivity() {
                     cacheDir = applicationContext.cacheDir.absolutePath,
                     nativeDir = applicationInfo.nativeLibraryDir
                 ).toMutableMap().apply {
-                    if (renderer.id == "virgl") {
-                        this["VTEST_SOCKET_NAME"] =
-                            VirGLLauncher.socketPath(this@MinecraftActivity)
-                    }
-
                     if (jvmSettings.unlockFps) {
                         this["FORCE_VSYNC"]       = "false"
                         this["POJAV_VSYNC"]       = "0"
