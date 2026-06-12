@@ -13,17 +13,6 @@ enum class Renderer(
     val emoji: String,
     val extraEnv: Map<String, String> = emptyMap()
 ) {
-    MOBILEGLUES(
-        id = "mobileglues",
-        displayName = "MobileGlues (GL 4.x)",
-        description = "GLES 3.x로 OpenGL 4.x를 흉내내는 모던 변환기. 1.17+ 모드팩에 추천. 일부 에뮬레이터에서 불안정.",
-        pojavRenderer = "opengles3",
-        libglName = "libmobileglues.so",
-        libglString = "MobileGlues",
-        libglEs = "3",
-        emoji = "📱",
-        extraEnv = mapOf()
-    ),
     ZINK(
         id = "zink",
         displayName = "Zink (Vulkan)",
@@ -47,6 +36,17 @@ enum class Renderer(
             "LIBGL_DRI3_DISABLE" to "1",      // DRI3 도 끔
             "GALLIUM_HUD" to "",
         )
+    ),
+    MOBILEGLUES(
+        id = "mobileglues",
+        displayName = "MobileGlues (GL 4.x)",
+        description = "GLES 3.x로 OpenGL 4.x를 흉내내는 모던 변환기. 1.17+ 모드팩에 추천. 일부 에뮬레이터에서 불안정.",
+        pojavRenderer = "opengles3",
+        libglName = "libmobileglues.so",
+        libglString = "MobileGlues",
+        libglEs = "3",
+        emoji = "📱",
+        extraEnv = mapOf()
     ),
     HOLY_GL4ES(
         id = "gl4es",
@@ -137,7 +137,7 @@ enum class Renderer(
     }
 
     companion object {
-        fun fromId(id: String?): Renderer = entries.firstOrNull { it.id == id } ?: MOBILEGLUES
+        fun fromId(id: String?): Renderer = entries.firstOrNull { it.id == id } ?: ZINK
     }
 }
 
