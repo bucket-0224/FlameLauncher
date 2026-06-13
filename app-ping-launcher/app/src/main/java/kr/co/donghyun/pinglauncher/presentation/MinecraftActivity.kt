@@ -63,6 +63,11 @@ class MinecraftActivity : BaseActivity() {
     private external fun nativeTrySetupShowingWindow(): Boolean
     private external fun nativeDumpInputState()
 
+    private external fun nativeSendKey(key: Int, scancode: Int, action: Int, mods: Int)
+
+    private external fun nativeSendMouseButton(button: Int, action: Int, mods: Int)
+    private external fun nativeSendCursorPos(x: Float, y: Float)
+
 
     // Intent로 전달받은 버전 정보
     private lateinit var versionId: String
@@ -785,34 +790,23 @@ class MinecraftActivity : BaseActivity() {
         return writer.toByteArray()
     }
     internal fun sendMouseButton(button: Int, action: Int) {
-        try {
-            Class.forName("org.lwjgl.glfw.CallbackBridge")
-                .getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                .invoke(null, button, action, 0)
-        } catch (_: Exception) {}
+        Log.d("PING_LAUNCHER", "sendMouseButton: btn=$button action=$action")
+        nativeSendMouseButton(button, action, 0)
+    }
+
+    internal fun sendCursorPos(x: Float, y: Float) {
+        Log.d("PING_LAUNCHER", "sendCursorPos: x=$x y=$y")
+        nativeSendCursorPos(x, y)
     }
 
     internal fun sendKey(glfwKeyCode: Int, action: Int) {
-        Log.d("PING_LAUNCHER", "sendKey 호출: $glfwKeyCode, action=$action")
 
-        try {
-            val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
+        Log.d("PING_LAUNCHER", "sendKey: $glfwKeyCode action=$action")
 
-            // ★ InputReady 강제 ON (진단 + 임시 수정)
-            cb.getMethod("nativeSetInputReady", Boolean::class.java).invoke(null, true)
+        val scancode = getScancode(glfwKeyCode)
 
-            val scancode = getScancode(glfwKeyCode)
-            cb.getMethod("nativeSendKey", Int::class.java, Int::class.java, Int::class.java, Int::class.java)
-                .invoke(null, glfwKeyCode, scancode, action, 0)
-//            if (action == 1) {
-//                val keyChar = glfwKeyToChar(glfwKeyCode)
-//                if (keyChar != '\u0000') {
-//                    cb.getMethod("nativeSendChar", Char::class.java).invoke(null, keyChar)
-//                }
-//            }
-        } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "sendKey 예외", e)
-        }
+        nativeSendKey(glfwKeyCode, scancode, action, 0)
+
     }
 
 

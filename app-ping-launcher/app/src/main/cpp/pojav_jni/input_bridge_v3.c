@@ -67,7 +67,7 @@ jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
         (*vm)->GetEnv(vm, (void**) &vmEnv, JNI_VERSION_1_4);
         pojav_environ->vmGlfwClass = (*vmEnv)->NewGlobalRef(vmEnv, (*vmEnv)->FindClass(vmEnv, "org/lwjgl/glfw/GLFW"));
         pojav_environ->method_glftSetWindowAttrib = (*vmEnv)->GetStaticMethodID(vmEnv, pojav_environ->vmGlfwClass, "glfwSetWindowAttrib", "(JII)V");
-        pojav_environ->method_internalWindowSizeChanged = (*vmEnv)->GetStaticMethodID(vmEnv, pojav_environ->vmGlfwClass, "internalWindowSizeChanged", "(J)V");
+        pojav_environ->method_internalWindowSizeChanged = (*vmEnv)->GetStaticMethodID(vmEnv, pojav_environ->vmGlfwClass, "internalWindowSizeChanged", "(JII)V");
         pojav_environ->method_internalChangeMonitorSize = (*vmEnv)->GetStaticMethodID(vmEnv, pojav_environ->vmGlfwClass, "internalChangeMonitorSize", "(II)V");
         jfieldID field_keyDownBuffer = (*vmEnv)->GetStaticFieldID(vmEnv, pojav_environ->vmGlfwClass, "keyDownBuffer", "Ljava/nio/ByteBuffer;");
         jobject keyDownBufferJ = (*vmEnv)->GetStaticObjectField(vmEnv, pojav_environ->vmGlfwClass, field_keyDownBuffer);
@@ -131,10 +131,12 @@ ADD_CALLBACK_WWIN(WindowSize)
 #undef ADD_CALLBACK_WWIN
 
 void updateMonitorSize(int width, int height) {
+    if (!pojav_environ->method_internalChangeMonitorSize) return;
     (*pojav_environ->glfwThreadVmEnv)->CallStaticVoidMethod(pojav_environ->glfwThreadVmEnv, pojav_environ->vmGlfwClass, pojav_environ->method_internalChangeMonitorSize, width, height);
 }
 void updateWindowSize(void* window) {
-    (*pojav_environ->glfwThreadVmEnv)->CallStaticVoidMethod(pojav_environ->glfwThreadVmEnv, pojav_environ->vmGlfwClass, pojav_environ->method_internalWindowSizeChanged, (jlong)window);
+    if (!pojav_environ->method_internalWindowSizeChanged) return;
+    (*pojav_environ->glfwThreadVmEnv)->CallStaticVoidMethod(pojav_environ->glfwThreadVmEnv, pojav_environ->vmGlfwClass, pojav_environ->method_internalWindowSizeChanged, (jlong)window, pojav_environ->savedWidth, pojav_environ->savedHeight);
 }
 
 void pojavPumpEvents(void* window) {
@@ -220,6 +222,17 @@ void pojavStopPumping() {
         pojav_environ->monitorSizeConsumed = false;
     }
 
+}
+
+// LWJGL 3.3.6 CallbackBridge — stub implementations
+JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSendData(JNIEnv *env, jclass cls,
+                                                                         jboolean isString, jint type, jstring data) {
+    (void)env; (void)cls; (void)isString; (void)type; (void)data;
+}
+
+JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetCursorShape(JNIEnv *env, jclass cls,
+                                                                               jint shape) {
+    (void)env; (void)cls; (void)shape;
 }
 
 JNIEXPORT void JNICALL
@@ -381,6 +394,7 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSendCursorEnter(
 */
 
 void critical_send_cursor_pos(jfloat x, jfloat y) {
+    LOGI("[DIAG] critical_send_cp: x=%.0f y=%.0f savedW=%d savedH=%d invoke=%p ready=%d enter_invoke=%p entered=%d", x, y, pojav_environ->savedWidth, pojav_environ->savedHeight, (void*)pojav_environ->GLFW_invoke_CursorPos, pojav_environ->isInputReady, (void*)pojav_environ->GLFW_invoke_CursorEnter, pojav_environ->isCursorEntered);
 #ifdef DEBUG
     LOGD("Sending cursor position \n");
 #endif
@@ -434,6 +448,7 @@ void noncritical_send_key(__attribute__((unused)) JNIEnv* env, __attribute__((un
 }
 
 void critical_send_mouse_button(jint button, jint action, jint mods) {
+    LOGI("[DIAG] critical_send_mb: invoke=%p ready=%d showWin=%lx", (void*)pojav_environ->GLFW_invoke_MouseButton, pojav_environ->isInputReady, (long)pojav_environ->showingWindow);
     if (pojav_environ->GLFW_invoke_MouseButton && pojav_environ->isInputReady) {
         pojav_environ->mouseDownBuffer[max(0, button)] = (jbyte) action;
         if (pojav_environ->isUseStackQueueCall) {
@@ -590,3 +605,32 @@ JNIEXPORT jobject JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_nativeCreateGamepadAxisBuffer(JNIEnv *env, jclass clazz) {
     return (*env)->NewDirectByteBuffer(env, &pojav_environ->gamepadState.axes, sizeof(pojav_environ->gamepadState.axes));
 }
+JNIEXPORT void JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSendKey(
+        JNIEnv* env, jobject thiz, jint key, jint scancode, jint action, jint mods) {
+    (void)env; (void)thiz;
+    pojav_environ->isInputReady = JNI_TRUE;
+    pojav_environ->isUseStackQueueCall = JNI_FALSE;
+    critical_send_key(key, scancode, action, mods);
+}
+
+JNIEXPORT void JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSendMouseButton(
+        JNIEnv* env, jobject thiz, jint button, jint action, jint mods) {
+    (void)env; (void)thiz;
+    pojav_environ->isInputReady = JNI_TRUE;
+    pojav_environ->isUseStackQueueCall = JNI_FALSE;
+    critical_send_mouse_button(button, action, mods);
+}
+
+JNIEXPORT void JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSendCursorPos(
+        JNIEnv* env, jobject thiz, jfloat x, jfloat y) {
+    (void)env; (void)thiz;
+    pojav_environ->isInputReady = JNI_TRUE;
+    pojav_environ->cursorX = (int)x;
+    pojav_environ->cursorY = (int)y;
+    pojav_environ->isUseStackQueueCall = JNI_FALSE;
+    critical_send_cursor_pos(x, y);
+}
+

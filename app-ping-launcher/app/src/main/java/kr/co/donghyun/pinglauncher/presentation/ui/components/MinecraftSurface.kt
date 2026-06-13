@@ -76,18 +76,7 @@ fun MinecraftSurface(
                 setOnKeyListener { _, keyCode, event ->
                     val glfwKey = ctx.androidKeyToGlfw(keyCode) ?: return@setOnKeyListener false
                     val action = if (event.action == android.view.KeyEvent.ACTION_DOWN) 1 else 0
-                    try {
-                        val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
-                        val scancode = ctx.getScancode(glfwKey)
-                        cb.getMethod("nativeSendKey", Int::class.java, Int::class.java, Int::class.java, Int::class.java)
-                            .invoke(null, glfwKey, scancode, action, 0)
-                        if (action == 1) {
-                            val keyChar = ctx.glfwKeyToChar(glfwKey)
-                            if (keyChar != '\u0000') {
-                                cb.getMethod("nativeSendChar", Char::class.java).invoke(null, keyChar)
-                            }
-                        }
-                    } catch (_: Exception) {}
+                    ctx.sendKey(glfwKey, action)
                     true
                 }
 
@@ -107,13 +96,8 @@ fun MinecraftSurface(
                                     // ── UI 모드 (인벤토리/메뉴) — 기존 동작 유지 ──
                                     activity.currentCursorX = event.x
                                     activity.currentCursorY = event.y
-                                    try {
-                                        val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
-                                        cb.getMethod("nativeSendCursorPos", Float::class.java, Float::class.java)
-                                            .invoke(null, activity.currentCursorX, activity.currentCursorY)
-                                        cb.getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                                            .invoke(null, 0, 1, 0)
-                                    } catch (_: Exception) {}
+                                    activity.sendCursorPos(activity.currentCursorX, activity.currentCursorY)
+                                    activity.sendMouseButton(0, 1)
                                 } else {
                                     // ── 인게임 모드 — 롱프레스 타이머 ──
                                     // 전투 모드: 길게 = 우클릭 유지 (방패/활)
@@ -154,11 +138,7 @@ fun MinecraftSurface(
                                         activity.currentCursorX = event.x
                                         activity.currentCursorY = event.y
                                     }
-                                    try {
-                                        val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
-                                        cb.getMethod("nativeSendCursorPos", Float::class.java, Float::class.java)
-                                            .invoke(null, activity.currentCursorX, activity.currentCursorY)
-                                    } catch (_: Exception) {}
+                                    activity.sendCursorPos(activity.currentCursorX, activity.currentCursorY)
                                 }
 
                                 lastX = event.x
@@ -187,11 +167,7 @@ fun MinecraftSurface(
                                     }
                                 } else {
                                     // ── UI 모드 — 좌클릭 release ──
-                                    try {
-                                        val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
-                                        cb.getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                                            .invoke(null, 0, 0, 0)
-                                    } catch (_: Exception) {}
+                                    activity.sendMouseButton(0, 0)
                                 }
 
                                 isLongPress = false
