@@ -10,8 +10,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import kr.co.donghyun.pinglauncher.presentation.MinecraftActivity
-import org.lwjgl.glfw.GLFW.GLFW_PRESS
-import org.lwjgl.glfw.GLFW.GLFW_RELEASE
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge

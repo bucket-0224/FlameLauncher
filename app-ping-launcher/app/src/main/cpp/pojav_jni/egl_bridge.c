@@ -369,11 +369,15 @@ EXTERNAL_API void pojavSetWindowHint(int hint, int value) {
     }
 }
 
+extern void pojavBootDispatchFramebufferSize(void);
+
 EXTERNAL_API void pojavSwapBuffers() {
     static int counter = 0;
     if ((++counter % 60) == 0) {
         printf("pojavSwapBuffers: tid=%d counter=%d\n", gettid(), counter);
     }
+
+    pojavBootDispatchFramebufferSize();   // ★ 추가: 첫 swap 직전 한 번 발화
 
     br_swap_buffers();
 }

@@ -31,7 +31,6 @@ import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.pinglauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.pinglauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftJREPreparer
-import kr.co.donghyun.pinglauncher.presentation.util.renderer.RendererProbe
 import org.lwjgl.glfw.GLFW.GLFW_KEY_A
 import org.lwjgl.glfw.GLFW.GLFW_KEY_D
 import org.lwjgl.glfw.GLFW.GLFW_KEY_E
@@ -1461,25 +1460,25 @@ class MinecraftActivity : BaseActivity() {
             val deadline = System.currentTimeMillis() + 120_000
             var attempts = 0
             var success = false
+            // 초기에는 50ms 간격, 한 번 잡으면 5초 간격으로 재확인
+            var interval = 50L
 
             while (System.currentTimeMillis() < deadline) {
                 attempts++
                 try {
                     if (nativeTrySetupShowingWindow()) {
-                        Log.d("PING_LAUNCHER", "✅ showingWindow 세팅 완료 (시도 $attempts)")
-                        success = true
-                        // 한 번 성공해도 MC 가 풀스크린/리사이즈 하면 새 window 가 생길 수 있어서
-                        // 5초마다 재확인. 같은 핸들이면 native 쪽이 어차피 노옵.
-                        Thread.sleep(5000)
-                        continue
-                    }
-                    if (attempts % 20 == 0) {
+                        if (!success) {
+                            Log.d("PING_LAUNCHER", "✅ showingWindow 첫 세팅 (시도 $attempts, 경과 ${attempts * 50}ms 이내)")
+                            success = true
+                            interval = 5000L   // 잡힌 뒤엔 느슨하게
+                        }
+                    } else if (attempts % 40 == 0 && !success) {
                         Log.d("PING_LAUNCHER", "🔵 대기중... (시도 $attempts)")
                     }
                 } catch (e: Throwable) {
                     Log.w("PING_LAUNCHER", "워치독 예외: ${e.message}")
                 }
-                Thread.sleep(500)
+                Thread.sleep(interval)
             }
             Log.d("PING_LAUNCHER", "🔵 워치독 종료 (success=$success)")
         }.apply { isDaemon = true; start() }

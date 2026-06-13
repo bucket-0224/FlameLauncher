@@ -32,6 +32,16 @@
 #define EVENT_TYPE_MOUSE_BUTTON 1006
 #define EVENT_TYPE_SCROLL 1007
 
+#define CB_EVENT_CHAR              1000
+#define CB_EVENT_CHAR_MODS         1001
+#define CB_EVENT_CURSOR_ENTER      1002
+#define CB_EVENT_CURSOR_POS        1003
+#define CB_EVENT_FRAMEBUFFER_SIZE  1004
+#define CB_EVENT_KEY               1005
+#define CB_EVENT_MOUSE_BUTTON      1006
+#define CB_EVENT_SCROLL            1007
+#define CB_EVENT_WINDOW_SIZE       1008
+
 #define TRY_ATTACH_ENV(env_name, vm, error_message, then) JNIEnv* env_name;\
 do {                                                                       \
     env_name = get_attached_env(vm);                                       \
@@ -47,6 +57,20 @@ static void registerFunctions(JNIEnv *env);
 JNIEXPORT jlong JNICALL
 Java_org_lwjgl_glfw_GLFW_internalGetGamepadDataPointer(JNIEnv *env, jclass clazz);
 // ──────────────────────────────────────────────────────────────────────────
+
+// 파일 상단 어딘가 (전역)
+static jclass g_cbClass = NULL;
+static jclass g_mbCbIClass = NULL;
+static jmethodID g_cbGet = NULL;
+static jmethodID g_mbInvoke = NULL;
+
+static jclass g_cpCbIClass = NULL;
+static jmethodID g_cpInvoke = NULL;
+
+static jmethodID g_fbSizeInvoke = NULL;
+static jmethodID g_winSizeInvoke = NULL;
+static jmethodID g_cursorEnterInvoke = NULL;
+
 
 jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
     if (pojav_environ->dalvikJavaVMPtr == NULL) {
@@ -112,11 +136,18 @@ jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
 }
 
 #define ADD_CALLBACK_WWIN(NAME) \
-JNIEXPORT jlong JNICALL Java_org_lwjgl_glfw_GLFW_nglfwSet##NAME##Callback(JNIEnv * env, jclass cls, jlong window, jlong callbackptr) { \
+JNIEXPORT jlong JNICALL Java_org_lwjgl_glfw_GLFW_nglfwSet##NAME##Callback( \
+        JNIEnv* env, jclass cls, jlong window, jlong callbackptr) { \
+    LOGI("[CB_REG] " #NAME ": mcWindow=0x%llx cb=0x%llx mainBundle=0x%llx showing=0x%llx", \
+         (unsigned long long)window, (unsigned long long)callbackptr, \
+         (unsigned long long)pojav_environ->mainWindowBundle, \
+         (unsigned long long)pojav_environ->showingWindow); \
     void** oldCallback = (void**) &pojav_environ->GLFW_invoke_##NAME; \
     pojav_environ->GLFW_invoke_##NAME = (GLFW_invoke_##NAME##_func*) (uintptr_t) callbackptr; \
     return (jlong) (uintptr_t) *oldCallback; \
 }
+
+
 
 ADD_CALLBACK_WWIN(Char)
 ADD_CALLBACK_WWIN(CharMods)
@@ -139,7 +170,239 @@ void updateWindowSize(void* window) {
     (*pojav_environ->glfwThreadVmEnv)->CallStaticVoidMethod(pojav_environ->glfwThreadVmEnv, pojav_environ->vmGlfwClass, pojav_environ->method_internalWindowSizeChanged, (jlong)window, pojav_environ->savedWidth, pojav_environ->savedHeight);
 }
 
+// showingWindow 가 아직 0이면 mainWindowBundle 로 폴백.
+// LWJGL이 nglfwSetShowingWindow 를 호출하기 전이라도 클릭이 안 dropped 되도록.
+static inline void* effective_window() {
+    long w = pojav_environ->showingWindow;
+    if (w != 0) return (void*) w;
+    if (pojav_environ->mainWindowBundle != NULL) {
+        // 한 번이라도 fetch 됐으면 showingWindow 에도 캐싱해서 다음부터 빠르게
+        pojav_environ->showingWindow = (long)(uintptr_t) pojav_environ->mainWindowBundle;
+        return pojav_environ->mainWindowBundle;
+    }
+    return NULL;
+}
+
+
+static JNIEnv* getRuntimeEnv(void) {
+    if (!pojav_environ->runtimeJavaVMPtr) return NULL;
+    JNIEnv* env = NULL;
+    jint stat = (*pojav_environ->runtimeJavaVMPtr)->GetEnv(
+            pojav_environ->runtimeJavaVMPtr, (void**)&env, JNI_VERSION_1_6);
+    if (stat == JNI_EDETACHED) {
+        (*pojav_environ->runtimeJavaVMPtr)->AttachCurrentThread(
+                pojav_environ->runtimeJavaVMPtr, &env, NULL);
+    }
+    return env;
+}
+
+static jboolean lazyInitOther(JNIEnv* env) {
+    if (g_fbSizeInvoke && g_winSizeInvoke && g_cursorEnterInvoke) return JNI_TRUE;
+    if (!g_cbGet) {
+        jclass cb = (*env)->FindClass(env, "org/lwjgl/system/Callback");
+        if (!cb) { (*env)->ExceptionClear(env); return JNI_FALSE; }
+        g_cbClass = (*env)->NewGlobalRef(env, cb);
+        g_cbGet = (*env)->GetStaticMethodID(env, cb, "get", "(J)Lorg/lwjgl/system/CallbackI;");
+    }
+    jclass fb = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWFramebufferSizeCallbackI");
+    if (fb) g_fbSizeInvoke = (*env)->GetMethodID(env, fb, "invoke", "(JII)V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    jclass ws = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWWindowSizeCallbackI");
+    if (ws) g_winSizeInvoke = (*env)->GetMethodID(env, ws, "invoke", "(JII)V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    jclass ce = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWCursorEnterCallbackI");
+    if (ce) g_cursorEnterInvoke = (*env)->GetMethodID(env, ce, "invoke", "(JZ)V");
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    LOGI("[OTHER_DIRECT] init: fb=%p ws=%p ce=%p", g_fbSizeInvoke, g_winSizeInvoke, g_cursorEnterInvoke);
+    return JNI_TRUE;
+}
+
+static void dispatchFramebufferSizeDirect(jint w, jint h) {
+    JNIEnv* env = getRuntimeEnv();
+    if (!env) return;
+    lazyInitOther(env);
+    if (!g_fbSizeInvoke || !pojav_environ->GLFW_invoke_FramebufferSize) return;
+    jobject cb = (*env)->CallStaticObjectMethod(env, g_cbClass, g_cbGet,
+                                                (jlong)(uintptr_t)pojav_environ->GLFW_invoke_FramebufferSize);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }
+    if (!cb) { LOGI("[FB_DIRECT] null cb for 0x%llx",
+                    (unsigned long long)(uintptr_t)pojav_environ->GLFW_invoke_FramebufferSize); return; }
+    LOGI("[FB_DIRECT] invoke w=%d h=%d", w, h);
+    (*env)->CallVoidMethod(env, cb, g_fbSizeInvoke,
+                           (jlong)(uintptr_t)effective_window(), w, h);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, cb);
+}
+
+static void dispatchWindowSizeDirect(jint w, jint h) {
+    JNIEnv* env = getRuntimeEnv();
+    if (!env) return;
+    lazyInitOther(env);
+    if (!g_winSizeInvoke || !pojav_environ->GLFW_invoke_WindowSize) return;
+    jobject cb = (*env)->CallStaticObjectMethod(env, g_cbClass, g_cbGet,
+                                                (jlong)(uintptr_t)pojav_environ->GLFW_invoke_WindowSize);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }
+    if (!cb) return;
+    LOGI("[WS_DIRECT] invoke w=%d h=%d", w, h);
+    (*env)->CallVoidMethod(env, cb, g_winSizeInvoke,
+                           (jlong)(uintptr_t)effective_window(), w, h);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, cb);
+}
+
+static void dispatchCursorEnterDirect(jboolean entered) {
+    JNIEnv* env = getRuntimeEnv();
+    if (!env) return;
+    lazyInitOther(env);
+    if (!g_cursorEnterInvoke || !pojav_environ->GLFW_invoke_CursorEnter) return;
+    jobject cb = (*env)->CallStaticObjectMethod(env, g_cbClass, g_cbGet,
+                                                (jlong)(uintptr_t)pojav_environ->GLFW_invoke_CursorEnter);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }
+    if (!cb) return;
+    (*env)->CallVoidMethod(env, cb, g_cursorEnterInvoke,
+                           (jlong)(uintptr_t)effective_window(), entered);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    (*env)->DeleteLocalRef(env, cb);
+}
+
+static jboolean lazyInitCpDirect(JNIEnv* env) {
+    if (g_cpInvoke) return JNI_TRUE;
+    // Callback class 는 lazyInitMbDirect 에서 이미 init 됐다고 가정
+    if (!g_cbGet) {
+        // 안전하게 한 번 더
+        jclass cb = (*env)->FindClass(env, "org/lwjgl/system/Callback");
+        if (!cb) {
+            if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+            return JNI_FALSE;
+        }
+        g_cbClass = (*env)->NewGlobalRef(env, cb);
+        g_cbGet = (*env)->GetStaticMethodID(env, cb, "get", "(J)Lorg/lwjgl/system/CallbackI;");
+    }
+    jclass cp = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWCursorPosCallbackI");
+    if (!cp) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGI("[CP_DIRECT] FindClass failed"); return JNI_FALSE;
+    }
+    g_cpCbIClass = (*env)->NewGlobalRef(env, cp);
+    g_cpInvoke = (*env)->GetMethodID(env, cp, "invoke", "(JDD)V");  // (long, double, double)
+    if (!g_cpInvoke) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGI("[CP_DIRECT] GetMethodID failed"); return JNI_FALSE;
+    }
+    LOGI("[CP_DIRECT] init OK");
+    return JNI_TRUE;
+}
+
+static void dispatchCursorPosDirect(jdouble x, jdouble y) {
+    JNIEnv* env = getRuntimeEnv();
+    if (!env) return;
+    if (!lazyInitCpDirect(env)) return;
+    if (!pojav_environ->GLFW_invoke_CursorPos) return;
+
+    jlong cbAddr = (jlong)(uintptr_t) pojav_environ->GLFW_invoke_CursorPos;
+    jobject cbObj = (*env)->CallStaticObjectMethod(env, g_cbClass, g_cbGet, cbAddr);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }
+    if (!cbObj) {
+        static int once = 0;
+        if (!once++) LOGI("[CP_DIRECT] Callback.get returned null for 0x%llx", (unsigned long long)cbAddr);
+        return;
+    }
+
+    // 한 번만 클래스명 찍기
+    static jboolean logged_cls = JNI_FALSE;
+    if (!logged_cls) {
+        jclass oc = (*env)->GetObjectClass(env, cbObj);
+        jclass cc = (*env)->FindClass(env, "java/lang/Class");
+        jmethodID gn = (*env)->GetMethodID(env, cc, "getName", "()Ljava/lang/String;");
+        jstring jn = (jstring)(*env)->CallObjectMethod(env, oc, gn);
+        const char* n = (*env)->GetStringUTFChars(env, jn, NULL);
+        LOGI("[CP_DIRECT] Callback class: %s", n);
+        (*env)->ReleaseStringUTFChars(env, jn, n);
+        logged_cls = JNI_TRUE;
+    }
+
+    jlong win = (jlong)(uintptr_t) effective_window();
+    (*env)->CallVoidMethod(env, cbObj, g_cpInvoke, win, (jdouble)x, (jdouble)y);
+    if ((*env)->ExceptionCheck(env)) {
+        (*env)->ExceptionClear(env);
+    }
+    (*env)->DeleteLocalRef(env, cbObj);
+}
+
+
+static jboolean lazyInitMbDirect(JNIEnv* env) {
+    if (g_cbGet && g_mbInvoke) return JNI_TRUE;
+    jclass cb = (*env)->FindClass(env, "org/lwjgl/system/Callback");
+    if (!cb) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGI("[MB_DIRECT] FindClass Callback failed"); return JNI_FALSE;
+    }
+    g_cbClass = (*env)->NewGlobalRef(env, cb);
+    g_cbGet = (*env)->GetStaticMethodID(env, cb, "get", "(J)Lorg/lwjgl/system/CallbackI;");
+    if (!g_cbGet) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGI("[MB_DIRECT] GetStaticMethodID Callback.get failed"); return JNI_FALSE;
+    }
+    jclass mb = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWMouseButtonCallbackI");
+    if (!mb) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGI("[MB_DIRECT] FindClass GLFWMouseButtonCallbackI failed"); return JNI_FALSE;
+    }
+    g_mbCbIClass = (*env)->NewGlobalRef(env, mb);
+    g_mbInvoke = (*env)->GetMethodID(env, mb, "invoke", "(JIII)V");
+    if (!g_mbInvoke) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        LOGI("[MB_DIRECT] GetMethodID invoke failed"); return JNI_FALSE;
+    }
+    LOGI("[MB_DIRECT] init OK: cbClass=%p mbCbI=%p get=%p invoke=%p",
+         g_cbClass, g_mbCbIClass, g_cbGet, g_mbInvoke);
+    return JNI_TRUE;
+}
+
+static void dispatchMouseButtonDirect(jint button, jint action, jint mods) {
+    JNIEnv* env = getRuntimeEnv();
+    if (!env) { LOGI("[MB_DIRECT] no runtime env"); return; }
+    if (!lazyInitMbDirect(env)) return;
+
+    jlong cbAddr = (jlong)(uintptr_t) pojav_environ->GLFW_invoke_MouseButton;
+    jobject cbObj = (*env)->CallStaticObjectMethod(env, g_cbClass, g_cbGet, cbAddr);
+    if ((*env)->ExceptionCheck(env)) {
+        LOGI("[MB_DIRECT] Callback.get threw");
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    if (!cbObj) { LOGI("[MB_DIRECT] Callback.get returned null for 0x%llx",
+                       (unsigned long long)cbAddr); return; }
+
+    jlong win = (jlong)(uintptr_t) effective_window();
+    LOGI("[MB_DIRECT] invoking: win=0x%llx btn=%d act=%d mods=%d",
+         (unsigned long long)win, button, action, mods);
+    (*env)->CallVoidMethod(env, cbObj, g_mbInvoke, win, button, action, mods);
+    if ((*env)->ExceptionCheck(env)) {
+        jthrowable exc = (*env)->ExceptionOccurred(env);
+        (*env)->ExceptionClear(env);
+        jclass ec = (*env)->GetObjectClass(env, exc);
+        jmethodID ts = (*env)->GetMethodID(env, ec, "toString", "()Ljava/lang/String;");
+        jstring jm = (jstring)(*env)->CallObjectMethod(env, exc, ts);
+        const char* m = (*env)->GetStringUTFChars(env, jm, NULL);
+        LOGI("[MB_DIRECT] invoke threw: %s", m);
+        (*env)->ReleaseStringUTFChars(env, jm, m);
+    } else {
+        LOGI("[MB_DIRECT] invoke returned cleanly");
+    }
+    (*env)->DeleteLocalRef(env, cbObj);
+}
+
 void pojavPumpEvents(void* window) {
+    static int pump_counter = 0;
+    if (++pump_counter % 60 == 0) {
+        LOGI("[PUMP] pojavPumpEvents tick #%d outIdx=%zu targetIdx=%zu",
+             pump_counter, pojav_environ->outEventIndex, pojav_environ->outTargetIndex);
+    }
+
     if(pojav_environ->shouldUpdateMouse) {
         pojav_environ->GLFW_invoke_CursorPos(window, floor(pojav_environ->cursorX),
                                              floor(pojav_environ->cursorY));
@@ -164,7 +427,10 @@ void pojavPumpEvents(void* window) {
                 if(pojav_environ->GLFW_invoke_Key) pojav_environ->GLFW_invoke_Key(window, event.i1, event.i2, event.i3, event.i4);
                 break;
             case EVENT_TYPE_MOUSE_BUTTON:
-                if(pojav_environ->GLFW_invoke_MouseButton) pojav_environ->GLFW_invoke_MouseButton(window, event.i1, event.i2, event.i3);
+                if (pojav_environ->shouldUpdateMouse) {
+                    pojav_environ->GLFW_invoke_CursorPos(window, floor(pojav_environ->cursorX), floor(pojav_environ->cursorY));
+                    dispatchCursorPosDirect((jdouble)floor(pojav_environ->cursorX), (jdouble)floor(pojav_environ->cursorY));  // ★ 추가
+                }
                 break;
             case EVENT_TYPE_SCROLL:
                 if(pojav_environ->GLFW_invoke_Scroll) pojav_environ->GLFW_invoke_Scroll(window, event.i1, event.i2);
@@ -179,8 +445,28 @@ void pojavPumpEvents(void* window) {
     // The out target index is updated by the rewinder
 }
 
+// 부팅 후 한 번만 framebuffer/window size 를 MC 에 알림
+// egl_bridge.c::pojavSwapBuffers 에서 매 frame 호출되지만 한 번 dispatch 후 노옵.
+void pojavBootDispatchFramebufferSize(void) {
+    static int dispatched = 0;
+    if (dispatched) return;
+    if (pojav_environ->savedWidth <= 0 || pojav_environ->savedHeight <= 0) return;
+    if (!pojav_environ->GLFW_invoke_FramebufferSize) return;  // 등록 전엔 미발화
+    dispatched = 1;
+    LOGI("[BOOT] dispatching FramebufferSize/WindowSize %dx%d",
+         pojav_environ->savedWidth, pojav_environ->savedHeight);
+    dispatchFramebufferSizeDirect(pojav_environ->savedWidth, pojav_environ->savedHeight);
+    dispatchWindowSizeDirect(pojav_environ->savedWidth, pojav_environ->savedHeight);
+}
+
 /** Prepare the library for sending out callbacks to all windows */
 void pojavStartPumping() {
+    static int start_counter = 0;
+    if (++start_counter % 60 == 0) {
+        LOGI("[PUMP] StartPumping tick #%d eventCounter=%zu",
+             start_counter, atomic_load_explicit(&pojav_environ->eventCounter, memory_order_acquire));
+    }
+
     size_t counter = atomic_load_explicit(&pojav_environ->eventCounter, memory_order_acquire);
     size_t index = pojav_environ->outEventIndex;
 
@@ -208,6 +494,11 @@ void pojavStartPumping() {
 
 /** Prepare the library for the next round of new events */
 void pojavStopPumping() {
+    static int stop_counter = 0;
+    if (++stop_counter % 60 == 0) {
+        LOGI("[PUMP] StopPumping tick #%d", stop_counter);
+    }
+
     pojav_environ->outEventIndex = pojav_environ->outTargetIndex;
 
     // New events may have arrived while pumping, so remove only the difference before the start and end of execution
@@ -224,16 +515,6 @@ void pojavStopPumping() {
 
 }
 
-// LWJGL 3.3.6 CallbackBridge — stub implementations
-JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSendData(JNIEnv *env, jclass cls,
-                                                                         jboolean isString, jint type, jstring data) {
-    (void)env; (void)cls; (void)isString; (void)type; (void)data;
-}
-
-JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetCursorShape(JNIEnv *env, jclass cls,
-                                                                               jint shape) {
-    (void)env; (void)cls; (void)shape;
-}
 
 JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_GLFW_nglfwGetCursorPos(JNIEnv *env, __attribute__((unused)) jclass clazz, __attribute__((unused)) jlong window, jobject xpos,
@@ -357,7 +638,7 @@ Java_org_lwjgl_glfw_CallbackBridge_nativeEnableGamepadDirectInput(__attribute__(
 jboolean critical_send_char(jchar codepoint) {
     if (pojav_environ->GLFW_invoke_Char && pojav_environ->isInputReady) {
         if (pojav_environ->isUseStackQueueCall) {
-            sendData(EVENT_TYPE_CHAR, codepoint, 0, 0, 0);
+            sendData(CB_EVENT_CHAR, codepoint, 0, 0, 0);
         } else {
             pojav_environ->GLFW_invoke_Char((void*) pojav_environ->showingWindow, (unsigned int) codepoint);
         }
@@ -373,7 +654,7 @@ jboolean noncritical_send_char(__attribute__((unused)) JNIEnv* env, __attribute_
 jboolean critical_send_char_mods(jchar codepoint, jint mods) {
     if (pojav_environ->GLFW_invoke_CharMods && pojav_environ->isInputReady) {
         if (pojav_environ->isUseStackQueueCall) {
-            sendData(EVENT_TYPE_CHAR_MODS, (int) codepoint, mods, 0, 0);
+            sendData(CB_EVENT_CHAR_MODS, (int) codepoint, mods, 0, 0);
         } else {
             pojav_environ->GLFW_invoke_CharMods((void*) pojav_environ->showingWindow, codepoint, mods);
         }
@@ -403,18 +684,10 @@ void critical_send_cursor_pos(jfloat x, jfloat y) {
         LOGD("pojav_environ->GLFW_invoke_CursorPos && pojav_environ->isInputReady \n");
 #endif
         if (!pojav_environ->isCursorEntered) {
-            if (pojav_environ->GLFW_invoke_CursorEnter) {
-                pojav_environ->isCursorEntered = true;
-                if (pojav_environ->isUseStackQueueCall) {
-                    sendData(EVENT_TYPE_CURSOR_ENTER, 1, 0, 0, 0);
-                } else {
-                    pojav_environ->GLFW_invoke_CursorEnter((void*) pojav_environ->showingWindow, 1);
-                }
-            } else if (pojav_environ->isGrabbing) {
-                // Some Minecraft versions does not use GLFWCursorEnterCallback
-                // This is a smart check, as Minecraft will not in grab mode if already not.
-                pojav_environ->isCursorEntered = true;
-            }
+            pojav_environ->isCursorEntered = true;
+            if (pojav_environ->GLFW_invoke_CursorEnter)
+                pojav_environ->GLFW_invoke_CursorEnter((void*)pojav_environ->showingWindow, 1);
+            dispatchCursorEnterDirect(JNI_TRUE);   // ★ 추가
         }
 
         if (!pojav_environ->isUseStackQueueCall) {
@@ -424,6 +697,16 @@ void critical_send_cursor_pos(jfloat x, jfloat y) {
             pojav_environ->cursorY = y;
         }
     }
+
+    if (pojav_environ->GLFW_invoke_CursorPos && pojav_environ->isInputReady) {
+        if (!pojav_environ->isUseStackQueueCall) {
+            pojav_environ->GLFW_invoke_CursorPos((void*)pojav_environ->showingWindow, (double)x, (double)y);
+        } else {
+            pojav_environ->cursorX = x;
+            pojav_environ->cursorY = y;
+        }
+    }
+    dispatchCursorPosDirect((jdouble)x, (jdouble)y);  // ★ 추가
 }
 
 void noncritical_send_cursor_pos(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz,  jfloat x, jfloat y) {
@@ -437,7 +720,7 @@ void critical_send_key(jint key, jint scancode, jint action, jint mods) {
     if (pojav_environ->GLFW_invoke_Key && pojav_environ->isInputReady) {
         pojav_environ->keyDownBuffer[max(0, key-31)] = (jbyte) action;
         if (pojav_environ->isUseStackQueueCall) {
-            sendData(EVENT_TYPE_KEY, key, scancode, action, mods);
+            sendData(CB_EVENT_KEY, key, scancode, action, mods);
         } else {
             pojav_environ->GLFW_invoke_Key((void*) pojav_environ->showingWindow, key, scancode, action, mods);
         }
@@ -447,16 +730,48 @@ void noncritical_send_key(__attribute__((unused)) JNIEnv* env, __attribute__((un
     critical_send_key(key, scancode, action, mods);
 }
 
+
 void critical_send_mouse_button(jint button, jint action, jint mods) {
-    LOGI("[DIAG] critical_send_mb: invoke=%p ready=%d showWin=%lx", (void*)pojav_environ->GLFW_invoke_MouseButton, pojav_environ->isInputReady, (long)pojav_environ->showingWindow);
     if (pojav_environ->GLFW_invoke_MouseButton && pojav_environ->isInputReady) {
-        pojav_environ->mouseDownBuffer[max(0, button)] = (jbyte) action;
+        LOGI("[DIAG] critical_send_mb: invoke=%p ready=%d showWin=%lx mainBundle=%p",
+             pojav_environ->GLFW_invoke_MouseButton,
+             pojav_environ->isInputReady,
+             pojav_environ->showingWindow,
+             pojav_environ->mainWindowBundle);
+
+        if (pojav_environ->GLFW_invoke_MouseButton && pojav_environ->isInputReady) {
+            if (pojav_environ->isUseStackQueueCall) {
+                sendData(EVENT_TYPE_MOUSE_BUTTON, button, action, mods, 0);
+            } else {
+                pojav_environ->GLFW_invoke_MouseButton((void*) pojav_environ->showingWindow, button, action, mods);
+            }
+        }
+
         if (pojav_environ->isUseStackQueueCall) {
             sendData(EVENT_TYPE_MOUSE_BUTTON, button, action, mods, 0);
         } else {
             pojav_environ->GLFW_invoke_MouseButton((void*) pojav_environ->showingWindow, button, action, mods);
+
+            // ★ Java 예외 체크 추가 — Hotspot JVM env 가져와서
+            JNIEnv* runtimeEnv = NULL;
+            if (pojav_environ->runtimeJavaVMPtr) {
+                (*pojav_environ->runtimeJavaVMPtr)->GetEnv(
+                        pojav_environ->runtimeJavaVMPtr, (void**)&runtimeEnv, JNI_VERSION_1_6);
+            }
+            if (runtimeEnv && (*runtimeEnv)->ExceptionCheck(runtimeEnv)) {
+                jthrowable exc = (*runtimeEnv)->ExceptionOccurred(runtimeEnv);
+                (*runtimeEnv)->ExceptionClear(runtimeEnv);
+                jclass excClass = (*runtimeEnv)->GetObjectClass(runtimeEnv, exc);
+                jmethodID toStr = (*runtimeEnv)->GetMethodID(runtimeEnv, excClass, "toString", "()Ljava/lang/String;");
+                jstring jmsg = (jstring)(*runtimeEnv)->CallObjectMethod(runtimeEnv, exc, toStr);
+                const char* msg = (*runtimeEnv)->GetStringUTFChars(runtimeEnv, jmsg, NULL);
+                LOGI("[MB_EXC] %s", msg);
+                (*runtimeEnv)->ReleaseStringUTFChars(runtimeEnv, jmsg, msg);
+            }
         }
     }
+
+    dispatchMouseButtonDirect(button, action, mods);
 }
 
 void noncritical_send_mouse_button(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz, jint button, jint action, jint mods) {
@@ -484,7 +799,7 @@ void noncritical_send_screen_size(__attribute__((unused)) JNIEnv* env, __attribu
 void critical_send_scroll(jdouble xoffset, jdouble yoffset) {
     if (pojav_environ->GLFW_invoke_Scroll && pojav_environ->isInputReady) {
         if (pojav_environ->isUseStackQueueCall) {
-            sendData(EVENT_TYPE_SCROLL, (int)xoffset, (int)yoffset, 0, 0);
+            sendData(CB_EVENT_SCROLL, (int)xoffset, (int)yoffset, 0, 0);
         } else {
             pojav_environ->GLFW_invoke_Scroll((void*) pojav_environ->showingWindow, (double) xoffset, (double) yoffset);
         }
@@ -610,7 +925,7 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSendKey(
         JNIEnv* env, jobject thiz, jint key, jint scancode, jint action, jint mods) {
     (void)env; (void)thiz;
     pojav_environ->isInputReady = JNI_TRUE;
-    pojav_environ->isUseStackQueueCall = JNI_FALSE;
+    pojav_environ->isUseStackQueueCall = JNI_TRUE;
     critical_send_key(key, scancode, action, mods);
 }
 
@@ -619,7 +934,7 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSendMouseB
         JNIEnv* env, jobject thiz, jint button, jint action, jint mods) {
     (void)env; (void)thiz;
     pojav_environ->isInputReady = JNI_TRUE;
-    pojav_environ->isUseStackQueueCall = JNI_FALSE;
+    pojav_environ->isUseStackQueueCall = JNI_TRUE;
     critical_send_mouse_button(button, action, mods);
 }
 
@@ -630,7 +945,69 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeSendCursor
     pojav_environ->isInputReady = JNI_TRUE;
     pojav_environ->cursorX = (int)x;
     pojav_environ->cursorY = (int)y;
-    pojav_environ->isUseStackQueueCall = JNI_FALSE;
+    pojav_environ->isUseStackQueueCall = JNI_TRUE;
     critical_send_cursor_pos(x, y);
+}
+
+// LWJGL 3.3.6 CallbackBridge — stub implementations
+JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSendData(
+        JNIEnv *env, jclass cls,
+        jboolean isAndroid, jint type, jstring data) {
+    (void)cls;
+    if (!data) {
+        LOGI("[NSD] null data type=%d", type);
+        return;
+    }
+    const char* str = (*env)->GetStringUTFChars(env, data, NULL);
+    LOGI("[NSD] type=%d isAndroid=%d data='%s'", type, isAndroid, str);
+
+    int i1 = 0, i2 = 0, i3 = 0, i4 = 0;
+    float f1 = 0.0f, f2 = 0.0f;
+
+    switch (type) {
+        case CB_EVENT_MOUSE_BUTTON:
+            if (sscanf(str, "%d,%d,%d", &i1, &i2, &i3) >= 2)
+                critical_send_mouse_button(i1, i2, i3);
+            break;
+        case CB_EVENT_CURSOR_POS:
+            if (sscanf(str, "%f,%f", &f1, &f2) == 2)
+                critical_send_cursor_pos(f1, f2);
+            break;
+        case CB_EVENT_KEY:
+            if (sscanf(str, "%d,%d,%d,%d", &i1, &i2, &i3, &i4) >= 3)
+                critical_send_key(i1, i2, i3, i4);
+            break;
+        case CB_EVENT_SCROLL:
+            if (sscanf(str, "%f,%f", &f1, &f2) == 2)
+                critical_send_scroll(f1, f2);   // (이 함수 없으면 GLFW_invoke_Scroll 직접)
+            break;
+        case CB_EVENT_CHAR:
+            if (sscanf(str, "%d", &i1) == 1)
+                critical_send_char((jchar)i1);
+            break;
+        case CB_EVENT_CHAR_MODS:
+            if (sscanf(str, "%d,%d", &i1, &i2) == 2)
+                critical_send_char_mods((jchar)i1, i2);
+            break;
+        case CB_EVENT_CURSOR_ENTER:
+            // optional — cursor enter는 critical_send_cursor_pos 첫 호출에서 처리됨
+            break;
+        case CB_EVENT_WINDOW_SIZE:
+        case CB_EVENT_FRAMEBUFFER_SIZE:
+            // skip for now
+            break;
+        default:
+            LOGI("[NSD] unhandled type %d", type);
+            break;
+    }
+
+    (*env)->ReleaseStringUTFChars(env, data, str);
+}
+
+JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetCursorShape(
+        JNIEnv *env, jclass cls, jint shape) {
+    (void)env; (void)cls;
+    LOGI("[NSD] SetCursorShape shape=%d", shape);
+    // optional: implement if MC sets cursor shapes
 }
 
