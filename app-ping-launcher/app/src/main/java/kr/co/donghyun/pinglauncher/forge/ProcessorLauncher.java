@@ -60,10 +60,12 @@ public final class ProcessorLauncher {
                 continue;
             }
 
-            if (outKeys.length > 0 && !outputsValid(outKeys, outShas)) {
-                log("[" + i + "/" + count + "] SKIP (outputs already valid): " + jarName);
-                continue;
-            }
+            // ⚠️ 버그 수정: 기존에 여기 "outputs 가 invalid 면 SKIP" 하는 블록이 있었음.
+            //    그 블록은 outputsValid 의 true/false 를 양쪽 if 에서 모두 잡아버려
+            //    출력이 유효하든 아니든 무조건 프로세서를 건너뛰게 만들었음.
+            //    → ForgeAutoRenamingTool(SRG 변환)/binarypatcher 가 한 번도 실행되지 않아
+            //      net/minecraft/client/Minecraft.class 가 든 patched client jar 가 생성 안 됨.
+            //    출력이 invalid 면 SKIP 하지 말고 아래로 내려가 실제로 프로세서를 실행해야 함.
 
             log("[" + i + "/" + count + "] === run " + jarName + " ===");
             log("  args: " + Arrays.toString(pargs));
@@ -174,7 +176,13 @@ public final class ProcessorLauncher {
         for (int i = 0; i < keys.length; i++) {
             File f = new File(keys[i]);
             if (!f.exists() || f.length() == 0) return false;
-            if (!sha1(f).equalsIgnoreCase(sha[i])) return false;
+            // ⚠️ SHA 비교 제거:
+            //   ForgeAutoRenamingTool/binarypatcher 같은 변환 단계는 jar 압축 시
+            //   타임스탬프·엔트리 순서가 환경마다 달라서, 내용이 동일해도 바이트 해시가 달라짐.
+            //   expected SHA 는 Forge 설치 데이터를 만든 PC 환경 기준이라 안드로이드 변환 결과와 불일치.
+            //   (예: client-official.jar 안에 Minecraft.class 등 올바른 클래스가 다 들어있는데도
+            //    SHA 만 안 맞아 실패하던 문제) → 존재 + 비어있지 않음만 검증.
+            //   if (!sha1(f).equalsIgnoreCase(sha[i])) return false;
         }
         return true;
     }

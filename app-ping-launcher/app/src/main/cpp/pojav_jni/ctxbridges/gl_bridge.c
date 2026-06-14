@@ -16,6 +16,7 @@
 #include <sys/syscall.h>
 #include <sys/types.h>
 
+
 //
 // Created by maks on 17.09.2022.
 //
@@ -24,66 +25,8 @@ static __thread gl_render_window_t* currentBundle;
 static EGLDisplay g_EglDisplay;
 
 // 파일 상단 어디든 추가
-static bool ltw_initialized = false;
 static gl_render_window_t* g_lastInitializedBundle = NULL;
 
-
-static void try_init_ltw_once(void) {
-    if (ltw_initialized) return;
-
-    void* handle = dlopen("libltw.so", RTLD_NOLOAD | RTLD_NOW);
-    if (!handle) return;
-
-    if (eglGetCurrentContext_p() == EGL_NO_CONTEXT) {
-        LOGI("LTW: ctx not active yet — defer init");
-        return;
-    }
-
-    void* gles_handle = dlopen("libGLESv2.so", RTLD_NOW | RTLD_GLOBAL);
-    if (!gles_handle) gles_handle = dlopen("libGLESv3.so", RTLD_NOW | RTLD_GLOBAL);
-    if (gles_handle) LOGI("LTW: preloaded GLES library RTLD_GLOBAL");
-
-    void (*p_init_egl)(void)     = (void(*)(void)) dlsym(handle, "init_egl");
-    void (*p_proc_init)(void)    = (void(*)(void)) dlsym(handle, "proc_init");
-    void (*p_init_noerror)(void) = (void(*)(void)) dlsym(handle, "init_noerror");
-
-    if (!p_init_egl || !p_proc_init) {
-        LOGE("LTW: missing required init symbols");
-        ltw_initialized = true;
-        return;
-    }
-
-    // ★ 미니멀 init — 공개 entry point 만
-    LOGI("LTW: calling init_egl()");
-    p_init_egl();
-
-    LOGI("LTW: calling proc_init()");
-    p_proc_init();
-
-    // LIBGL_NOERROR=1 일 때만
-    const char* noerror = getenv("LIBGL_NOERROR");
-    if (p_init_noerror && noerror && noerror[0] == '1') {
-        LOGI("LTW: calling init_noerror()");
-        p_init_noerror();
-    }
-
-    // ★ basevertex_init / buffer_copier_init / init_extra_extensions 호출 안 함
-    //   - 앞 두 개는 *_init 접미사 = LTW 내부 서브시스템 헬퍼 (외부 호출 시 NULL deref)
-    //   - init_extra_extensions 는 이전에 SIGSEGV 발생, 일단 보류
-
-    // 진단
-    typedef const unsigned char* (*pGS)(unsigned int);
-    pGS gs = (pGS) dlsym(handle, "glGetString");
-    if (gs) {
-        const unsigned char* ver = gs(0x1F02);
-        const unsigned char* ren = gs(0x1F01);
-        LOGI("LTW post-init: GL_VERSION=%s  GL_RENDERER=%s",
-             ver ? (const char*)ver : "(NULL)",
-             ren ? (const char*)ren : "(NULL)");
-    }
-
-    ltw_initialized = true;
-}
 
 bool gl_init() {
     if(!dlsym_EGL()) return false;
@@ -223,17 +166,11 @@ void gl_swap_surface(gl_render_window_t* bundle) {
 
 void gl_make_current(gl_render_window_t* bundle) {
     if(bundle == NULL) {
-        // ★ 변경: NULL makeCurrent 를 무시하지 말고 정말로 detach 한다.
-        //   LTW/LWJGL 이 cross-thread context 이관할 때 필수.
         if(eglMakeCurrent_p(g_EglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT)) {
             currentBundle = NULL;
         }
         return;
     }
-
-    try_init_ltw_once();
-
-    // ── 이하 기존 코드 ──
 
     bool hasSetMainWindow = false;
     if(pojav_environ->mainWindowBundle == NULL) {
@@ -262,11 +199,7 @@ void gl_make_current(gl_render_window_t* bundle) {
     EGLint mc_error = eglGetError_p();
     LOGI("eglMakeCurrent result=%d error=0x%04x", mc_result, mc_error);
 
-    if(mc_result) {
-        currentBundle = bundle;
-        g_lastInitializedBundle = bundle;   // ★ 전역 백업
-        try_init_ltw_once();
-    }
+    // ★ 끝. LTW init 호출 절대 안 함.
 }
 
 void gl_swap_buffers() {

@@ -13,6 +13,11 @@
 #include "environ.h"
 #include "log.h"
 
+// pingjvm.cpp 상단에 include 추가
+#include <vulkan/vulkan.h>
+#include <dlfcn.h>
+
+
 #include <resolv.h>
 #include <arpa/nameser.h>
 #include <netinet/in.h>
@@ -734,6 +739,76 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_native
 }
 
 
+// JNI 함수 위에 probe 본체 복제 (egl_bridge.c 와 동일)
+static bool zink_probe_vulkan_works() {
+    void* h = dlopen("libvulkan.so", RTLD_NOW);
+    if (!h) { printf("Zink probe: libvulkan.so 못 찾음\n"); return false; }
+
+    typedef PFN_vkVoidFunction (*PFN_vkGetInstanceProcAddr_t)(VkInstance, const char*);
+    typedef VkResult (*PFN_vkCreateInstance_t)(const VkInstanceCreateInfo*,
+                                               const VkAllocationCallbacks*, VkInstance*);
+
+    auto gipa = (PFN_vkGetInstanceProcAddr_t)dlsym(h, "vkGetInstanceProcAddr");
+    auto createInst = (PFN_vkCreateInstance_t)dlsym(h, "vkCreateInstance");
+    if (!gipa || !createInst) { dlclose(h); return false; }
+
+    VkApplicationInfo app = {};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo ci = {};
+    ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ci.pApplicationInfo = &app;
+
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInst(&ci, nullptr, &inst) != VK_SUCCESS) {
+        printf("Zink probe: vkCreateInstance 실패\n");
+        dlclose(h); return false;
+    }
+
+    auto enumPD   = (PFN_vkEnumeratePhysicalDevices)gipa(inst, "vkEnumeratePhysicalDevices");
+    auto getFeats = (PFN_vkGetPhysicalDeviceFeatures)gipa(inst, "vkGetPhysicalDeviceFeatures");
+    auto getProps = (PFN_vkGetPhysicalDeviceProperties)gipa(inst, "vkGetPhysicalDeviceProperties");
+    auto destInst = (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
+
+    uint32_t deviceCount = 0;
+    enumPD(inst, &deviceCount, nullptr);
+    if (deviceCount == 0) {
+        printf("Zink probe: no Vulkan physical devices\n");
+        if (destInst) destInst(inst, nullptr);
+        dlclose(h); return false;
+    }
+
+    if (deviceCount > 8) deviceCount = 8;
+    VkPhysicalDevice phys[8];
+    enumPD(inst, &deviceCount, phys);
+
+    bool any_compatible = false;
+    for (uint32_t i = 0; i < deviceCount; i++) {
+        VkPhysicalDeviceProperties props = {};
+        VkPhysicalDeviceFeatures   feats = {};
+        getProps(phys[i], &props);
+        getFeats(phys[i], &feats);
+        bool ok = true;
+        printf("Zink probe: device #%u (%s) logicOp=%d fillModeNonSolid=%d shaderClipDistance=%d -> %s\n",
+               i, props.deviceName,
+               feats.logicOp, feats.fillModeNonSolid, feats.shaderClipDistance,
+               ok ? "COMPATIBLE" : "INCOMPATIBLE");
+        if (ok) any_compatible = true;
+    }
+
+    if (destInst) destInst(inst, nullptr);
+    dlclose(h);
+    return any_compatible;
+}
+
+// JNI 진입점
+extern "C" JNIEXPORT jboolean JNICALL
+Java_kr_co_donghyun_pinglauncher_presentation_util_renderer_RendererProbe_nativeZinkCompatible(
+        JNIEnv* /*env*/, jclass /*clazz*/)
+{
+    return zink_probe_vulkan_works() ? JNI_TRUE : JNI_FALSE;
+}
+
 extern "C" JNIEXPORT jint JNICALL
 Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMinecraftJVM(
         JNIEnv* env, jobject thiz, jstring lib_jvm_path, jobjectArray jvm_args, jobjectArray mc_args) {
@@ -741,8 +816,8 @@ Java_kr_co_donghyun_pinglauncher_presentation_util_jni_JavaNativeLauncher_bootMi
     // ── Renderer 환경변수 기본값 ─────────────────────────────────
     if (!getenv("POJAV_RENDERER"))  setenv("POJAV_RENDERER",  "vulkan_zink", 0);
     if (!getenv("LIBGL_STRING"))    setenv("LIBGL_STRING",    "VulkanGL",    0);
-    if (!getenv("LIBGL_NAME"))      setenv("LIBGL_NAME",      "libltw.so",   0);
-    if (!getenv("DLOPEN"))          setenv("DLOPEN",          "libltw.so",   0);
+    if (!getenv("LIBGL_NAME"))      setenv("LIBGL_NAME",      "libgl4es_114.so",   0);
+    if (!getenv("DLOPEN"))          setenv("DLOPEN",          "libgl4es_114.so",   0);
     if (!getenv("LIBGL_ES"))        setenv("LIBGL_ES",        "3",           0);
     if (!getenv("FORCE_VSYNC"))     setenv("FORCE_VSYNC",     "false",       0);
     if (!getenv("POJAV_VSYNC"))     setenv("POJAV_VSYNC",     "1",           0);

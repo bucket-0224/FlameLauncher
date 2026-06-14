@@ -13,6 +13,30 @@ enum class Renderer(
     val emoji: String,
     val extraEnv: Map<String, String> = emptyMap()
 ) {
+    ZINK(
+        id = "zink",
+        displayName = "Zink (Vulkan)",
+        description = "Vulkan을 OpenGL로 변환. 모던 GPU에서 가장 호환성 좋음. 1.17+ 추천.",
+        pojavRenderer = "vulkan_zink",
+        libglName = "libOSMesa.so",
+        libglString = "VulkanGL",
+        libglEs = "3",
+        emoji = "🌋",
+        extraEnv = mapOf(
+            "force_glsl_extensions_warn" to "true",
+            "allow_higher_compat_version" to "true",
+            "allow_glsl_extension_directive_midshader" to "true",
+            "MESA_LOADER_DRIVER_OVERRIDE" to "zink",
+            "GALLIUM_DRIVER" to "zink",
+//            "POJAV_LOAD_TURNIP" to "1"  // Adreno면 Turnip 시도
+            "MESA_VK_WSI_PRESENT_MODE" to "mailbox",
+            "VK_ICD_FILENAMES" to "",         // 시스템 ICD 무시
+            "ZINK_DEBUG" to "noreorder",      // zink 의 일부 reorder 최적화 비활성 (안정성)
+            "LIBGL_KOPPER_DRI2" to "1",       // kopper(=zink WSI) 가 DRI2 없이 동작
+            "LIBGL_DRI3_DISABLE" to "1",      // DRI3 도 끔
+            "GALLIUM_HUD" to "",
+        )
+    ),
     MOBILEGLUES(
         id = "mobileglues",
         displayName = "MobileGlues (GL 4.x)",
@@ -24,32 +48,6 @@ enum class Renderer(
         emoji = "📱",
         extraEnv = mapOf()
     ),
-//    ZINK(
-//        id = "zink",
-//        displayName = "Zink (Vulkan)",
-//        description = "Vulkan을 OpenGL로 변환. 모던 GPU에서 가장 호환성 좋음. 1.17+ 추천.",
-//        pojavRenderer = "vulkan_zink",
-//        libglName = "libltw.so",
-//        libglString = "VulkanGL",
-//        libglEs = "3",
-//        emoji = "🌋",
-//        extraEnv = mapOf(
-//            "MESA_GL_VERSION_OVERRIDE" to "4.6",
-//            "MESA_GLSL_VERSION_OVERRIDE" to "460",
-//            "force_glsl_extensions_warn" to "true",
-//            "allow_higher_compat_version" to "true",
-//            "allow_glsl_extension_directive_midshader" to "true",
-//            "MESA_LOADER_DRIVER_OVERRIDE" to "zink",
-//            "GALLIUM_DRIVER" to "zink",
-////            "POJAV_LOAD_TURNIP" to "1"  // Adreno면 Turnip 시도
-//            "MESA_VK_WSI_PRESENT_MODE" to "mailbox",
-//            "VK_ICD_FILENAMES" to "",         // 시스템 ICD 무시
-//            "ZINK_DEBUG" to "noreorder",      // zink 의 일부 reorder 최적화 비활성 (안정성)
-//            "LIBGL_KOPPER_DRI2" to "1",       // kopper(=zink WSI) 가 DRI2 없이 동작
-//            "LIBGL_DRI3_DISABLE" to "1",      // DRI3 도 끔
-//            "GALLIUM_HUD" to "",
-//        )
-//    ),
     HOLY_GL4ES(
         id = "gl4es",
         displayName = "Holy-GL4ES",
@@ -139,7 +137,7 @@ enum class Renderer(
     }
 
     companion object {
-        fun fromId(id: String?): Renderer = entries.firstOrNull { it.id == id } ?: MOBILEGLUES
+        fun fromId(id: String?): Renderer = entries.firstOrNull { it.id == id } ?: ZINK
     }
 }
 

@@ -27,6 +27,7 @@
 #include "utils.h"
 #include "ctxbridges/bridge_tbl.h"
 #include "ctxbridges/osm_bridge.h"
+#include <vulkan/vulkan.h>
 
 #define GLFW_CLIENT_API 0x22001
 /* Consider GLFW_NO_API as Vulkan API */
@@ -59,7 +60,6 @@ struct PotatoBridge potatoBridge;
 #define RENDERER_GL4ES 1
 #define RENDERER_VK_ZINK 2
 #define RENDERER_VULKAN 4
-#define RENDERER_VK_LTW 5
 
 EXTERNAL_API void pojavTerminate() {
     printf("EGLBridge: Terminating\n");
@@ -114,10 +114,6 @@ JNIEXPORT void JNICALL Java_net_kdt_pojavlaunch_utils_JREUtils_setupBridgeWindow
 JNIEXPORT void JNICALL
 Java_net_kdt_pojavlaunch_utils_JREUtils_releaseBridgeWindow(ABI_COMPAT JNIEnv *env, ABI_COMPAT jclass clazz) {
     ANativeWindow_release(pojav_environ->pojavWindow);
-}
-
-EXTERNAL_API void* pojavGetCurrentContext() {
-    return br_get_current();
 }
 
 #define ADRENO_POSSIBLE
@@ -178,6 +174,77 @@ void load_vulkan() {
     set_vulkan_ptr(vulkan_ptr);
 }
 
+
+
+static bool probe_vulkan_works() {
+    void* h = dlopen("libvulkan.so", RTLD_NOW);
+    if (!h) { printf("Zink probe: libvulkan.so 못 찾음\n"); return false; }
+
+    typedef PFN_vkVoidFunction (*PFN_vkGetInstanceProcAddr_t)(VkInstance, const char*);
+    typedef VkResult (*PFN_vkCreateInstance_t)(const VkInstanceCreateInfo*, const VkAllocationCallbacks*, VkInstance*);
+
+    PFN_vkGetInstanceProcAddr_t gipa = (PFN_vkGetInstanceProcAddr_t)dlsym(h, "vkGetInstanceProcAddr");
+    PFN_vkCreateInstance_t createInst = (PFN_vkCreateInstance_t)dlsym(h, "vkCreateInstance");
+    if (!gipa || !createInst) { dlclose(h); return false; }
+
+    VkApplicationInfo app = {0};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ci.pApplicationInfo = &app;
+
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInst(&ci, NULL, &inst) != VK_SUCCESS) {
+        printf("Zink probe: vkCreateInstance 실패\n");
+        dlclose(h); return false;
+    }
+
+    PFN_vkEnumeratePhysicalDevices enumPD =
+            (PFN_vkEnumeratePhysicalDevices)gipa(inst, "vkEnumeratePhysicalDevices");
+    PFN_vkGetPhysicalDeviceFeatures getFeats =
+            (PFN_vkGetPhysicalDeviceFeatures)gipa(inst, "vkGetPhysicalDeviceFeatures");
+    PFN_vkGetPhysicalDeviceProperties getProps =
+            (PFN_vkGetPhysicalDeviceProperties)gipa(inst, "vkGetPhysicalDeviceProperties");
+    PFN_vkDestroyInstance destInst =
+            (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
+
+    uint32_t deviceCount = 0;
+    enumPD(inst, &deviceCount, NULL);
+    if (deviceCount == 0) {
+        printf("Zink probe: no Vulkan physical devices\n");
+        if (destInst) destInst(inst, NULL);
+        dlclose(h); return false;
+    }
+
+    if (deviceCount > 8) deviceCount = 8;
+    VkPhysicalDevice phys[8];
+    enumPD(inst, &deviceCount, phys);
+
+    bool any_compatible = false;
+    for (uint32_t i = 0; i < deviceCount; i++) {
+        VkPhysicalDeviceProperties props = {0};
+        VkPhysicalDeviceFeatures   feats = {0};
+        getProps(phys[i], &props);
+        getFeats(phys[i], &feats);
+        bool ok = true;
+        printf("Zink probe: device #%u (%s) logicOp=%d fillModeNonSolid=%d shaderClipDistance=%d -> %s\n",
+               i, props.deviceName,
+               feats.logicOp, feats.fillModeNonSolid, feats.shaderClipDistance,
+               ok ? "COMPATIBLE" : "INCOMPATIBLE");
+        if (ok) { any_compatible = true; }
+    }
+
+    if (destInst) destInst(inst, NULL);
+    dlclose(h);
+
+    if (!any_compatible) {
+        printf("Zink probe: no Vulkan device meets Zink base requirements\n");
+    }
+    return any_compatible;
+}
+
+
 int pojavInitOpenGL() {
     // Only affects GL4ES as of now
     const char *forceVsync = getenv("FORCE_VSYNC");
@@ -197,29 +264,52 @@ int pojavInitOpenGL() {
         set_gl_bridge_tbl();
         printf("OpenGL: set_gl_bridge_tbl() done (GL4ES path)\n");
     } else if (strcmp(renderer, "vulkan_zink") == 0) {
-        pojav_environ->config_renderer = RENDERER_VK_ZINK;
-        load_vulkan();
-        setenv("GALLIUM_DRIVER", "zink", 1);
-        // zink가 OpenGL 4.6 보고하게 강제
-        if (!getenv("MESA_GL_VERSION_OVERRIDE"))     setenv("MESA_GL_VERSION_OVERRIDE", "4.6", 1);
-        if (!getenv("MESA_GLSL_VERSION_OVERRIDE"))   setenv("MESA_GLSL_VERSION_OVERRIDE", "460", 1);
-        if (!getenv("force_glsl_extensions_warn"))   setenv("force_glsl_extensions_warn", "true", 1);
-        if (!getenv("allow_higher_compat_version"))  setenv("allow_higher_compat_version", "true", 1);
-        if (!getenv("allow_glsl_extension_directive_midshader"))
-            setenv("allow_glsl_extension_directive_midshader", "true", 1);
-        if (!getenv("MESA_LOADER_DRIVER_OVERRIDE"))  setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
-        set_osm_bridge_tbl();
-        printf("OpenGL: set_osm_bridge_tbl() done (Zink path)\n");
-    } else if (strcmp(renderer, "ltw") == 0) {
-        pojav_environ->config_renderer = RENDERER_VK_LTW;
-        // LTW 도 EGL/GLES 기반 → gl_bridge 그대로 사용
-        set_gl_bridge_tbl();
-        printf("OpenGL: set_gl_bridge_tbl() done (LTW path)\n");
-    } else {
+        if (!probe_vulkan_works()) {
+            printf("OpenGL: Vulkan/Zink unavailable on this device — falling back to GL4ES\n");
+            // ★ 환경변수도 일관되게 — 후속 코드가 POJAV_RENDERER를 다시 읽는 경우 대비
+            printf("OpenGL: Vulkan/Zink unavailable on this device — falling back to GL4ES\n");
+            setenv("POJAV_RENDERER", "opengles2", 1);
+            setenv("LIBGL_NAME",     "libgl4es_114.so", 1);
+            setenv("DLOPEN",         "libgl4es_114.so", 1);
+            setenv("LIBGL_ES",       "2",         1);
+            unsetenv("GALLIUM_DRIVER");
+            unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
+            pojav_environ->config_renderer = RENDERER_GL4ES;
+            set_gl_bridge_tbl();
+
+            printf("OpenGL: switched to GL4ES bridge table\n");
+        } else {
+            pojav_environ->config_renderer = RENDERER_VK_ZINK;
+            load_vulkan();
+            setenv("GALLIUM_DRIVER", "zink", 1);
+            // zink가 OpenGL 4.6 보고하게 강제
+            if (!getenv("MESA_GL_VERSION_OVERRIDE"))     setenv("MESA_GL_VERSION_OVERRIDE", "4.6", 1);
+            if (!getenv("MESA_GLSL_VERSION_OVERRIDE"))   setenv("MESA_GLSL_VERSION_OVERRIDE", "460", 1);
+            if (!getenv("force_glsl_extensions_warn"))   setenv("force_glsl_extensions_warn", "true", 1);
+            if (!getenv("allow_higher_compat_version"))  setenv("allow_higher_compat_version", "true", 1);
+            if (!getenv("allow_glsl_extension_directive_midshader"))
+                setenv("allow_glsl_extension_directive_midshader", "true", 1);
+            if (!getenv("MESA_LOADER_DRIVER_OVERRIDE"))  setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
+            set_osm_bridge_tbl();
+            setenv("MESA_GL_MAX_TEXTURE_SIZE", "4096", 1);  // 또는 2048
+
+            setenv("ZINK_DESCRIPTORS", "lazy", 1);          // 이미 있을 수도
+            setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);   // Mali Vulkan이 1.2 일부 기능 불안정 시
+            setenv("ZINK_DEBUG", "compact", 1);             // descriptor 압축 모드
+            setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);  // present 모드 고정 (mailbox 등에서 죽으면)
+
+            printf("OpenGL: set_osm_bridge_tbl() done (Zink path)\n");
+
+            set_osm_bridge_tbl();
+        }
+    }  else {
         printf("OpenGL: unknown renderer '%s', defaulting to vulkan_zink\n", renderer);
         pojav_environ->config_renderer = RENDERER_VK_ZINK;
         load_vulkan();
-        setenv("GALLIUM_DRIVER", "zink", 1);
+        setenv("ZINK_DESCRIPTORS", "lazy", 1);          // 이미 있을 수도
+        setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);   // Mali Vulkan이 1.2 일부 기능 불안정 시
+        setenv("ZINK_DEBUG", "compact", 1);             // descriptor 압축 모드
+        setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);  // present 모드 고정 (mailbox 등에서 죽으면)
         set_osm_bridge_tbl();
         printf("OpenGL: set_osm_bridge_tbl() done (fallback path)\n");
     }
@@ -289,14 +379,36 @@ EXTERNAL_API void pojavSetWindowHint(int hint, int value) {
     }
 }
 
+extern void pojavBootDispatchFramebufferSize(void);
+
 EXTERNAL_API void pojavSwapBuffers() {
+    static int counter = 0;
+    if ((++counter % 60) == 0) {
+        printf("pojavSwapBuffers: tid=%d counter=%d\n", gettid(), counter);
+    }
+
+    pojavBootDispatchFramebufferSize();   // ★ 추가: 첫 swap 직전 한 번 발화
+
     br_swap_buffers();
 }
 
+EXTERNAL_API void* pojavGetCurrentContext() {
+    void* current = br_get_current();
+
+    // ★ OSMesa 경로일 때: 이 스레드에 context가 안 묶여 있으면 강제 rebind
+    if (current != NULL && pojav_environ->config_renderer == RENDERER_VK_ZINK) {
+        OSMesaContext osmCur = OSMesaGetCurrentContext_p ? OSMesaGetCurrentContext_p() : NULL;
+        if (osmCur == NULL) {
+            printf("pojavGetCurrentContext: rebinding OSMesa to current thread (tid=%d)\n",
+                   gettid());
+            br_make_current((basic_render_window_t*)current);
+        }
+    }
+    return current;
+}
 
 EXTERNAL_API void pojavMakeCurrent(void* window) {
-    printf("pojavMakeCurrent called: window=%p br_make_current=%p\n",
-           window, (void*)br_make_current);
+    printf("pojavMakeCurrent: tid=%d window=%p\n", gettid(), window);
     if (br_make_current == NULL) {
         printf("pojavMakeCurrent: br_make_current is NULL!\n");
         return;
@@ -305,8 +417,8 @@ EXTERNAL_API void pojavMakeCurrent(void* window) {
 }
 
 EXTERNAL_API void* pojavCreateContext(void* contextSrc) {
-    printf("pojavCreateContext called: contextSrc=%p br_init_context=%p\n",
-           contextSrc, (void*)br_init_context);
+    printf("pojavCreateContext: tid=%d contextSrc=%p\n", gettid(), contextSrc);
+
     if (pojav_environ->config_renderer == RENDERER_VULKAN) {
         return (void *) pojav_environ->pojavWindow;
     }
@@ -343,4 +455,3 @@ Java_org_lwjgl_vulkan_VK_getVulkanDriverHandle(ABI_COMPAT JNIEnv *env, ABI_COMPA
 EXTERNAL_API void pojavSwapInterval(int interval) {
     br_swap_interval(interval);
 }
-

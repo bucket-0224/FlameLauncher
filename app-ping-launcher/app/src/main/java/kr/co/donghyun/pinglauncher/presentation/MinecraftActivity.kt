@@ -2,12 +2,14 @@ package kr.co.donghyun.pinglauncher.presentation
 
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.input.InputManager.InputDeviceListener
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.Surface
 import android.view.View
+import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
@@ -29,7 +31,6 @@ import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.pinglauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.pinglauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftJREPreparer
-import kr.co.donghyun.pinglauncher.presentation.util.renderer.VirGLLauncher
 import org.lwjgl.glfw.GLFW.GLFW_KEY_A
 import org.lwjgl.glfw.GLFW.GLFW_KEY_D
 import org.lwjgl.glfw.GLFW.GLFW_KEY_E
@@ -60,6 +61,11 @@ class MinecraftActivity : BaseActivity() {
     private external fun nativeSetupBridgeWindow(surface: Surface)
     private external fun nativeTrySetupShowingWindow(): Boolean
     private external fun nativeDumpInputState()
+
+    private external fun nativeSendKey(key: Int, scancode: Int, action: Int, mods: Int)
+
+    private external fun nativeSendMouseButton(button: Int, action: Int, mods: Int)
+    private external fun nativeSendCursorPos(x: Float, y: Float)
 
 
     // Intent로 전달받은 버전 정보
@@ -225,6 +231,21 @@ class MinecraftActivity : BaseActivity() {
         im.registerInputDeviceListener(inputDeviceListener, null)
     }
 
+    private fun canUseZink(): Boolean {
+        // Vulkan 1.1 헤더 존재 확인
+        val hasVk11 = packageManager.hasSystemFeature(
+            PackageManager.FEATURE_VULKAN_HARDWARE_VERSION,
+            0x401000  // VK_API_VERSION_1_1
+        )
+        if (!hasVk11) {
+            Log.w("PING_LAUNCHER", "Zink probe: Vulkan 1.1 system feature 없음")
+            return false
+        }
+        // 추가로 vkEnumeratePhysicalDevices 가 1개 이상 리턴하는지 확인하면 더 정확하지만
+        // 일단 system feature 만으로도 에뮬레이터는 거의 다 걸러짐
+        return true
+    }
+
     /** 현재 물리 키보드 또는 마우스가 연결되어 있는지 */
     private fun hasHardwareKeyboardOrMouse(): Boolean {
         val im = getSystemService(INPUT_SERVICE)
@@ -284,10 +305,27 @@ class MinecraftActivity : BaseActivity() {
             return
         }
 
+
+
         // ── 렌더러별 .so 먼저 로드 (preloadAwtStubs 이전에) ───────────────
         // preloadAwtStubs 같은 JNI 바인딩 함수에서 실패가 나더라도,
         // 핵심 .so 들은 이미 메모리에 올라와 있어야 JVM 부팅이 가능하다.
-        val renderer = RendererManager.load(this)
+
+        var renderer = RendererManager.load(this)
+
+//        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
+//            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
+//            runOnUiThread {
+//                Toast.makeText(
+//                    this,
+//                    "이 기기의 GPU는 Zink 미지원 — GL4ES로 전환합니다",
+//                    Toast.LENGTH_LONG
+//                ).show()
+//            }
+//            renderer = Renderer.fromId("gl4es")  // 또는 "gl4es" — 둘 중 가용한 것
+//        }
+
+
         when (renderer.id) {
             "mobileglues" -> {
                 // info_getter 가 먼저! libmobileglues.so 의 의존성임
@@ -303,15 +341,6 @@ class MinecraftActivity : BaseActivity() {
                 if (loadSoSafely(File(nativesDir, "libOSMesa.so"), required = true)) {
                     Log.d("PING_LAUNCHER", "✅ 렌더러: Zink")
                 }
-            }
-            "ltw" -> {
-                try {
-                    System.loadLibrary("GLESv2")
-                    Log.d("PING_LAUNCHER", "✅ libGLESv2.so preloaded for LTW")
-                } catch (e: Throwable) {
-                    Log.w("PING_LAUNCHER", "⚠️ libGLESv2.so preload 실패: ${e.message}")
-                }
-                Log.d("PING_LAUNCHER", "✅ 렌더러: LTW (LWJGL 측에서 자체 로드)")
             }
             else -> {
                 // gl4es / gl4es_desktop / holy_gl4es
@@ -760,34 +789,23 @@ class MinecraftActivity : BaseActivity() {
         return writer.toByteArray()
     }
     internal fun sendMouseButton(button: Int, action: Int) {
-        try {
-            Class.forName("org.lwjgl.glfw.CallbackBridge")
-                .getMethod("nativeSendMouseButton", Int::class.java, Int::class.java, Int::class.java)
-                .invoke(null, button, action, 0)
-        } catch (_: Exception) {}
+        Log.d("PING_LAUNCHER", "sendMouseButton: btn=$button action=$action")
+        nativeSendMouseButton(button, action, 0)
+    }
+
+    internal fun sendCursorPos(x: Float, y: Float) {
+        Log.d("PING_LAUNCHER", "sendCursorPos: x=$x y=$y")
+        nativeSendCursorPos(x, y)
     }
 
     internal fun sendKey(glfwKeyCode: Int, action: Int) {
-        Log.d("PING_LAUNCHER", "sendKey 호출: $glfwKeyCode, action=$action")
 
-        try {
-            val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
+        Log.d("PING_LAUNCHER", "sendKey: $glfwKeyCode action=$action")
 
-            // ★ InputReady 강제 ON (진단 + 임시 수정)
-            cb.getMethod("nativeSetInputReady", Boolean::class.java).invoke(null, true)
+        val scancode = getScancode(glfwKeyCode)
 
-            val scancode = getScancode(glfwKeyCode)
-            cb.getMethod("nativeSendKey", Int::class.java, Int::class.java, Int::class.java, Int::class.java)
-                .invoke(null, glfwKeyCode, scancode, action, 0)
-//            if (action == 1) {
-//                val keyChar = glfwKeyToChar(glfwKeyCode)
-//                if (keyChar != '\u0000') {
-//                    cb.getMethod("nativeSendChar", Char::class.java).invoke(null, keyChar)
-//                }
-//            }
-        } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "sendKey 예외", e)
-        }
+        nativeSendKey(glfwKeyCode, scancode, action, 0)
+
     }
 
 
@@ -1203,6 +1221,13 @@ class MinecraftActivity : BaseActivity() {
 // ── Modern Forge fallback: 모듈 안 로드돼도 reflection 통과시키는 ALL-UNNAMED opens ──
         val modernForgeArgs: Array<String> = if (isModularJre && isModernLoader) {
             arrayOf(
+                // ── Forge 조기 로딩 창(early window) 비활성화 ──
+                // OSMesa 환경에서 Forge의 fmlearlywindow 가 GL 컨텍스트를 직접 만들려다 실패하면서
+                // ImmediateWindowHandler → RuntimeDistCleaner <clinit> 연쇄 실패 → "Missing RuntimeDistCleaner".
+                // early window 를 끄면 그 경로 자체를 타지 않아 정상 부팅됨.
+                "-Dfml.earlyWindowControl=false",
+                "-Dfml.earlyprogresswindow=false",   // 구버전 호환 (이름이 바뀜)
+                "-Djava.awt.headless=true",
                 "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang=ALL-UNNAMED",
@@ -1217,24 +1242,25 @@ class MinecraftActivity : BaseActivity() {
         Log.d("PING_LAUNCHER",
             "isModernForge=$isModernLoader metaJvmArgs(resolved)=${metaJvmArgs.toList()}")
 
-        val rendererPreference = RendererManager.load(this@MinecraftActivity)
-        // MinecraftActivity.startMinecraft 안에서
+        var renderer = RendererManager.load(this)
 
-        Log.d("PING_LAUNCHER", "isLegacy=$isLegacy, mcDir=${mcDir.absolutePath}")
+//        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
+//            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
+//            runOnUiThread {
+//                Toast.makeText(
+//                    this,
+//                    "이 기기의 GPU는 Zink 미지원 — GL4ES로 전환합니다",
+//                    Toast.LENGTH_LONG
+//                ).show()
+//            }
+//            renderer = Renderer.fromId("gl4es")  // 또는 "gl4es" — 둘 중 가용한 것
+//        }
 
-        // Legacy MC 는 fixed-function GL 필요 — MobileGlues 로 불가
-        val renderer = if (isLegacy && rendererPreference.id == "mobileglues") {
-            Log.w("PingLauncherJVM", "Legacy $versionId — forcing GL4ES instead of MobileGlues")
-            Renderer.fromId("holy_gl4es")  // 또는 "gl4es" / "gl4es_desktop" 중 enum 에 있는 것
-        } else {
-            rendererPreference
-        }
 
         val glLibName = when (renderer.id) {
             "mobileglues" -> "libmobileglues.so"
-            "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
+            "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
-            "ltw"  -> "libltw.so"     // ★ 추가
             else   -> "libgl4es_114.so"
         }
 
@@ -1309,7 +1335,17 @@ class MinecraftActivity : BaseActivity() {
             "-Dsun.net.inetaddr.negative.ttl=0"
         )
 
+        // ── JNI 디버그 인자 (간헐적 Scudo 힙 손상 원인 추적용) ──
+        // -Xcheck:jni 로 추적한 결과 JNI 는 무죄였고, 원인은 String Deduplication(GC)로 확인됨.
+        // 추적이 끝났으므로 false. 다시 JNI 디버깅이 필요하면 true 로.
+        val ENABLE_JNI_CHECK = false
+        val jniDebugArgs = if (ENABLE_JNI_CHECK)
+            arrayOf("-Xcheck:jni")
+        else
+            emptyArray()
+
         val jvmArgs = jvm8CompatArgs +
+                jniDebugArgs +
                 jvmSettings.toJvmArgArray(
                     context = this,
                     mcDir = mcDir,
@@ -1396,16 +1432,10 @@ class MinecraftActivity : BaseActivity() {
                 }
 
                 val launcher = JavaNativeLauncher()
-                val renderer = RendererManager.load(this@MinecraftActivity)
                 val rendererEnv = renderer.buildEnv(
                     cacheDir = applicationContext.cacheDir.absolutePath,
                     nativeDir = applicationInfo.nativeLibraryDir
                 ).toMutableMap().apply {
-                    if (renderer.id == "virgl") {
-                        this["VTEST_SOCKET_NAME"] =
-                            VirGLLauncher.socketPath(this@MinecraftActivity)
-                    }
-
                     if (jvmSettings.unlockFps) {
                         this["FORCE_VSYNC"]       = "false"
                         this["POJAV_VSYNC"]       = "0"
@@ -1447,25 +1477,25 @@ class MinecraftActivity : BaseActivity() {
             val deadline = System.currentTimeMillis() + 120_000
             var attempts = 0
             var success = false
+            // 초기에는 50ms 간격, 한 번 잡으면 5초 간격으로 재확인
+            var interval = 50L
 
             while (System.currentTimeMillis() < deadline) {
                 attempts++
                 try {
                     if (nativeTrySetupShowingWindow()) {
-                        Log.d("PING_LAUNCHER", "✅ showingWindow 세팅 완료 (시도 $attempts)")
-                        success = true
-                        // 한 번 성공해도 MC 가 풀스크린/리사이즈 하면 새 window 가 생길 수 있어서
-                        // 5초마다 재확인. 같은 핸들이면 native 쪽이 어차피 노옵.
-                        Thread.sleep(5000)
-                        continue
-                    }
-                    if (attempts % 20 == 0) {
+                        if (!success) {
+                            Log.d("PING_LAUNCHER", "✅ showingWindow 첫 세팅 (시도 $attempts, 경과 ${attempts * 50}ms 이내)")
+                            success = true
+                            interval = 5000L   // 잡힌 뒤엔 느슨하게
+                        }
+                    } else if (attempts % 40 == 0 && !success) {
                         Log.d("PING_LAUNCHER", "🔵 대기중... (시도 $attempts)")
                     }
                 } catch (e: Throwable) {
                     Log.w("PING_LAUNCHER", "워치독 예외: ${e.message}")
                 }
-                Thread.sleep(500)
+                Thread.sleep(interval)
             }
             Log.d("PING_LAUNCHER", "🔵 워치독 종료 (success=$success)")
         }.apply { isDaemon = true; start() }
@@ -1538,8 +1568,8 @@ class MinecraftActivity : BaseActivity() {
         // 물리 키보드 / 외장 키보드만 가로채기
         // (소프트 IME 는 deviceId == -1 또는 KeyCharacterMap.VIRTUAL_KEYBOARD)
         val isPhysical =
-                (event.source and InputDevice.SOURCE_KEYBOARD) != 0 &&
-                event.deviceId != android.view.KeyCharacterMap.VIRTUAL_KEYBOARD
+            (event.source and InputDevice.SOURCE_KEYBOARD) != 0 &&
+                    event.deviceId != android.view.KeyCharacterMap.VIRTUAL_KEYBOARD
 
         if (!isPhysical) return false
 
@@ -1635,8 +1665,10 @@ class MinecraftActivity : BaseActivity() {
 
     private fun isProcessorOnlyJar(file: File): Boolean {
         val name = file.name
-        // mergetool 은 두 종류 — "*-api.jar" 는 게임 부팅에도 필요하니 보존
-        if (name.startsWith("mergetool", ignoreCase = true) && name.endsWith("-api.jar")) return false
+        // mergetool 은 두 종류 — "mergetool-api-*.jar" 는 distmarker(Dist/OnlyIn) 등 게임 부팅 필수
+        // 클래스를 담고 있으므로 보존. (파일명이 "mergetool-api-1.0.jar" 처럼 버전이 붙어
+        //  -api.jar 로 끝나지 않으므로 startsWith 로 매칭해야 함)
+        if (name.startsWith("mergetool-api", ignoreCase = true)) return false
         return PROCESSOR_ONLY_JAR_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
     }
 

@@ -58,7 +58,6 @@ data class JvmSettings(
                 "-XX:+DisableExplicitGC",            // 모드가 System.gc() 호출해도 무시
                 "-XX:+AlwaysPreTouch",               // heap 페이지 미리 다 터치 → 런타임 page fault 제거
                 "-XX:+ParallelRefProcEnabled",
-                "-XX:+UseStringDeduplication",       // G1 의 중복 String 자동 dedupe
                 "-XX:G1MixedGCCountTarget=4",
                 "-XX:InitiatingHeapOccupancyPercent=15",
                 "-XX:G1RSetUpdatingPauseTimePercent=5",
@@ -74,7 +73,6 @@ data class JvmSettings(
             "mobileglues" -> "libmobileglues.so"
             "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
-            "ltw"  -> "libltw.so"     // ★ 추가
             else   -> "libgl4es_114.so"
         }
 
@@ -99,7 +97,7 @@ data class JvmSettings(
 
 
 
-        if (renderer.id == "mobileglues" || renderer.id == "ltw") {
+        if (renderer.id == "mobileglues") {
             args += listOf(
                 "-Dnet.caffeinemc.sodium.checks.skip=true",
                 "-Dsodium.checks.issue2561=false"

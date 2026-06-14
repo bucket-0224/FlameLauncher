@@ -27,6 +27,7 @@ public class CallbackBridge {
     public static native void nativeSendScreenSize(int width, int height);
     public static native void nativeSetGrabbing(boolean grabbing);
     public static native boolean nativeSetInputReady(boolean inputReady);
+    public static native void nativeSendData(boolean isAndroid, int type, String data);
     public static native String nativeClipboard(int action, byte[] copySrc);
 
     // ─── JVM → Android 콜백 (네이티브가 이 메서드들을 호출) ───────────
@@ -73,6 +74,10 @@ public class CallbackBridge {
         } catch (Throwable t) {
             Log.w(TAG, "onGrabStateChanged dispatch failed", t);
         }
+    }
+
+    public static void sendData(int type, String data) {
+        nativeSendData(true, type, data);
     }
 
     public static void onGrabStateChanged(boolean grabbing, boolean ignoreSameValue) {
