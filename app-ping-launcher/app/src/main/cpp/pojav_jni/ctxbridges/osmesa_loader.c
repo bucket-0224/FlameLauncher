@@ -6,6 +6,7 @@
 #include <dlfcn.h>
 #include "loader_dlopen.h"
 #include "osmesa_loader.h"
+#include "log.h"
 
 GLboolean (*OSMesaMakeCurrent_p) (OSMesaContext ctx, void *buffer, GLenum type,
                                          GLsizei width, GLsizei height);
@@ -15,6 +16,7 @@ void (*OSMesaDestroyContext_p) (OSMesaContext ctx);
 void (*OSMesaPixelStore_p) ( GLint pname, GLint value );
 GLubyte* (*glGetString_p) (GLenum name);
 void (*glFinish_p) (void);
+void (*glFlush_p) (void);   // ★ 추가 — 이게 빠지면 정의 없는 심볼로 링크 실패
 void (*glClearColor_p) (GLclampf red, GLclampf green, GLclampf blue, GLclampf alpha);
 void (*glClear_p) (GLbitfield mask);
 void (*glReadPixels_p) (GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void * data);
@@ -44,6 +46,11 @@ bool dlsym_OSMesa() {
     glClearColor_p = OSMesaGetProcAddress_p("glClearColor");
     glClear_p = OSMesaGetProcAddress_p("glClear");
     glFinish_p = OSMesaGetProcAddress_p("glFinish");
+    glFinish_p = OSMesaGetProcAddress_p("glFinish");
+    glFlush_p  = OSMesaGetProcAddress_p("glFlush");
     glReadPixels_p = OSMesaGetProcAddress_p("glReadPixels");
+
+
+    LOGI("dlsym_OSMesa: glFinish_p=%p glFlush_p=%p", (void*)glFinish_p, (void*)glFlush_p);
     return true;
 }

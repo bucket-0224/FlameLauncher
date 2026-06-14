@@ -71,6 +71,41 @@ static jmethodID g_fbSizeInvoke = NULL;
 static jmethodID g_winSizeInvoke = NULL;
 static jmethodID g_cursorEnterInvoke = NULL;
 
+// input_bridge_v3.c 상단 헬퍼 추가
+static jclass findAppClass(JNIEnv* env, const char* name) {
+    // 1) 평범하게 시도
+    jclass c = (*env)->FindClass(env, name);
+    if (c != NULL) return c;
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    // 2) 이미 잡아둔 GLFW 클래스의 클래스로더로 로드
+    //    (vmGlfwClass 는 JNI_OnLoad 의 runtime VM 분기에서 NewGlobalRef 됨)
+    if (pojav_environ->vmGlfwClass == NULL) return NULL;
+
+    jclass classClass = (*env)->FindClass(env, "java/lang/Class");
+    jmethodID getCL = (*env)->GetMethodID(env, classClass, "getClassLoader",
+                                          "()Ljava/lang/ClassLoader;");
+    jobject loader = (*env)->CallObjectMethod(env, pojav_environ->vmGlfwClass, getCL);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return NULL; }
+    if (loader == NULL) return NULL;
+
+    jclass clClass = (*env)->FindClass(env, "java/lang/ClassLoader");
+    jmethodID loadClass = (*env)->GetMethodID(env, clClass, "loadClass",
+                                              "(Ljava/lang/String;)Ljava/lang/Class;");
+
+    // FindClass 는 'org/lwjgl/...' 슬래시 표기, loadClass 는 'org.lwjgl...' 점 표기
+    char dotted[256];
+    size_t n = strlen(name);
+    if (n >= sizeof(dotted)) return NULL;
+    for (size_t i = 0; i <= n; i++) dotted[i] = (name[i] == '/') ? '.' : name[i];
+
+    jstring jname = (*env)->NewStringUTF(env, dotted);
+    jclass result = (jclass)(*env)->CallObjectMethod(env, loader, loadClass, jname);
+    (*env)->DeleteLocalRef(env, jname);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return NULL; }
+    return result;
+}
+
 
 jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
     if (pojav_environ->dalvikJavaVMPtr == NULL) {
@@ -199,20 +234,20 @@ static JNIEnv* getRuntimeEnv(void) {
 static jboolean lazyInitOther(JNIEnv* env) {
     if (g_fbSizeInvoke && g_winSizeInvoke && g_cursorEnterInvoke) return JNI_TRUE;
     if (!g_cbGet) {
-        jclass cb = (*env)->FindClass(env, "org/lwjgl/system/Callback");
+        jclass cb = findAppClass(env, "org/lwjgl/system/Callback");
         if (!cb) { (*env)->ExceptionClear(env); return JNI_FALSE; }
         g_cbClass = (*env)->NewGlobalRef(env, cb);
         g_cbGet = (*env)->GetStaticMethodID(env, cb, "get", "(J)Lorg/lwjgl/system/CallbackI;");
     }
-    jclass fb = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWFramebufferSizeCallbackI");
+    jclass fb = findAppClass(env, "org/lwjgl/glfw/GLFWFramebufferSizeCallbackI");
     if (fb) g_fbSizeInvoke = (*env)->GetMethodID(env, fb, "invoke", "(JII)V");
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
 
-    jclass ws = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWWindowSizeCallbackI");
+    jclass ws = findAppClass(env, "org/lwjgl/glfw/GLFWWindowSizeCallbackI");
     if (ws) g_winSizeInvoke = (*env)->GetMethodID(env, ws, "invoke", "(JII)V");
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
 
-    jclass ce = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWCursorEnterCallbackI");
+    jclass ce = findAppClass(env, "org/lwjgl/glfw/GLFWCursorEnterCallbackI");
     if (ce) g_cursorEnterInvoke = (*env)->GetMethodID(env, ce, "invoke", "(JZ)V");
     if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
 
@@ -273,7 +308,7 @@ static jboolean lazyInitCpDirect(JNIEnv* env) {
     // Callback class 는 lazyInitMbDirect 에서 이미 init 됐다고 가정
     if (!g_cbGet) {
         // 안전하게 한 번 더
-        jclass cb = (*env)->FindClass(env, "org/lwjgl/system/Callback");
+        jclass cb = findAppClass(env, "org/lwjgl/system/Callback");
         if (!cb) {
             if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
             return JNI_FALSE;
@@ -281,7 +316,7 @@ static jboolean lazyInitCpDirect(JNIEnv* env) {
         g_cbClass = (*env)->NewGlobalRef(env, cb);
         g_cbGet = (*env)->GetStaticMethodID(env, cb, "get", "(J)Lorg/lwjgl/system/CallbackI;");
     }
-    jclass cp = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWCursorPosCallbackI");
+    jclass cp = findAppClass(env, "org/lwjgl/glfw/GLFWCursorPosCallbackI");
     if (!cp) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         LOGI("[CP_DIRECT] FindClass failed"); return JNI_FALSE;
@@ -335,7 +370,7 @@ static void dispatchCursorPosDirect(jdouble x, jdouble y) {
 
 static jboolean lazyInitMbDirect(JNIEnv* env) {
     if (g_cbGet && g_mbInvoke) return JNI_TRUE;
-    jclass cb = (*env)->FindClass(env, "org/lwjgl/system/Callback");
+    jclass cb = findAppClass(env, "org/lwjgl/system/Callback");   // ★ 교체
     if (!cb) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         LOGI("[MB_DIRECT] FindClass Callback failed"); return JNI_FALSE;
@@ -346,7 +381,7 @@ static jboolean lazyInitMbDirect(JNIEnv* env) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         LOGI("[MB_DIRECT] GetStaticMethodID Callback.get failed"); return JNI_FALSE;
     }
-    jclass mb = (*env)->FindClass(env, "org/lwjgl/glfw/GLFWMouseButtonCallbackI");
+    jclass mb = findAppClass(env, "org/lwjgl/glfw/GLFWMouseButtonCallbackI");  // ★ 교체
     if (!mb) {
         if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
         LOGI("[MB_DIRECT] FindClass GLFWMouseButtonCallbackI failed"); return JNI_FALSE;
@@ -1010,4 +1045,3 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetCursorShape(
     LOGI("[NSD] SetCursorShape shape=%d", shape);
     // optional: implement if MC sets cursor shapes
 }
-
