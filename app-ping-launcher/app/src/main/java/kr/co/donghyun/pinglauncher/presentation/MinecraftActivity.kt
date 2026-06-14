@@ -1221,6 +1221,13 @@ class MinecraftActivity : BaseActivity() {
 // ── Modern Forge fallback: 모듈 안 로드돼도 reflection 통과시키는 ALL-UNNAMED opens ──
         val modernForgeArgs: Array<String> = if (isModularJre && isModernLoader) {
             arrayOf(
+                // ── Forge 조기 로딩 창(early window) 비활성화 ──
+                // OSMesa 환경에서 Forge의 fmlearlywindow 가 GL 컨텍스트를 직접 만들려다 실패하면서
+                // ImmediateWindowHandler → RuntimeDistCleaner <clinit> 연쇄 실패 → "Missing RuntimeDistCleaner".
+                // early window 를 끄면 그 경로 자체를 타지 않아 정상 부팅됨.
+                "-Dfml.earlyWindowControl=false",
+                "-Dfml.earlyprogresswindow=false",   // 구버전 호환 (이름이 바뀜)
+                "-Djava.awt.headless=true",
                 "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang=ALL-UNNAMED",
@@ -1328,7 +1335,17 @@ class MinecraftActivity : BaseActivity() {
             "-Dsun.net.inetaddr.negative.ttl=0"
         )
 
+        // ── JNI 디버그 인자 (간헐적 Scudo 힙 손상 원인 추적용) ──
+        // -Xcheck:jni 로 추적한 결과 JNI 는 무죄였고, 원인은 String Deduplication(GC)로 확인됨.
+        // 추적이 끝났으므로 false. 다시 JNI 디버깅이 필요하면 true 로.
+        val ENABLE_JNI_CHECK = false
+        val jniDebugArgs = if (ENABLE_JNI_CHECK)
+            arrayOf("-Xcheck:jni")
+        else
+            emptyArray()
+
         val jvmArgs = jvm8CompatArgs +
+                jniDebugArgs +
                 jvmSettings.toJvmArgArray(
                     context = this,
                     mcDir = mcDir,
@@ -1648,8 +1665,10 @@ class MinecraftActivity : BaseActivity() {
 
     private fun isProcessorOnlyJar(file: File): Boolean {
         val name = file.name
-        // mergetool 은 두 종류 — "*-api.jar" 는 게임 부팅에도 필요하니 보존
-        if (name.startsWith("mergetool", ignoreCase = true) && name.endsWith("-api.jar")) return false
+        // mergetool 은 두 종류 — "mergetool-api-*.jar" 는 distmarker(Dist/OnlyIn) 등 게임 부팅 필수
+        // 클래스를 담고 있으므로 보존. (파일명이 "mergetool-api-1.0.jar" 처럼 버전이 붙어
+        //  -api.jar 로 끝나지 않으므로 startsWith 로 매칭해야 함)
+        if (name.startsWith("mergetool-api", ignoreCase = true)) return false
         return PROCESSOR_ONLY_JAR_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
     }
 
