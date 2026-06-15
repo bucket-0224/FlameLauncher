@@ -884,6 +884,23 @@ class MinecraftActivity : BaseActivity() {
         val artifactIdx = parts.size - 3
         val artifact = parts[artifactIdx]
         val group = parts.subList(0, artifactIdx).joinToString(".")
+        // ⚠️ modern Forge 예외: net.minecraftforge:forge 는 같은 GA 로 -client.jar 와
+        //   -universal.jar 두 개가 존재한다. 둘은 역할이 다른 별개 아티팩트로,
+        //   -client.jar 에는 패치된 net/minecraft/client/Minecraft.class 가 들어있고
+        //   (ForgeProdLaunchHandler.getMinecraftPaths 가 이걸 클래스패스에서 찾음)
+        //   -universal.jar 에는 Forge 자체 코드가 들어있다.
+        //   classifier 를 무시하고 같은 키로 묶으면 둘 중 하나(보통 universal)만 남아
+        //   Minecraft.class 를 못 찾는 크래시가 난다. → classifier 를 키에 포함해 둘 다 보존.
+        val fileName = parts.last()
+        if (group == "net.minecraftforge" && artifact == "forge") {
+            val classifier = when {
+                fileName.endsWith("-client.jar")    -> "client"
+                fileName.endsWith("-universal.jar") -> "universal"
+                fileName.endsWith("-shim.jar")      -> "shim"
+                else -> ""
+            }
+            if (classifier.isNotEmpty()) return "$group:$artifact:$classifier"
+        }
         return "$group:$artifact"
     }
 
@@ -1147,6 +1164,11 @@ class MinecraftActivity : BaseActivity() {
         val jvmSettings = JvmSettingsManager.load(this)
 
         syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings)
+        // Forge/NeoForge early loading window 비활성화 — Mali+Zink(OSMesa)에서
+        // early window 가 별도 스레드로 GL 컨텍스트를 make-current/release 반복하다
+        // SIGSEGV/heap 손상으로 죽는다. earlyWindowProvider=none 으로 강제해 회피.
+        // (앱이 자기 외부 디렉토리 파일을 쓰는 것이라 권한 문제 없음)
+        syncFmlConfig(File(mcDir, "config/fml.toml"))
 
 // ★ JDK 9+ 전용 플래그는 javaMajor>=9 일 때만 부착
         val isModularJre = javaMajor >= 9
@@ -1665,10 +1687,15 @@ class MinecraftActivity : BaseActivity() {
 
     private fun isProcessorOnlyJar(file: File): Boolean {
         val name = file.name
-        // mergetool 은 두 종류 — "mergetool-api-*.jar" 는 distmarker(Dist/OnlyIn) 등 게임 부팅 필수
-        // 클래스를 담고 있으므로 보존. (파일명이 "mergetool-api-1.0.jar" 처럼 버전이 붙어
-        //  -api.jar 로 끝나지 않으므로 startsWith 로 매칭해야 함)
-        if (name.startsWith("mergetool-api", ignoreCase = true)) return false
+        // mergetool 은 두 종류 —
+        //   • distmarker(Dist/OnlyIn) 등 "게임 부팅 필수" 클래스를 담은 api jar → 보존(false)
+        //   • 설치 단계에서만 쓰는 processor jar → 제외(true)
+        // 파일명 규칙이 로더/버전마다 다르다:
+        //   Forge:    mergetool-api-1.0.jar     (api 가 앞)
+        //   NeoForge: mergetool-2.0.0-api.jar   (api 가 뒤, 버전이 중간)
+        // 따라서 "mergetool" 로 시작하면서 이름에 'api' 가 들어가면 부팅 필수 jar 로 보고 보존한다.
+        if (name.startsWith("mergetool", ignoreCase = true)
+            && name.contains("api", ignoreCase = true)) return false
         return PROCESSOR_ONLY_JAR_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
     }
 
@@ -1708,6 +1735,46 @@ class MinecraftActivity : BaseActivity() {
         optionsFile.writeText(existing.joinToString("\n"))
         Log.d("PING_LAUNCHER",
             "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD mipmap=0")
+    }
+
+    /**
+     * Forge/NeoForge 의 config/fml.toml 에서 early loading window 를 끈다.
+     *   earlyWindowProvider = "none"   (early window 자체를 안 띄움)
+     *   earlyWindowControl  = false    (early window 의 GL 제어 비활성화)
+     *
+     * Mali-G57 + Zink(OSMesa) 환경에서 Forge 의 early window 는 별도 스레드로
+     * GL 컨텍스트를 make-current/release 반복하다 SIGSEGV / Scudo 힙손상으로 죽는다.
+     * 이 두 값을 강제하면 early window 단계를 건너뛰어 본 게임 로딩으로 직행한다.
+     *
+     * 파일이 없으면(첫 실행 등) 두 줄만 가진 fml.toml 을 새로 만든다. Forge 가 이후
+     * 나머지 기본값을 자기 형식으로 채워 넣는다. 앱이 자기 파일을 쓰는 것이라
+     * adb push 때와 달리 권한(AccessDenied) 문제가 없다.
+     */
+    private fun syncFmlConfig(fmlToml: File) {
+        try {
+            fmlToml.parentFile?.mkdirs()
+
+            val lines: MutableList<String> = if (fmlToml.exists())
+                fmlToml.readLines().toMutableList()
+            else
+                mutableListOf()
+
+            // TOML 은 "key = value" 형식. 기존 줄(주석/공백 들여쓰기 포함)을 키로 찾아 교체.
+            fun upsertToml(key: String, valueLiteral: String) {
+                val idx = lines.indexOfFirst { it.trimStart().startsWith("$key ") || it.trimStart().startsWith("$key=") }
+                val newLine = "$key = $valueLiteral"
+                if (idx >= 0) lines[idx] = newLine else lines.add(newLine)
+            }
+
+            upsertToml("earlyWindowProvider", "\"none\"")
+            upsertToml("earlyWindowControl", "false")
+
+            fmlToml.writeText(lines.joinToString("\n"))
+            Log.d("PING_LAUNCHER",
+                "🪟 fml.toml sync: earlyWindowProvider=none earlyWindowControl=false (${fmlToml.absolutePath})")
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "fml.toml 수정 실패: ${e.message}", e)
+        }
     }
 
     fun androidKeyToGlfw(keyCode: Int): Int? = when (keyCode) {
