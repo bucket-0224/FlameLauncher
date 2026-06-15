@@ -884,6 +884,23 @@ class MinecraftActivity : BaseActivity() {
         val artifactIdx = parts.size - 3
         val artifact = parts[artifactIdx]
         val group = parts.subList(0, artifactIdx).joinToString(".")
+        // ⚠️ modern Forge 예외: net.minecraftforge:forge 는 같은 GA 로 -client.jar 와
+        //   -universal.jar 두 개가 존재한다. 둘은 역할이 다른 별개 아티팩트로,
+        //   -client.jar 에는 패치된 net/minecraft/client/Minecraft.class 가 들어있고
+        //   (ForgeProdLaunchHandler.getMinecraftPaths 가 이걸 클래스패스에서 찾음)
+        //   -universal.jar 에는 Forge 자체 코드가 들어있다.
+        //   classifier 를 무시하고 같은 키로 묶으면 둘 중 하나(보통 universal)만 남아
+        //   Minecraft.class 를 못 찾는 크래시가 난다. → classifier 를 키에 포함해 둘 다 보존.
+        val fileName = parts.last()
+        if (group == "net.minecraftforge" && artifact == "forge") {
+            val classifier = when {
+                fileName.endsWith("-client.jar")    -> "client"
+                fileName.endsWith("-universal.jar") -> "universal"
+                fileName.endsWith("-shim.jar")      -> "shim"
+                else -> ""
+            }
+            if (classifier.isNotEmpty()) return "$group:$artifact:$classifier"
+        }
         return "$group:$artifact"
     }
 
@@ -1147,6 +1164,10 @@ class MinecraftActivity : BaseActivity() {
         val jvmSettings = JvmSettingsManager.load(this)
 
         syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings)
+        // Forge/NeoForge early loading window(망치/여우 로딩 화면) 설정.
+        // ZL2 와 동일하게 켜는 게 기본. 끄려면 syncFmlConfig 의 ENABLE_EARLY_WINDOW=false.
+        // (앱이 자기 외부 디렉토리 파일을 쓰는 것이라 권한 문제 없음)
+        syncFmlConfig(File(mcDir, "config/fml.toml"))
 
 // ★ JDK 9+ 전용 플래그는 javaMajor>=9 일 때만 부착
         val isModularJre = javaMajor >= 9
@@ -1203,8 +1224,7 @@ class MinecraftActivity : BaseActivity() {
 //   ignoreList 에 prefix 매칭시키면 classpath unnamed module 로 남아 충돌 회피.
         val metaJvmArgs: Array<String> = metaJvmArgsRaw.map { arg ->
             if (isModernLoader && arg.startsWith("-DignoreList=")) {
-                // 이미 들어있는지 확인 후 없으면 추가. lwjgl 한 prefix 로 lwjgl-glfw-classes,
-                // lwjgl-openal, lwjgl-opengl, lwjgl-stb 등 한 번에 커버.
+                // 이미 들어있는지 확인 후 없으면 추가.
                 val needed = listOf(
                     "ForgeAutoRenamingTool", "BinaryPatcher", "binarypatcher",
                     "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch"
@@ -1221,12 +1241,11 @@ class MinecraftActivity : BaseActivity() {
 // ── Modern Forge fallback: 모듈 안 로드돼도 reflection 통과시키는 ALL-UNNAMED opens ──
         val modernForgeArgs: Array<String> = if (isModularJre && isModernLoader) {
             arrayOf(
-                // ── Forge 조기 로딩 창(early window) 비활성화 ──
-                // OSMesa 환경에서 Forge의 fmlearlywindow 가 GL 컨텍스트를 직접 만들려다 실패하면서
-                // ImmediateWindowHandler → RuntimeDistCleaner <clinit> 연쇄 실패 → "Missing RuntimeDistCleaner".
-                // early window 를 끄면 그 경로 자체를 타지 않아 정상 부팅됨.
-                "-Dfml.earlyWindowControl=false",
-                "-Dfml.earlyprogresswindow=false",   // 구버전 호환 (이름이 바뀜)
+                // ── Forge early window(망치/여우 로딩 창) ──
+                // 켜고 끄는 것은 syncFmlConfig() 의 ENABLE_EARLY_WINDOW 토글이 fml.toml 로 단일 제어.
+                // 여기서 -Dfml.earlyWindowControl 을 강제하지 않아야 fml.toml 설정이 그대로 적용된다.
+                // (과거엔 OSMesa 크래시 회피용으로 여기서 false 를 강제했으나, ZL2 와 동일하게
+                //  GLFW stub 이 GL 컨텍스트 버전을 렌더러에 맞춰 고정하므로 더는 필요 없음.)
                 "-Djava.awt.headless=true",
                 "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
@@ -1665,10 +1684,15 @@ class MinecraftActivity : BaseActivity() {
 
     private fun isProcessorOnlyJar(file: File): Boolean {
         val name = file.name
-        // mergetool 은 두 종류 — "mergetool-api-*.jar" 는 distmarker(Dist/OnlyIn) 등 게임 부팅 필수
-        // 클래스를 담고 있으므로 보존. (파일명이 "mergetool-api-1.0.jar" 처럼 버전이 붙어
-        //  -api.jar 로 끝나지 않으므로 startsWith 로 매칭해야 함)
-        if (name.startsWith("mergetool-api", ignoreCase = true)) return false
+        // mergetool 은 두 종류 —
+        //   • distmarker(Dist/OnlyIn) 등 "게임 부팅 필수" 클래스를 담은 api jar → 보존(false)
+        //   • 설치 단계에서만 쓰는 processor jar → 제외(true)
+        // 파일명 규칙이 로더/버전마다 다르다:
+        //   Forge:    mergetool-api-1.0.jar     (api 가 앞)
+        //   NeoForge: mergetool-2.0.0-api.jar   (api 가 뒤, 버전이 중간)
+        // 따라서 "mergetool" 로 시작하면서 이름에 'api' 가 들어가면 부팅 필수 jar 로 보고 보존한다.
+        if (name.startsWith("mergetool", ignoreCase = true)
+            && name.contains("api", ignoreCase = true)) return false
         return PROCESSOR_ONLY_JAR_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
     }
 
@@ -1698,10 +1722,67 @@ class MinecraftActivity : BaseActivity() {
         upsert("renderDistance", targetRenderD.toString())
         upsert("graphicsMode",   targetGfxMode.toString())
         upsert("renderClouds",   "false")
+        // ⚠️ mipmapLevels 는 반드시 0 으로 강제.
+        //   밉맵이 1 이상이면 blocks 텍스처 아틀라스가 2048x2048x4 같은 밉맵 포함 형태로 생성되는데,
+        //   Mali-G57 + Zink(OSMesa) 조합에서 이 밉맵 아틀라스 처리 중 libGLES_mali 가
+        //   힙을 손상시켜 Scudo "corrupted chunk header" 로 강제 종료됨(렌더 스레드).
+        //   밉맵 0 이면 아틀라스가 ...x0 으로 생성되어 크래시가 사라짐.
+        upsert("mipmapLevels",   "0")
 
         optionsFile.writeText(existing.joinToString("\n"))
         Log.d("PING_LAUNCHER",
-            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD")
+            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD mipmap=0")
+    }
+
+    /**
+     * Forge/NeoForge 의 config/fml.toml 에서 early loading window(망치/여우 애니메이션) 설정.
+     *
+     * ZL2 는 fml.toml 을 건드리지 않고 기본값(earlyWindowProvider=fmlearlywindow,
+     * earlyWindowControl=true)으로 early window 를 켠 채 구동한다. 그 비결은 GLFW stub
+     * (lwjgl-glfw-classes.jar)이 early window 가 요청하는 GL 컨텍스트 버전을 렌더러에 맞게
+     * 고정(vulkan_zink→4.6, 기본→3.3)해 주는 것. 우리도 같은 PojavLauncher 계열 stub +
+     * Zink(MESA_GL_VERSION_OVERRIDE=4.6) 설정이라 동일하게 켤 수 있다.
+     *
+     * ENABLE_EARLY_WINDOW = true  → early window 켬 (ZL2 와 동일, 망치/여우 표시)
+     *                       false → 끔(provider=none). Mali+OSMesa 에서 별도 스레드 GL
+     *                               컨텍스트가 SIGSEGV/Scudo 로 죽으면 이걸로 즉시 되돌린다.
+     *
+     * 파일이 없으면(첫 실행 등) 해당 줄만 가진 fml.toml 을 새로 만든다. Forge 가 이후
+     * 나머지 기본값을 자기 형식으로 채워 넣는다. 앱이 자기 파일을 쓰는 것이라
+     * adb push 때와 달리 권한(AccessDenied) 문제가 없다.
+     */
+    private fun syncFmlConfig(fmlToml: File) {
+        // ★ early window 토글. 문제가 재발하면 false 로 바꾸면 된다.
+        val ENABLE_EARLY_WINDOW = false
+        try {
+            fmlToml.parentFile?.mkdirs()
+
+            val lines: MutableList<String> = if (fmlToml.exists())
+                fmlToml.readLines().toMutableList()
+            else
+                mutableListOf()
+
+            // TOML 은 "key = value" 형식. 기존 줄(주석/공백 들여쓰기 포함)을 키로 찾아 교체.
+            fun upsertToml(key: String, valueLiteral: String) {
+                val idx = lines.indexOfFirst { it.trimStart().startsWith("$key ") || it.trimStart().startsWith("$key=") }
+                val newLine = "$key = $valueLiteral"
+                if (idx >= 0) lines[idx] = newLine else lines.add(newLine)
+            }
+
+            if (ENABLE_EARLY_WINDOW) {
+                upsertToml("earlyWindowProvider", "\"fmlearlywindow\"")
+                upsertToml("earlyWindowControl", "true")
+            } else {
+                upsertToml("earlyWindowProvider", "\"none\"")
+                upsertToml("earlyWindowControl", "false")
+            }
+
+            fmlToml.writeText(lines.joinToString("\n"))
+            Log.d("PING_LAUNCHER",
+                "🪟 fml.toml sync: earlyWindow=${if (ENABLE_EARLY_WINDOW) "ON(fmlearlywindow)" else "OFF(none)"} (${fmlToml.absolutePath})")
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "fml.toml 수정 실패: ${e.message}", e)
+        }
     }
 
     fun androidKeyToGlfw(keyCode: Int): Int? = when (keyCode) {

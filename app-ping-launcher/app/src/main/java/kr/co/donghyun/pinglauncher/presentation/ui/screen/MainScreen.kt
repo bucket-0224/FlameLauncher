@@ -62,6 +62,7 @@ fun MainScreen(
     onLaunchNeoForge: (VersionEntry, String) -> Unit,
     onLaunchInstance: (InstanceMeta) -> Unit,
     onDeleteInstance: (InstanceMeta) -> Unit,
+    onImportMap: (InstanceMeta) -> Unit,
     onOpenContents: () -> Unit,
     onOpenNetworkSettings: () -> Unit,
     onOpenKeySettings: () -> Unit,
@@ -144,7 +145,7 @@ fun MainScreen(
                 Row(modifier = Modifier.fillMaxSize().weight(1f)) {
                     Box(modifier = Modifier.weight(0.62f).fillMaxHeight()) {
                         when (selectedTab) {
-                            MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance)
+                            MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance, onImportMap)
                             else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                         }
                     }
@@ -175,7 +176,7 @@ fun MainScreen(
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
                     when (selectedTab) {
-                        MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance)
+                        MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance, onImportMap)
                         else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                     }
                 }
@@ -233,6 +234,7 @@ private fun InstancesList(
     instances: List<InstanceMeta>,
     onLaunch: (InstanceMeta) -> Unit,
     onDelete: (InstanceMeta) -> Unit,
+    onImport: (InstanceMeta) -> Unit,
 ) {
     if (instances.isEmpty()) {
         Box(
@@ -264,7 +266,12 @@ private fun InstancesList(
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         items(instances, key = { it.id }) { meta ->
-            InstanceItem(meta, onLaunch = { onLaunch(meta) }, onDelete = { onDelete(meta) })
+            InstanceItem(
+                meta,
+                onLaunch = { onLaunch(meta) },
+                onDelete = { onDelete(meta) },
+                onImport = { onImport(meta) },
+            )
         }
         item { Box(modifier = Modifier.height(64.dp)) }
     }
@@ -275,6 +282,7 @@ private fun InstanceItem(
     meta: InstanceMeta,
     onLaunch: () -> Unit,
     onDelete: () -> Unit,
+    onImport: () -> Unit,
 ) {
     val tablet = isTablet()
     var showConfirmDelete by remember { mutableStateOf(false) }
@@ -313,6 +321,19 @@ private fun InstanceItem(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+        }
+
+        // 맵(월드) 가져오기
+        Box(
+            modifier = Modifier
+                .size(if (tablet) 32.dp else 28.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(BgDark)
+                .border(1.dp, BgBorder, RoundedCornerShape(6.dp))
+                .clickable { onImport() },
+            contentAlignment = Alignment.Center,
+        ) {
+            Text("🗺", fontSize = if (tablet) 14.sp else 12.sp)
         }
 
         // 삭제

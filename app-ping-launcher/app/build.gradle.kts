@@ -121,6 +121,95 @@ android {
     }
 }
 
+// ========================================================================
+// ProcessorLauncher 자동 컴파일 태스크
+// ========================================================================
+// app/src/main/java/.../forge/ProcessorLauncher.java 를 컴파일해서
+// app/src/main/assets/forge-runtime/processor-launcher.jar 로 패키징한다.
+//
+// 문제 배경:
+//   ProcessorLauncher 는 게임 JVM(JRE 21) 안에서 실행되는 별도 jar 라서
+//   앱 코드(Kotlin)와 함께 컴파일되지 않는다. 그래서 .java 를 고쳐도
+//   assets 의 .jar 가 자동 갱신되지 않아, 옛 버전이 인스턴스로 복사되는
+//   "소스 따로 jar 따로" 문제가 있었다.
+//   이 태스크가 그 간극을 메워서, 소스를 고치면 빌드 시 jar 가 자동 갱신된다.
+//
+// 위치: app/build.gradle.kts 의 android { ... } 블록 "바깥", 파일 하단에 추가.
+// ========================================================================
+
+val processorLauncherSrc = file("src/main/java/kr/co/donghyun/pinglauncher/forge/ProcessorLauncher.java")
+val processorLauncherJar = file("src/main/assets/forge-runtime/processor-launcher.jar")
+val processorLauncherWork = layout.buildDirectory.dir("processor-launcher").get().asFile
+
+tasks.register("buildProcessorLauncher") {
+    description = "Compiles ProcessorLauncher.java into assets/forge-runtime/processor-launcher.jar"
+    group = "build"
+
+    // 입력/출력 선언 → 소스가 안 바뀌면 태스크 스킵(up-to-date), 바뀌면 재실행
+    inputs.file(processorLauncherSrc)
+    outputs.file(processorLauncherJar)
+
+    doLast {
+        val classesDir = File(processorLauncherWork, "classes")
+        classesDir.deleteRecursively()
+        classesDir.mkdirs()
+
+        // JDK 도구 위치: Gradle 이 실행 중인 JVM(자바 홈) 의 javac/jar 사용
+        val javaHome = System.getProperty("java.home")
+        // java.home 이 JRE 를 가리킬 수 있으니 javac 후보를 탐색
+        val javacCandidates = listOf(
+            File(javaHome, "bin/javac"),
+            File(File(javaHome).parentFile, "bin/javac")  // jre 의 부모(jdk)/bin/javac
+        )
+        val javac = javacCandidates.firstOrNull { it.exists() }
+            ?: error("javac 를 찾을 수 없습니다. JAVA_HOME 이 JDK 를 가리키는지 확인하세요. (탐색: $javacCandidates)")
+        val jarCandidates = listOf(
+            File(javaHome, "bin/jar"),
+            File(File(javaHome).parentFile, "bin/jar")
+        )
+        val jarTool = jarCandidates.firstOrNull { it.exists() }
+            ?: error("jar 도구를 찾을 수 없습니다. (탐색: $jarCandidates)")
+
+        // 1) 컴파일 — release 17 로 컴파일.
+        //    Gradle 이 JDK 17 로 실행되므로 17 로 맞춤. 게임 JVM 은 JRE 21 이지만
+        //    21 은 17 바이트코드를 하위호환으로 완벽히 실행하며, ProcessorLauncher 는
+        //    표준 라이브러리(파일 IO/reflection)만 써서 17/21 차이가 없음.
+        exec {
+            commandLine(
+                javac.absolutePath,
+                "--release", "17",
+                "-d", classesDir.absolutePath,
+                processorLauncherSrc.absolutePath
+            )
+        }
+
+        // 2) jar 패키징 — 원본과 동일하게 Main-Class 없는 최소 manifest
+        //    (ProcessorLauncher 는 -Dping.main.class 로 직접 지정 실행되므로 Main-Class 불필요)
+        processorLauncherJar.parentFile.mkdirs()
+        exec {
+            commandLine(
+                jarTool.absolutePath,
+                "cf", processorLauncherJar.absolutePath,
+                "-C", classesDir.absolutePath, "."
+            )
+        }
+
+        println("✅ processor-launcher.jar 생성됨: ${processorLauncherJar.absolutePath}")
+    }
+}
+
+// 앱 빌드(에셋 머지) 전에 자동 실행되도록 연결.
+// preBuild 에 의존시키면 모든 변형(debug/release)에서 항상 먼저 실행됨.
+tasks.named("preBuild") {
+    dependsOn("buildProcessorLauncher")
+}
+
+// 앱 빌드(에셋 머지) 전에 자동 실행되도록 연결.
+// preBuild 에 의존시키면 모든 변형(debug/release)에서 항상 먼저 실행됨.
+tasks.named("preBuild") {
+    dependsOn("buildProcessorLauncher")
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
