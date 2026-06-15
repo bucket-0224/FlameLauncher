@@ -1164,9 +1164,8 @@ class MinecraftActivity : BaseActivity() {
         val jvmSettings = JvmSettingsManager.load(this)
 
         syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings)
-        // Forge/NeoForge early loading window 비활성화 — Mali+Zink(OSMesa)에서
-        // early window 가 별도 스레드로 GL 컨텍스트를 make-current/release 반복하다
-        // SIGSEGV/heap 손상으로 죽는다. earlyWindowProvider=none 으로 강제해 회피.
+        // Forge/NeoForge early loading window(망치/여우 로딩 화면) 설정.
+        // ZL2 와 동일하게 켜는 게 기본. 끄려면 syncFmlConfig 의 ENABLE_EARLY_WINDOW=false.
         // (앱이 자기 외부 디렉토리 파일을 쓰는 것이라 권한 문제 없음)
         syncFmlConfig(File(mcDir, "config/fml.toml"))
 
@@ -1225,8 +1224,7 @@ class MinecraftActivity : BaseActivity() {
 //   ignoreList 에 prefix 매칭시키면 classpath unnamed module 로 남아 충돌 회피.
         val metaJvmArgs: Array<String> = metaJvmArgsRaw.map { arg ->
             if (isModernLoader && arg.startsWith("-DignoreList=")) {
-                // 이미 들어있는지 확인 후 없으면 추가. lwjgl 한 prefix 로 lwjgl-glfw-classes,
-                // lwjgl-openal, lwjgl-opengl, lwjgl-stb 등 한 번에 커버.
+                // 이미 들어있는지 확인 후 없으면 추가.
                 val needed = listOf(
                     "ForgeAutoRenamingTool", "BinaryPatcher", "binarypatcher",
                     "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch"
@@ -1243,12 +1241,11 @@ class MinecraftActivity : BaseActivity() {
 // ── Modern Forge fallback: 모듈 안 로드돼도 reflection 통과시키는 ALL-UNNAMED opens ──
         val modernForgeArgs: Array<String> = if (isModularJre && isModernLoader) {
             arrayOf(
-                // ── Forge 조기 로딩 창(early window) 비활성화 ──
-                // OSMesa 환경에서 Forge의 fmlearlywindow 가 GL 컨텍스트를 직접 만들려다 실패하면서
-                // ImmediateWindowHandler → RuntimeDistCleaner <clinit> 연쇄 실패 → "Missing RuntimeDistCleaner".
-                // early window 를 끄면 그 경로 자체를 타지 않아 정상 부팅됨.
-                "-Dfml.earlyWindowControl=false",
-                "-Dfml.earlyprogresswindow=false",   // 구버전 호환 (이름이 바뀜)
+                // ── Forge early window(망치/여우 로딩 창) ──
+                // 켜고 끄는 것은 syncFmlConfig() 의 ENABLE_EARLY_WINDOW 토글이 fml.toml 로 단일 제어.
+                // 여기서 -Dfml.earlyWindowControl 을 강제하지 않아야 fml.toml 설정이 그대로 적용된다.
+                // (과거엔 OSMesa 크래시 회피용으로 여기서 false 를 강제했으나, ZL2 와 동일하게
+                //  GLFW stub 이 GL 컨텍스트 버전을 렌더러에 맞춰 고정하므로 더는 필요 없음.)
                 "-Djava.awt.headless=true",
                 "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
@@ -1738,19 +1735,25 @@ class MinecraftActivity : BaseActivity() {
     }
 
     /**
-     * Forge/NeoForge 의 config/fml.toml 에서 early loading window 를 끈다.
-     *   earlyWindowProvider = "none"   (early window 자체를 안 띄움)
-     *   earlyWindowControl  = false    (early window 의 GL 제어 비활성화)
+     * Forge/NeoForge 의 config/fml.toml 에서 early loading window(망치/여우 애니메이션) 설정.
      *
-     * Mali-G57 + Zink(OSMesa) 환경에서 Forge 의 early window 는 별도 스레드로
-     * GL 컨텍스트를 make-current/release 반복하다 SIGSEGV / Scudo 힙손상으로 죽는다.
-     * 이 두 값을 강제하면 early window 단계를 건너뛰어 본 게임 로딩으로 직행한다.
+     * ZL2 는 fml.toml 을 건드리지 않고 기본값(earlyWindowProvider=fmlearlywindow,
+     * earlyWindowControl=true)으로 early window 를 켠 채 구동한다. 그 비결은 GLFW stub
+     * (lwjgl-glfw-classes.jar)이 early window 가 요청하는 GL 컨텍스트 버전을 렌더러에 맞게
+     * 고정(vulkan_zink→4.6, 기본→3.3)해 주는 것. 우리도 같은 PojavLauncher 계열 stub +
+     * Zink(MESA_GL_VERSION_OVERRIDE=4.6) 설정이라 동일하게 켤 수 있다.
      *
-     * 파일이 없으면(첫 실행 등) 두 줄만 가진 fml.toml 을 새로 만든다. Forge 가 이후
+     * ENABLE_EARLY_WINDOW = true  → early window 켬 (ZL2 와 동일, 망치/여우 표시)
+     *                       false → 끔(provider=none). Mali+OSMesa 에서 별도 스레드 GL
+     *                               컨텍스트가 SIGSEGV/Scudo 로 죽으면 이걸로 즉시 되돌린다.
+     *
+     * 파일이 없으면(첫 실행 등) 해당 줄만 가진 fml.toml 을 새로 만든다. Forge 가 이후
      * 나머지 기본값을 자기 형식으로 채워 넣는다. 앱이 자기 파일을 쓰는 것이라
      * adb push 때와 달리 권한(AccessDenied) 문제가 없다.
      */
     private fun syncFmlConfig(fmlToml: File) {
+        // ★ early window 토글. 문제가 재발하면 false 로 바꾸면 된다.
+        val ENABLE_EARLY_WINDOW = false
         try {
             fmlToml.parentFile?.mkdirs()
 
@@ -1766,12 +1769,17 @@ class MinecraftActivity : BaseActivity() {
                 if (idx >= 0) lines[idx] = newLine else lines.add(newLine)
             }
 
-            upsertToml("earlyWindowProvider", "\"none\"")
-            upsertToml("earlyWindowControl", "false")
+            if (ENABLE_EARLY_WINDOW) {
+                upsertToml("earlyWindowProvider", "\"fmlearlywindow\"")
+                upsertToml("earlyWindowControl", "true")
+            } else {
+                upsertToml("earlyWindowProvider", "\"none\"")
+                upsertToml("earlyWindowControl", "false")
+            }
 
             fmlToml.writeText(lines.joinToString("\n"))
             Log.d("PING_LAUNCHER",
-                "🪟 fml.toml sync: earlyWindowProvider=none earlyWindowControl=false (${fmlToml.absolutePath})")
+                "🪟 fml.toml sync: earlyWindow=${if (ENABLE_EARLY_WINDOW) "ON(fmlearlywindow)" else "OFF(none)"} (${fmlToml.absolutePath})")
         } catch (e: Exception) {
             Log.e("PING_LAUNCHER", "fml.toml 수정 실패: ${e.message}", e)
         }
