@@ -1698,10 +1698,16 @@ class MinecraftActivity : BaseActivity() {
         upsert("renderDistance", targetRenderD.toString())
         upsert("graphicsMode",   targetGfxMode.toString())
         upsert("renderClouds",   "false")
+        // ⚠️ mipmapLevels 는 반드시 0 으로 강제.
+        //   밉맵이 1 이상이면 blocks 텍스처 아틀라스가 2048x2048x4 같은 밉맵 포함 형태로 생성되는데,
+        //   Mali-G57 + Zink(OSMesa) 조합에서 이 밉맵 아틀라스 처리 중 libGLES_mali 가
+        //   힙을 손상시켜 Scudo "corrupted chunk header" 로 강제 종료됨(렌더 스레드).
+        //   밉맵 0 이면 아틀라스가 ...x0 으로 생성되어 크래시가 사라짐.
+        upsert("mipmapLevels",   "0")
 
         optionsFile.writeText(existing.joinToString("\n"))
         Log.d("PING_LAUNCHER",
-            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD")
+            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD mipmap=0")
     }
 
     fun androidKeyToGlfw(keyCode: Int): Int? = when (keyCode) {
