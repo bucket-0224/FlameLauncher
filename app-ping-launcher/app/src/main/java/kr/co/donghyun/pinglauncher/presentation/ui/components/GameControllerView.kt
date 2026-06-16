@@ -39,8 +39,6 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     47  to (0.14f to 0.28f),  // /
     81  to (0.22f to 0.28f),  // Q
     69  to (0.96f to 0.7f),  // E (inventory)
-    -4  to (0.88f to 0.7f),  // prev slot
-    -5  to (0.88f to 0.52f),  // next slot
     340 to (0.76f to 0.88f),  // shift = sneak
     341 to (0.84f to 0.88f),  // ctrl  = sprint
     32  to (0.92f to 0.88f),  // space = jump
@@ -49,6 +47,16 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
 
 class GameControllerView(context: Context) : View(context) {
     private var imeVisible: Boolean = false
+
+    // ESC 전용 모드: grab/IME 가 아닐 때(인벤토리/메뉴/타이틀) ESC 버튼만 표시·입력.
+    private var escOnlyMode: Boolean = false
+
+    fun setEscOnlyMode(enabled: Boolean) {
+        if (escOnlyMode != enabled) {
+            escOnlyMode = enabled
+            invalidate()
+        }
+    }
 
     private val activity = context as MinecraftActivity
     private var buttons: List<KeyButton> = KeyLayoutManager.load(context)
@@ -310,6 +318,8 @@ class GameControllerView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         buttons.forEach { button ->
+            // ESC 전용 모드면 ESC(256) 외에는 그리지 않음
+            if (escOnlyMode && button.glfwCode != 256) return@forEach
             val rect = buttonRects[button.id] ?: return@forEach
             val isPressed = pressedButtons.containsKey(button.id)
 
@@ -415,6 +425,8 @@ class GameControllerView(context: Context) : View(context) {
 
     private fun findButton(x: Float, y: Float): KeyButton? {
         buttons.forEach { button ->
+            // ESC 전용 모드면 ESC(256) 외에는 무시
+            if (escOnlyMode && button.glfwCode != 256) return@forEach
             val rect = buttonRects[button.id] ?: return@forEach
             if (rect.contains(x, y)) return button
         }
@@ -427,18 +439,6 @@ class GameControllerView(context: Context) : View(context) {
             glfwCode == -1 -> activity.sendMouseButton(0, action)
             glfwCode == -2 -> activity.sendMouseButton(1, action)
             glfwCode == -3 -> activity.sendMouseButton(2, action)
-            glfwCode == -4 && action == GLFW_PRESS -> {
-                val prev = (currentHotbarSlot - 1 + 9) % 9
-                currentHotbarSlot = prev
-                activity.sendKey(49 + prev, GLFW_PRESS)
-                activity.sendKey(49 + prev, GLFW_RELEASE)
-            }
-            glfwCode == -5 && action == GLFW_PRESS -> {
-                val next = (currentHotbarSlot + 1) % 9
-                currentHotbarSlot = next
-                activity.sendKey(49 + next, GLFW_PRESS)
-                activity.sendKey(49 + next, GLFW_RELEASE)
-            }
             // glfwCode == -6 분기 전체 교체
             glfwCode == -6 && action == GLFW_PRESS -> {
                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)

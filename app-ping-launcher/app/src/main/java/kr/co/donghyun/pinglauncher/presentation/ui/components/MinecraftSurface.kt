@@ -23,6 +23,7 @@ var lastX = 0f
 var lastY = 0f
 var isDragging = false
 var isLongPress = false
+var isHotbarTouch = false   // 이번 터치가 핫바 영역에서 시작됐나(슬롯 선택 전용)
 var longPressRunnable: Runnable? = null
 val handler = android.os.Handler(android.os.Looper.getMainLooper())
 private const val LONG_PRESS_TIMEOUT = 500L
@@ -89,6 +90,20 @@ fun MinecraftSurface(
                                 lastY = event.y
                                 isDragging = false
                                 isLongPress = false
+                                isHotbarTouch = false
+
+                                // ── 인게임(grab) + 핫바 영역 터치 → 슬롯 선택 전용 ──
+                                //   ZL2 방식: 핫바 사각형을 9등분해 x 로 슬롯 결정, 카메라/클릭으로 넘기지 않음.
+                                if (activity.isGrabbing) {
+                                    val rect = activity.computeHotbarRect(width, height)
+                                    if (rect != null && rect.contains(event.x, event.y)) {
+                                        val idx = (((event.x - rect.left) / (rect.width() / 9f)).toInt())
+                                            .coerceIn(0, 8)
+                                        activity.selectHotbarSlot(idx)
+                                        isHotbarTouch = true
+                                        return@setOnTouchListener true   // 여기서 종료(카메라/클릭 안 함)
+                                    }
+                                }
 
                                 if (!activity.isGrabbing) {
                                     // ── UI 모드 (인벤토리/메뉴) — 기존 동작 유지 ──
@@ -111,8 +126,7 @@ fun MinecraftSurface(
                             }
 
                             MotionEvent.ACTION_MOVE -> {
-                                val dx = event.x - lastX
-                                val dy = event.y - lastY
+                                if (isHotbarTouch) return@setOnTouchListener true
                                 val totalDx = event.x - downX
                                 val totalDy = event.y - downY
 
@@ -124,13 +138,20 @@ fun MinecraftSurface(
                                         longPressRunnable?.let { handler.removeCallbacks(it) }
                                         longPressRunnable = null
                                     }
+                                    // 드래그 시작 순간 기준점을 현재 위치로 리셋 →
+                                    //   슬롭(20px) 넘는 동안의 이동이 카메라에 한꺼번에 튀지 않게 함.
+                                    //   (연타/짧은 터치 시 화면이 그 방향으로 확 도는 현상 방지)
+                                    lastX = event.x
+                                    lastY = event.y
                                 }
 
                                 if (isDragging) {
                                     if (activity.isGrabbing) {
                                         // 인게임 — 델타 기반 카메라 회전
-                                        activity.currentCursorX += dx * activity.MOUSE_SENSITIVITY
-                                        activity.currentCursorY += dy * activity.MOUSE_SENSITIVITY
+                                        val dx2 = event.x - lastX
+                                        val dy2 = event.y - lastY
+                                        activity.currentCursorX += dx2 * activity.MOUSE_SENSITIVITY
+                                        activity.currentCursorY += dy2 * activity.MOUSE_SENSITIVITY
                                     } else {
                                         // UI — 절대 좌표
                                         activity.currentCursorX = event.x
@@ -144,6 +165,10 @@ fun MinecraftSurface(
                             }
 
                             MotionEvent.ACTION_UP -> {
+                                if (isHotbarTouch) {
+                                    isHotbarTouch = false
+                                    return@setOnTouchListener true
+                                }
                                 longPressRunnable?.let { handler.removeCallbacks(it) }
                                 longPressRunnable = null
 
@@ -173,6 +198,10 @@ fun MinecraftSurface(
                             }
 
                             MotionEvent.ACTION_CANCEL -> {
+                                if (isHotbarTouch) {
+                                    isHotbarTouch = false
+                                    return@setOnTouchListener true
+                                }
                                 // 안전망: 어떤 이유로 취소되면 모든 버튼 release
                                 longPressRunnable?.let { handler.removeCallbacks(it) }
                                 longPressRunnable = null

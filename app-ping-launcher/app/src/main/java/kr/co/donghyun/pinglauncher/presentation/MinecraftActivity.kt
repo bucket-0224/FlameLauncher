@@ -307,6 +307,7 @@ class MinecraftActivity : BaseActivity() {
 
     private var lastGrabState: Boolean? = null
     private var imeVisible = false
+    private var hasEnteredWorld = false
 
     private fun startGrabStatePolling() {
         lifecycleScope.launch {
@@ -315,6 +316,7 @@ class MinecraftActivity : BaseActivity() {
                     val grab = isGrabbing
                     if (grab != lastGrabState) {
                         lastGrabState = grab
+                        if (grab) hasEnteredWorld = true   // 첫 grab = 월드 진입
                         updateGameControllerVisibility()
                     }
                 }
@@ -363,16 +365,16 @@ class MinecraftActivity : BaseActivity() {
      */
     internal fun updateGameControllerVisibility() {
         val hasExternalInput = hasHardwareKeyboardOrMouse()
-        // grab(=월드 플레이 중) 또는 IME 표시 중(=채팅)일 때만 표시.
-        //   - 채팅: grab 은 풀리지만 IME 가 떠 있으므로 유지
-        //   - 인벤토리/타이틀/월드 밖: grab=false + IME 없음 → 가림 (월드 나가면 즉시 사라짐)
-        //   - 물리 키보드/마우스 연결 시: 가림
-        val shouldShow = (isGrabbing || imeVisible) && !hasExternalInput
-        // GONE 은 레이아웃에서 제거되어 게임 surface 재배치(깜빡임)를 유발하므로 INVISIBLE 사용.
-        //   또한 값이 실제로 바뀔 때만 set 해 불필요한 전환/레이아웃 패스를 막는다.
+        // 월드 진입(첫 grab) 후에는 컨트롤러 뷰를 계속 표시하되, 내부에서 버튼을 거른다:
+        //   - grab(플레이) 또는 IME(채팅) → 전체 버튼
+        //   - 그 외(인벤토리/ESC메뉴/타이틀) → ESC 버튼만 (인벤토리에서 뒤로가기용)
+        //   - 물리 키보드/마우스 → 전체 숨김
+        val fullControl = isGrabbing || imeVisible
+        val shouldShow = hasEnteredWorld && !hasExternalInput
         val target = if (shouldShow) View.VISIBLE else View.INVISIBLE
         runOnUiThread {
             val view = gameControllerView ?: return@runOnUiThread
+            view.setEscOnlyMode(!fullControl)   // grab/IME 아니면 ESC 만
             if (view.visibility != target) {
                 view.visibility = target
             }
@@ -518,6 +520,41 @@ class MinecraftActivity : BaseActivity() {
     internal var currentCursorX = 1280f  // 화면 중앙 근처
     internal var currentCursorY = 720f
     internal val MOUSE_SENSITIVITY = 1.5f
+
+    // 마인크래프트 GUI 스케일(options.txt). 핫바 영역 계산에 사용. 게임 실행 시 갱신.
+    @Volatile internal var mcGuiScale: Int = 0   // 0 = 자동(auto)
+
+    /**
+     * 핫바 슬롯 선택 (index 0~8). 화면 하단 핫바 영역 터치 시 호출.
+     * 마인크래프트는 1~9 키로 슬롯을 직접 선택하므로 GLFW_KEY_1(49)+index 를 전송.
+     */
+    internal fun selectHotbarSlot(index: Int) {
+        if (index !in 0..8) return
+        val key = 49 + index   // GLFW_KEY_1 = 49
+        sendKey(key, GLFW_PRESS)
+        sendKey(key, GLFW_RELEASE)
+    }
+
+    /**
+     * 현재 화면 크기 기준 핫바의 화면상 사각형(left,right,top,bottom px)을 계산한다.
+     * ZL2 와 동일한 규칙: slotSize = guiScale*20, 핫바너비 = slotSize*9, 화면 하단 중앙.
+     * guiScale 이 0(자동)이면 해상도로 계산. 핫바가 화면에 없으면 null.
+     */
+    internal fun computeHotbarRect(viewW: Int, viewH: Int): android.graphics.RectF? {
+        if (viewW <= 0 || viewH <= 0) return null
+        val auto = minOf(viewW / 320, viewH / 240).coerceAtLeast(1)
+        val scale = if (mcGuiScale in 1..auto) mcGuiScale else auto
+        val slot = scale * 20f
+        val total = slot * 9f
+        if (total <= 0f || total > viewW) return null
+        val left = (viewW - total) / 2f
+        val right = left + total
+        // 핫바는 화면 맨 아래에서 살짝 위. MC 기본은 바닥에서 약 (slot/ ... ) 위지만,
+        //   터치 편의상 바닥 ~ slotHeight*1.0 영역으로 잡는다.
+        val bottom = viewH.toFloat()
+        val top = bottom - slot
+        return android.graphics.RectF(left, top, right, bottom)
+    }
 
 
     /**
@@ -1827,6 +1864,10 @@ class MinecraftActivity : BaseActivity() {
         //   힙을 손상시켜 Scudo "corrupted chunk header" 로 강제 종료됨(렌더 스레드).
         //   밉맵 0 이면 아틀라스가 ...x0 으로 생성되어 크래시가 사라짐.
         upsert("mipmapLevels",   "0")
+
+        // 핫바 영역 계산용 — options.txt 의 guiScale 을 읽어둔다(없으면 0=자동).
+        mcGuiScale = existing.firstOrNull { it.startsWith("guiScale:") }
+            ?.substringAfter("guiScale:")?.trim()?.toIntOrNull() ?: 0
 
         optionsFile.writeText(existing.joinToString("\n"))
         Log.d("PING_LAUNCHER",
