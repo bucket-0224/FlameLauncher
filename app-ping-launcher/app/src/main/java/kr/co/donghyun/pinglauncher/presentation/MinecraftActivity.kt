@@ -289,21 +289,6 @@ class MinecraftActivity : BaseActivity() {
         im.registerInputDeviceListener(inputDeviceListener, null)
     }
 
-    private fun canUseZink(): Boolean {
-        // Vulkan 1.1 헤더 존재 확인
-        val hasVk11 = packageManager.hasSystemFeature(
-            PackageManager.FEATURE_VULKAN_HARDWARE_VERSION,
-            0x401000  // VK_API_VERSION_1_1
-        )
-        if (!hasVk11) {
-            Log.w("PING_LAUNCHER", "Zink probe: Vulkan 1.1 system feature 없음")
-            return false
-        }
-        // 추가로 vkEnumeratePhysicalDevices 가 1개 이상 리턴하는지 확인하면 더 정확하지만
-        // 일단 system feature 만으로도 에뮬레이터는 거의 다 걸러짐
-        return true
-    }
-
     /** 현재 물리 키보드 또는 마우스가 연결되어 있는지 */
     private fun hasHardwareKeyboardOrMouse(): Boolean {
         val im = getSystemService(INPUT_SERVICE)
@@ -364,25 +349,7 @@ class MinecraftActivity : BaseActivity() {
         }
 
 
-
-        // ── 렌더러별 .so 먼저 로드 (preloadAwtStubs 이전에) ───────────────
-        // preloadAwtStubs 같은 JNI 바인딩 함수에서 실패가 나더라도,
-        // 핵심 .so 들은 이미 메모리에 올라와 있어야 JVM 부팅이 가능하다.
-
         var renderer = RendererManager.load(this)
-
-//        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
-//            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
-//            runOnUiThread {
-//                Toast.makeText(
-//                    this,
-//                    "이 기기의 GPU는 Zink 미지원 — GL4ES로 전환합니다",
-//                    Toast.LENGTH_LONG
-//                ).show()
-//            }
-//            renderer = Renderer.fromId("gl4es")  // 또는 "gl4es" — 둘 중 가용한 것
-//        }
-
 
         when (renderer.id) {
             "mobileglues" -> {
@@ -464,18 +431,6 @@ class MinecraftActivity : BaseActivity() {
             }
         }
     }
-
-    private fun resolveForgePlaceholders(
-        raw: String,
-        librariesDir: File,
-        nativesDir: File,
-        versionId: String
-    ): String = raw
-        .replace("\${library_directory}",   librariesDir.absolutePath)
-        .replace("\${libraries_directory}", librariesDir.absolutePath)   // 표기 둘 다 본 적 있음
-        .replace("\${classpath_separator}", File.pathSeparator)
-        .replace("\${version_name}",        versionId)
-        .replace("\${natives_directory}",   nativesDir.absolutePath)
 
 
     private fun startCrashWatcher() {
@@ -1285,7 +1240,8 @@ class MinecraftActivity : BaseActivity() {
                 // 이미 들어있는지 확인 후 없으면 추가.
                 val needed = listOf(
                     "ForgeAutoRenamingTool", "BinaryPatcher", "binarypatcher",
-                    "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch"
+                    "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch",
+                    "commons-collections4"
                 ).filterNot { arg.contains(",$it") || arg.endsWith("=$it") }
 
                 if (needed.isNotEmpty()) {
@@ -1811,7 +1767,7 @@ class MinecraftActivity : BaseActivity() {
      */
     private fun syncFmlConfig(fmlToml: File) {
         // ★ early window 토글. 문제가 재발하면 false 로 바꾸면 된다.
-        val ENABLE_EARLY_WINDOW = false
+        val ENABLE_EARLY_WINDOW = true
         try {
             fmlToml.parentFile?.mkdirs()
 

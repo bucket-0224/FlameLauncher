@@ -16,6 +16,7 @@ static osm_render_window_t* currentBundle;
 
 // a tiny buffer for rendering when there's nowhere t render
 static char no_render_buffer[16 * 16 * 4] __attribute__((aligned(16)));
+static bool hasSetNoRendererBuffer = false;   // ★ ZL2 와 동일 — 더미 버퍼는 최초 1회만 세팅
 const GLubyte* (*real_glGetString)(GLenum name) = NULL;
 
 // Its not in a .h file because it is not supposed to be used outsife of this file.
@@ -125,8 +126,6 @@ const GLubyte* wrapped_glGetString(GLenum name) {
 }
 
 void osm_make_current(osm_render_window_t* bundle) {
-    LOGI("osm_make_current ENTER: tid=%d bundle=%p", gettid(), bundle);
-
     if(bundle == NULL) {
         //technically this does nothing as its not possible to unbind a context in OSMesa
         OSMesaMakeCurrent_p(NULL, NULL, 0, 0, 0);
@@ -146,12 +145,21 @@ void osm_make_current(osm_render_window_t* bundle) {
         osm_swap_surfaces(bundle);
         if(hasSetMainWindow) pojav_environ->mainWindowBundle->state = STATE_RENDERER_ALIVE;
     }
-    osm_set_no_render_buffer(&bundle->buffer);
+    // ★ ZL2 와 동일 — 더미 버퍼는 최초 1회만. 매번 덮어쓰면 실제 표면 버퍼가 리셋되어
+    //   화면이 16x16 더미에만 그려지고(=화면 안 뜸) make_current 가 폭주한다.
+    if (!hasSetNoRendererBuffer) {
+        osm_set_no_render_buffer(&bundle->buffer);
+        hasSetNoRendererBuffer = true;
+    }
     osm_apply_current_ll();
     OSMesaPixelStore_p(OSMESA_Y_UP,0);
 }
 
 void osm_swap_buffers() {
+    if (currentBundle == NULL) {
+        // make_current(NULL) 직후 등 — 그릴 대상이 없으면 조용히 무시 (NULL 역참조 방지)
+        return;
+    }
     static int fc = 0;
     struct timespec t0, t1, t2, t3;
     clock_gettime(CLOCK_MONOTONIC, &t0);
