@@ -48,6 +48,8 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL
 import org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT
 import org.lwjgl.glfw.GLFW.GLFW_KEY_S
 import org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE
+import org.lwjgl.glfw.GLFW.GLFW_KEY_SLASH
+import org.lwjgl.glfw.GLFW.GLFW_KEY_T
 import org.lwjgl.glfw.GLFW.GLFW_KEY_TAB
 import org.lwjgl.glfw.GLFW.GLFW_KEY_W
 import org.lwjgl.glfw.GLFW.GLFW_PRESS
@@ -102,7 +104,10 @@ class MinecraftActivity : BaseActivity() {
     private var inputDeviceListener: InputDeviceListener? = null
 
     internal val isGrabbing: Boolean
-        get() = try { nativeIsGrabbing() } catch (_: Exception) { false }
+        get() {
+            if (!jvmStarted) return false
+            return try { nativeIsGrabbing() } catch (_: Throwable) { false }
+        }
 
     private var jvmStarted = false
     private var javaMajor: Int = 21
@@ -213,6 +218,10 @@ class MinecraftActivity : BaseActivity() {
         setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
             val ime = insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime())
             gameControllerView?.setImeVisibleExternal(ime)
+            if (ime != imeVisible) {
+                imeVisible = ime
+                updateGameControllerVisibility()
+            }
             insets
         }
 
@@ -288,6 +297,30 @@ class MinecraftActivity : BaseActivity() {
             }
         }
         im.registerInputDeviceListener(inputDeviceListener, null)
+
+        // ── grab 상태 폴링(가벼움, 500ms) ──
+        //   마인크래프트 onGrabStateChanged JNI 콜백은 모듈 레이어 불일치로 NoSuchMethodError 라
+        //   신뢰 불가. nativeIsGrabbing()(=pojav_environ->isGrabbing, 정상 갱신)을 폴링해
+        //   '첫 grab=true' 를 월드 진입으로 보고, 이후 컨트롤러를 계속 표시(A-1).
+        startGrabStatePolling()
+    }
+
+    private var lastGrabState: Boolean? = null
+    private var imeVisible = false
+
+    private fun startGrabStatePolling() {
+        lifecycleScope.launch {
+            while (true) {
+                if (jvmStarted) {
+                    val grab = isGrabbing
+                    if (grab != lastGrabState) {
+                        lastGrabState = grab
+                        updateGameControllerVisibility()
+                    }
+                }
+                kotlinx.coroutines.delay(300)
+            }
+        }
     }
 
     /** 현재 물리 키보드 또는 마우스가 연결되어 있는지 */
@@ -330,10 +363,19 @@ class MinecraftActivity : BaseActivity() {
      */
     internal fun updateGameControllerVisibility() {
         val hasExternalInput = hasHardwareKeyboardOrMouse()
-        val shouldShow = !hasExternalInput
-
+        // grab(=월드 플레이 중) 또는 IME 표시 중(=채팅)일 때만 표시.
+        //   - 채팅: grab 은 풀리지만 IME 가 떠 있으므로 유지
+        //   - 인벤토리/타이틀/월드 밖: grab=false + IME 없음 → 가림 (월드 나가면 즉시 사라짐)
+        //   - 물리 키보드/마우스 연결 시: 가림
+        val shouldShow = (isGrabbing || imeVisible) && !hasExternalInput
+        // GONE 은 레이아웃에서 제거되어 게임 surface 재배치(깜빡임)를 유발하므로 INVISIBLE 사용.
+        //   또한 값이 실제로 바뀔 때만 set 해 불필요한 전환/레이아웃 패스를 막는다.
+        val target = if (shouldShow) View.VISIBLE else View.INVISIBLE
         runOnUiThread {
-            gameControllerView?.visibility = if (shouldShow) View.VISIBLE else View.GONE
+            val view = gameControllerView ?: return@runOnUiThread
+            if (view.visibility != target) {
+                view.visibility = target
+            }
         }
     }
 
@@ -823,6 +865,37 @@ class MinecraftActivity : BaseActivity() {
 
         nativeSendKey(glfwKeyCode, scancode, action, 0)
 
+        // 채팅/명령어 키 → 소프트 키보드 자동 표시 (T=84, /=47).
+        //   엔터(257)/ESC(256) → 채팅 닫힘이므로 키보드 숨김.
+        if (action == GLFW_PRESS) {
+            when (glfwKeyCode) {
+                GLFW_KEY_T, GLFW_KEY_SLASH -> showGameSoftKeyboard()   // 채팅 / 명령어
+                GLFW_KEY_ENTER, GLFW_KEY_ESCAPE -> hideGameSoftKeyboard()  // 전송/취소
+            }
+        }
+    }
+
+    private fun showGameSoftKeyboard() {
+        // 물리 키보드가 있으면 surface 의 onCreateInputConnection 이 null 을 반환하므로
+        //   소프트 키보드를 띄우지 않는다(물리 키로 입력).
+        if (hasHardwareKeyboardOrMouse()) return
+        runOnUiThread {
+            val surface = window.decorView.findViewWithTag<View>("minecraft_surface") ?: return@runOnUiThread
+            surface.isFocusableInTouchMode = true
+            surface.requestFocus()
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.showSoftInput(surface, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun hideGameSoftKeyboard() {
+        runOnUiThread {
+            val surface = window.decorView.findViewWithTag<View>("minecraft_surface")
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.hideSoftInputFromWindow(
+                (surface ?: window.decorView).windowToken, 0
+            )
+        }
     }
 
 
