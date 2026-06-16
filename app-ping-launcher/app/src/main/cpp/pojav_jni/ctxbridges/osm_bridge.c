@@ -12,7 +12,7 @@
 #include "time.h"
 #define gettid() ((pid_t)syscall(SYS_gettid))
 
-static osm_render_window_t* currentBundle;
+static __thread osm_render_window_t* currentBundle;   // ★ ZL2 와 동일 — 스레드 로컬(렌더 스레드 격리)
 
 // a tiny buffer for rendering when there's nowhere t render
 static char no_render_buffer[16 * 16 * 4] __attribute__((aligned(16)));

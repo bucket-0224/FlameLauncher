@@ -24,6 +24,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
+import kr.co.donghyun.pinglauncher.data.instance.InstanceType
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettings
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.pinglauncher.data.jvm.isLegacyVersion
@@ -317,12 +318,15 @@ class MinecraftActivity : BaseActivity() {
 
 
     /**
-     * 물리 키보드/마우스가 연결되어 있으면 GameControllerView 를 숨긴다.
+     * GameControllerView 가시성 갱신.
+     * 표시 조건: 월드에서 플레이 중(마우스 grab) AND 물리 키보드/마우스 미연결.
      *
      * 판정 기준:
+     *  - grab: nativeIsGrabbing() — 마인크래프트가 마우스를 잡은 상태(=월드 플레이 중)
      *  - 키보드: SOURCE_KEYBOARD 비트 + KEYBOARD_TYPE_ALPHABETIC (소프트 IME 제외)
      *  - 마우스: SOURCE_MOUSE 비트 (또는 SOURCE_MOUSE_RELATIVE)
-     *  - 둘 중 하나라도 있으면 숨김
+     *  - 물리 입력이 하나라도 있으면 숨김 (물리로 조작)
+     *  - grab 이 풀리면(메뉴/인벤토리/채팅) 숨김 (커서로 조작)
      */
     internal fun updateGameControllerVisibility() {
         val hasExternalInput = hasHardwareKeyboardOrMouse()
@@ -1178,9 +1182,17 @@ class MinecraftActivity : BaseActivity() {
 
         syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings)
         // Forge/NeoForge early loading window(망치/여우 로딩 화면) 설정.
-        // ZL2 와 동일하게 켜는 게 기본. 끄려면 syncFmlConfig 의 ENABLE_EARLY_WINDOW=false.
+        // ZL2 와 동일하게 켜는 게 기본. 단, 모드팩(특히 Sinytra Connector 포함)은 early window 의
+        //   acceptGameLayer → DisplayWindow.updateModuleReads 단계에서 게임 클래스
+        //   (net.minecraft.client.gui.screens.LoadingOverlay)를 읽지 못해 NoClassDefFoundError 로
+        //   크래시한다. 복잡한 모듈 구성 때문이므로 모드팩 인스턴스는 early window 를 끈다.
+        //   (일반 Forge/NeoForge 는 켜서 망치/여우 애니메이션 유지)
         // (앱이 자기 외부 디렉토리 파일을 쓰는 것이라 권한 문제 없음)
-        syncFmlConfig(File(mcDir, "config/fml.toml"))
+        val enableEarlyWindow = instanceMeta?.type != InstanceType.MODPACK
+        if (!enableEarlyWindow) {
+            Log.d("PING_LAUNCHER", "🪟 모드팩 인스턴스 — early window 비활성화(Connector 모듈 호환)")
+        }
+        syncFmlConfig(File(mcDir, "config/fml.toml"), enableEarlyWindow)
 
 // ★ JDK 9+ 전용 플래그는 javaMajor>=9 일 때만 부착
         val isModularJre = javaMajor >= 9
@@ -1765,9 +1777,11 @@ class MinecraftActivity : BaseActivity() {
      * 나머지 기본값을 자기 형식으로 채워 넣는다. 앱이 자기 파일을 쓰는 것이라
      * adb push 때와 달리 권한(AccessDenied) 문제가 없다.
      */
-    private fun syncFmlConfig(fmlToml: File) {
-        // ★ early window 토글. 문제가 재발하면 false 로 바꾸면 된다.
-        val ENABLE_EARLY_WINDOW = true
+    private fun syncFmlConfig(fmlToml: File, enableEarlyWindow: Boolean = true) {
+        // ★ early window 토글. 호출부에서 인스턴스 종류에 따라 결정해 넘긴다.
+        //   (모드팩/Connector 인스턴스는 early window 의 acceptGameLayer 단계에서
+        //    게임 클래스(LoadingOverlay 등) 로드에 실패하므로 OFF 로 넘어온다)
+        val ENABLE_EARLY_WINDOW = enableEarlyWindow
         try {
             fmlToml.parentFile?.mkdirs()
 

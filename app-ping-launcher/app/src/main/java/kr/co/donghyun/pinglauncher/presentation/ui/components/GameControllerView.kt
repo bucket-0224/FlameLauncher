@@ -477,13 +477,6 @@ class GameControllerView(context: Context) : View(context) {
     }
 
     override fun setVisibility(visibility: Int) {
-        val from = when (visibility) {
-            View.VISIBLE -> "VISIBLE"
-            View.INVISIBLE -> "INVISIBLE"
-            View.GONE -> "GONE"
-            else -> "?$visibility"
-        }
-        Log.d("GCV_VIS", "setVisibility($from)", Throwable("setVisibility trace"))
         super.setVisibility(visibility)
     }
 
