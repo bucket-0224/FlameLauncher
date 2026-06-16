@@ -34,7 +34,7 @@ import java.util.UUID
 
 private val Pink = Color(0xFFE91E8C)
 private val TextMain = Color(0xFFFCE4EC)
-private val TextSub = Color(0xFFBB86A0)
+internal val TextSub = Color(0xFFBB86A0)
 
 // ────────────────────────────────────────────────────────────────────────
 // 공통 스케일 상수 (GameControllerView 와 반드시 동일하게 유지)

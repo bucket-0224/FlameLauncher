@@ -36,61 +36,7 @@ enum class Renderer(
             "LIBGL_DRI3_DISABLE" to "1",      // DRI3 도 끔
             "GALLIUM_HUD" to "",
         )
-    ),
-    MOBILEGLUES(
-        id = "mobileglues",
-        displayName = "MobileGlues (GL 4.x)",
-        description = "GLES 3.x로 OpenGL 4.x를 흉내내는 모던 변환기. 1.17+ 모드팩에 추천. 일부 에뮬레이터에서 불안정.",
-        pojavRenderer = "opengles3",
-        libglName = "libmobileglues.so",
-        libglString = "MobileGlues",
-        libglEs = "3",
-        emoji = "📱",
-        extraEnv = mapOf()
-    ),
-    HOLY_GL4ES(
-        id = "gl4es",
-        displayName = "Holy-GL4ES",
-        description = "GLES2 기반 변환. 가볍고 구버전(1.16-)에 적합. 모드 호환성 좋음.",
-        pojavRenderer = "opengles2",
-        libglName = "libgl4es_114.so",
-        libglString = "GL4ES",
-        libglEs = "2",
-        emoji = "⚡",
-        extraEnv = mapOf(
-            "LIBGL_MIPMAP" to "3",
-            "LIBGL_NORMALIZE" to "1",
-            "LIBGL_VSYNC" to "1",
-            "LIBGL_NOINTOVLHACK" to "1",
-            "LIBGL_FB" to "2",              // FBO 강제 경로
-            "LIBGL_FBOFORCETEX" to "1",     // FBO color attachment 텍스처 강제
-            "LIBGL_FORCE16BITS" to "0",
-            "LIBGL_GL" to "21",             // GL 2.1로 명시 → LWJGL이 3.0 진입점 매핑 안 시도
-            "LIBGL_ES" to "2"
-        )
     );
-//    GL4ES_DESKTOP(
-//        id = "gl4es_desktop",
-//        displayName = "GL4ES (Desktop GL bind)",
-//        description = "GL4ES이지만 데스크톱 OpenGL API로 바인딩. 일부 기기에서 더 잘 됨.",
-//        pojavRenderer = "opengles3_desktopgl",
-//        libglName = "libgl4es_114.so",
-//        libglString = "GL4ES",
-//        libglEs = "3",
-//        emoji = "🖥️",
-//        extraEnv = mapOf(
-//            "LIBGL_GL" to "33",          // GL 3.3 코어 강제 노출
-//            "LIBGL_ES" to "3",
-//            "LIBGL_NOERROR" to "1",      // GL 에러 무시 (지옥문이지만 부팅 한정 시도)
-//            "LIBGL_USEVBO" to "1",
-//            "LIBGL_BATCH" to "1",
-//            "LIBGL_NPOT" to "2",
-//            "LIBGL_GLES" to "2",         // 백엔드는 ES2 그대로
-//            "LIBGL_FBOMAKECURRENT" to "1",
-//            "LIBGL_USEFBO" to "1",
-//            "LIBGL_VSYNC" to "0",
-//        )
-//    );
 
     fun buildEnv(cacheDir: String, nativeDir: String): Map<String, String> {
         val base = mutableMapOf(

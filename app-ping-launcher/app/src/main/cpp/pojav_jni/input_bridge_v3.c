@@ -25,15 +25,6 @@
 #include "environ/environ.h"
 #include "jvm_hooks/jvm_hooks.h"
 
-// 매 프레임/매 입력마다 도는 디버그 로그 토글 (0 = 끔 → 성능용, 1 = 켬 → 디버깅용)
-// LOGI는 동기 I/O라 매 프레임 호출 시 렌더 파이프라인을 직렬화시켜 fps를 크게 떨어뜨림.
-#define FRAME_SPAM_LOG 0
-#if FRAME_SPAM_LOG
-#define FLOGI(...) LOGI(__VA_ARGS__)
-#else
-#define FLOGI(...) ((void)0)
-#endif
-
 #define EVENT_TYPE_CHAR 1000
 #define EVENT_TYPE_CHAR_MODS 1001
 #define EVENT_TYPE_CURSOR_ENTER 1002
@@ -443,8 +434,8 @@ static void dispatchMouseButtonDirect(jint button, jint action, jint mods) {
 void pojavPumpEvents(void* window) {
     static int pump_counter = 0;
     if (++pump_counter % 60 == 0) {
-        FLOGI("[PUMP] pojavPumpEvents tick #%d outIdx=%zu targetIdx=%zu",
-              pump_counter, pojav_environ->outEventIndex, pojav_environ->outTargetIndex);
+        LOGI("[PUMP] pojavPumpEvents tick #%d outIdx=%zu targetIdx=%zu",
+             pump_counter, pojav_environ->outEventIndex, pojav_environ->outTargetIndex);
     }
 
     if(pojav_environ->shouldUpdateMouse) {
@@ -507,8 +498,8 @@ void pojavBootDispatchFramebufferSize(void) {
 void pojavStartPumping() {
     static int start_counter = 0;
     if (++start_counter % 60 == 0) {
-        FLOGI("[PUMP] StartPumping tick #%d eventCounter=%zu",
-              start_counter, atomic_load_explicit(&pojav_environ->eventCounter, memory_order_acquire));
+        LOGI("[PUMP] StartPumping tick #%d eventCounter=%zu",
+             start_counter, atomic_load_explicit(&pojav_environ->eventCounter, memory_order_acquire));
     }
 
     size_t counter = atomic_load_explicit(&pojav_environ->eventCounter, memory_order_acquire);
@@ -540,7 +531,7 @@ void pojavStartPumping() {
 void pojavStopPumping() {
     static int stop_counter = 0;
     if (++stop_counter % 60 == 0) {
-        FLOGI("[PUMP] StopPumping tick #%d", stop_counter);
+        LOGI("[PUMP] StopPumping tick #%d", stop_counter);
     }
 
     pojav_environ->outEventIndex = pojav_environ->outTargetIndex;
@@ -719,7 +710,7 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSendCursorEnter(
 */
 
 void critical_send_cursor_pos(jfloat x, jfloat y) {
-    FLOGI("[DIAG] critical_send_cp: x=%.0f y=%.0f savedW=%d savedH=%d invoke=%p ready=%d enter_invoke=%p entered=%d", x, y, pojav_environ->savedWidth, pojav_environ->savedHeight, (void*)pojav_environ->GLFW_invoke_CursorPos, pojav_environ->isInputReady, (void*)pojav_environ->GLFW_invoke_CursorEnter, pojav_environ->isCursorEntered);
+    LOGI("[DIAG] critical_send_cp: x=%.0f y=%.0f savedW=%d savedH=%d invoke=%p ready=%d enter_invoke=%p entered=%d", x, y, pojav_environ->savedWidth, pojav_environ->savedHeight, (void*)pojav_environ->GLFW_invoke_CursorPos, pojav_environ->isInputReady, (void*)pojav_environ->GLFW_invoke_CursorEnter, pojav_environ->isCursorEntered);
 #ifdef DEBUG
     LOGD("Sending cursor position \n");
 #endif
@@ -777,11 +768,11 @@ void noncritical_send_key(__attribute__((unused)) JNIEnv* env, __attribute__((un
 
 void critical_send_mouse_button(jint button, jint action, jint mods) {
     if (pojav_environ->GLFW_invoke_MouseButton && pojav_environ->isInputReady) {
-        FLOGI("[DIAG] critical_send_mb: invoke=%p ready=%d showWin=%lx mainBundle=%p",
-              pojav_environ->GLFW_invoke_MouseButton,
-              pojav_environ->isInputReady,
-              pojav_environ->showingWindow,
-              pojav_environ->mainWindowBundle);
+        LOGI("[DIAG] critical_send_mb: invoke=%p ready=%d showWin=%lx mainBundle=%p",
+             pojav_environ->GLFW_invoke_MouseButton,
+             pojav_environ->isInputReady,
+             pojav_environ->showingWindow,
+             pojav_environ->mainWindowBundle);
 
         if (pojav_environ->GLFW_invoke_MouseButton && pojav_environ->isInputReady) {
             if (pojav_environ->isUseStackQueueCall) {
@@ -1053,4 +1044,108 @@ JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetCursorShape(
     (void)env; (void)cls;
     LOGI("[NSD] SetCursorShape shape=%d", shape);
     // optional: implement if MC sets cursor shapes
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+//  cacio(caciocavallo) AWT Desktop 후킹 — 게임 내 "폴더 열기 / 링크 열기"
+//
+//  마인크래프트의 "리소스팩 폴더 열기", "스크린샷 폴더 열기", 하이퍼링크 등은
+//  데스크톱에서 java.awt.Desktop 으로 처리된다. 안드로이드 JRE 는 그 구현으로
+//  caciocavallo(cacio)를 쓰는데, 그 네이티브 종단점이 CTCDesktopPeer.openFile/openUri
+//  이다(=여기). 이를 구현해 Dalvik 쪽 CallbackBridge.openPath/openLink 로 넘긴다.
+//
+//  • openFile(path)  → CallbackBridge.openPath(String)  : "file:///.../resourcepacks/" 같은 경로
+//  • openUri(uri)    → CallbackBridge.openLink(String)  : http(s) 등 링크
+//
+//  자바 쪽(CallbackBridge)에서 경로/URI 를 받아 안드로이드 인텐트(SAF/브라우저/공유)로
+//  처리한다. cacio 패키지명은 배포본에 따라 두 가지라 둘 다 등록한다.
+// ──────────────────────────────────────────────────────────────────────────
+
+// CallbackBridge 의 openPath / openLink 메서드 ID (최초 호출 시 lazy 캐시)
+static jmethodID s_method_openPath = NULL;
+static jmethodID s_method_openLink = NULL;
+
+// runtime(JRE) 스레드에서 dalvik 으로 문자열을 넘겨 정적 메서드를 호출하는 공통 헬퍼.
+//   jvmEnv     : 호출자(런타임 JVM) JNIEnv — 인자 jstring 을 읽는 데 사용
+//   jstr       : 넘길 문자열(파일 경로 또는 URI)
+//   methodId*  : 캐시할 메서드 ID 슬롯
+//   methodName : "openPath" 또는 "openLink"
+static void forward_string_to_bridge(JNIEnv *jvmEnv, jstring jstr,
+                                     jmethodID *methodId, const char *methodName) {
+    if (pojav_environ == NULL || pojav_environ->dalvikJavaVMPtr == NULL) {
+        LOGE("[AWT] dalvik VM not ready, cannot forward %s", methodName);
+        return;
+    }
+    if (pojav_environ->bridgeClazz == NULL) {
+        LOGE("[AWT] CallbackBridge class not ready, cannot forward %s", methodName);
+        return;
+    }
+
+    // dalvik(안드로이드) JNIEnv 확보 — 필요 시 attach (clipboard 후킹과 동일 패턴)
+    JNIEnv *dalvikEnv = NULL;
+    char detachable = 0;
+    jint st = (*pojav_environ->dalvikJavaVMPtr)->GetEnv(
+            pojav_environ->dalvikJavaVMPtr, (void **) &dalvikEnv, JNI_VERSION_1_6);
+    if (st == JNI_EDETACHED) {
+        (*pojav_environ->dalvikJavaVMPtr)->AttachCurrentThread(
+                pojav_environ->dalvikJavaVMPtr, &dalvikEnv, NULL);
+        detachable = 1;
+    }
+    if (dalvikEnv == NULL) {
+        LOGE("[AWT] failed to obtain dalvik JNIEnv for %s", methodName);
+        return;
+    }
+
+    // 메서드 ID lazy 캐시: CallbackBridge.<methodName>(Ljava/lang/String;)V
+    if (*methodId == NULL) {
+        *methodId = (*dalvikEnv)->GetStaticMethodID(
+                dalvikEnv, pojav_environ->bridgeClazz, methodName, "(Ljava/lang/String;)V");
+        if (*methodId == NULL) {
+            LOGE("[AWT] CallbackBridge.%s(String) not found — add it on the Java side", methodName);
+            if ((*dalvikEnv)->ExceptionCheck(dalvikEnv)) (*dalvikEnv)->ExceptionClear(dalvikEnv);
+            if (detachable) (*pojav_environ->dalvikJavaVMPtr)->DetachCurrentThread(pojav_environ->dalvikJavaVMPtr);
+            return;
+        }
+    }
+
+    // 런타임 JVM 의 jstring → C 문자열 → dalvik jstring 으로 재생성하여 호출
+    const char *chars = (jstr != NULL) ? (*jvmEnv)->GetStringUTFChars(jvmEnv, jstr, NULL) : NULL;
+    jstring dalvikStr = (chars != NULL) ? (*dalvikEnv)->NewStringUTF(dalvikEnv, chars) : NULL;
+
+    LOGI("[AWT] forward %s -> %s", methodName, chars ? chars : "(null)");
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, pojav_environ->bridgeClazz, *methodId, dalvikStr);
+    if ((*dalvikEnv)->ExceptionCheck(dalvikEnv)) {
+        (*dalvikEnv)->ExceptionDescribe(dalvikEnv);
+        (*dalvikEnv)->ExceptionClear(dalvikEnv);
+    }
+
+    if (dalvikStr != NULL) (*dalvikEnv)->DeleteLocalRef(dalvikEnv, dalvikStr);
+    if (chars != NULL) (*jvmEnv)->ReleaseStringUTFChars(jvmEnv, jstr, chars);
+    if (detachable) (*pojav_environ->dalvikJavaVMPtr)->DetachCurrentThread(pojav_environ->dalvikJavaVMPtr);
+}
+
+// ── cacio 패키지 A: net.java.openjdk.cacio.ctc ──
+JNIEXPORT void JNICALL
+Java_net_java_openjdk_cacio_ctc_CTCDesktopPeer_openFile(JNIEnv *env, jclass clazz, jstring filePath) {
+    (void) clazz;
+    forward_string_to_bridge(env, filePath, &s_method_openPath, "openPath");
+}
+
+JNIEXPORT void JNICALL
+Java_net_java_openjdk_cacio_ctc_CTCDesktopPeer_openUri(JNIEnv *env, jclass clazz, jstring uri) {
+    (void) clazz;
+    forward_string_to_bridge(env, uri, &s_method_openLink, "openLink");
+}
+
+// ── cacio 패키지 B: com.github.caciocavallosilano.cacio.ctc ──
+JNIEXPORT void JNICALL
+Java_com_github_caciocavallosilano_cacio_ctc_CTCDesktopPeer_openFile(JNIEnv *env, jclass clazz, jstring filePath) {
+    (void) clazz;
+    forward_string_to_bridge(env, filePath, &s_method_openPath, "openPath");
+}
+
+JNIEXPORT void JNICALL
+Java_com_github_caciocavallosilano_cacio_ctc_CTCDesktopPeer_openUri(JNIEnv *env, jclass clazz, jstring uri) {
+    (void) clazz;
+    forward_string_to_bridge(env, uri, &s_method_openLink, "openLink");
 }

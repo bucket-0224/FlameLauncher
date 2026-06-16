@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.input.InputManager.InputDeviceListener
+import android.net.Uri
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -12,10 +13,15 @@ import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettings
@@ -31,6 +37,7 @@ import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.pinglauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.pinglauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftJREPreparer
+import kr.co.donghyun.pinglauncher.presentation.util.resources.ResourcePackImporter
 import org.lwjgl.glfw.GLFW.GLFW_KEY_A
 import org.lwjgl.glfw.GLFW.GLFW_KEY_D
 import org.lwjgl.glfw.GLFW.GLFW_KEY_E
@@ -137,6 +144,57 @@ class MinecraftActivity : BaseActivity() {
         }
     }
 
+
+    // ── 게임 내 "리소스팩 폴더 열기" → SAF 로 .zip 선택해 resourcepacks/ 에 복사 ──
+    //   MainActivity(stub).openLink 가 resourcepacks 경로를 감지하면 이 Activity 의
+    //   openResourcePackPicker(dir) 를 호출한다. 피커 결과는 아래 런처가 받는다.
+    //   (런처 등록은 필드 초기화 시점 = RESUMED 이전이라 게임 중에도 launch 가능)
+    private var pendingResourcePacksDir: File? = null
+
+    private val resourcePackPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val dir = pendingResourcePacksDir
+        pendingResourcePacksDir = null
+        if (uri == null || dir == null) return@registerForActivityResult
+        Toast.makeText(this, "리소스팩 가져오는 중…", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = ResourcePackImporter.importZip(
+                context = applicationContext,
+                zipUri = uri,
+                resourcePacksDir = dir,
+            )
+            withContext(Dispatchers.Main) {
+                val msg = when (result) {
+                    is ResourcePackImporter.Result.Success ->
+                        "‘${result.packName}’ 추가됨. 게임 리소스팩 목록에서 활성화하세요."
+                    is ResourcePackImporter.Result.Failure ->
+                        result.reason
+                }
+                Toast.makeText(this@MinecraftActivity, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * 게임 내 "리소스팩 폴더 열기"에서 호출됨(MainActivity stub 경유).
+     * 폴더 선택 대신 .zip 파일 피커를 띄워, 고른 팩을 해당 resourcepacks 폴더로 복사한다.
+     */
+    fun openResourcePackPicker(resourcePacksDir: File) {
+        pendingResourcePacksDir = resourcePacksDir.apply { mkdirs() }
+        val mimeTypes = arrayOf(
+            "application/zip",
+            "application/x-zip-compressed",
+            "application/octet-stream",
+        )
+        try {
+            resourcePackPickerLauncher.launch(mimeTypes)
+            Toast.makeText(this, "추가할 리소스팩 .zip 을 선택하세요", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "리소스팩 피커 실행 실패: ${e.message}", e)
+            pendingResourcePacksDir = null
+        }
+    }
 
     override fun onCreated() {
         hideNavigation()

@@ -39,6 +39,20 @@ public class MainActivity {
 
             // 폴더면 디렉토리 트리 표시
             if (target.isDirectory()) {
+                // ── 리소스팩 폴더면: 폴더 선택 대신 .zip 파일 피커로 분기 ──
+                //   게임 "리소스팩 폴더 열기"는 .../instances/<inst>/resourcepacks/ 를 보낸다.
+                //   안드로이드에선 그 폴더에 사용자가 직접 파일을 못 넣으므로(Scoped Storage),
+                //   런처가 .zip 을 골라 그 폴더로 복사해 준다.
+                String dirName = target.getName();
+                if ("resourcepacks".equalsIgnoreCase(dirName)) {
+                    MinecraftActivity act = MinecraftActivity.Companion.getCurrentInstance();
+                    if (act != null) {
+                        final File rpDir = target;
+                        act.runOnUiThread(() -> act.openResourcePackPicker(rpDir));
+                        return;
+                    }
+                    // Activity 가 없으면(예외적) 기존 폴더 열기로 폴백
+                }
                 openDirectory(ctx, target);
             } else {
                 openFile(ctx, target);

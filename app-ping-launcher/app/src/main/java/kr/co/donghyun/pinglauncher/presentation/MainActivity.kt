@@ -2,7 +2,6 @@ package kr.co.donghyun.pinglauncher.presentation
 
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.SystemBarStyle
@@ -29,7 +28,6 @@ import kr.co.donghyun.pinglauncher.presentation.ui.screen.MainScreen
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.PingLauncherTheme
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftDownloader
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.VersionRepository
-import kr.co.donghyun.pinglauncher.presentation.util.maps.MapImporter
 import java.io.File
 
 class MainActivity : BaseActivity() {
@@ -61,19 +59,6 @@ class MainActivity : BaseActivity() {
             // 세션 갱신
             refreshLoginState()
         }
-    }
-
-    // 🗺 맵 가져오기: SAF 로 고른 zip 을 어느 인스턴스의 saves 로 넣을지 기억
-    private var pendingMapImportInstanceId: String? = null
-
-    // SAF 문서 피커 — zip(또는 모든 파일) 선택. 권한 불필요.
-    private val mapImportLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri: Uri? ->
-        val instanceId = pendingMapImportInstanceId
-        pendingMapImportInstanceId = null
-        if (uri == null || instanceId == null) return@registerForActivityResult
-        importMapZip(instanceId, uri)
     }
 
     override fun onCreated() {
@@ -109,8 +94,9 @@ class MainActivity : BaseActivity() {
                     onLaunchFabric = { v, l -> startFabricDownloadAndPlay(v, l) },
                     onLaunchForge  = { v, f -> startForgeDownloadAndPlay(v, f, false) },
                     onLaunchInstance = { meta -> launchInstance(meta) },   // ★ 추가
-                    onDeleteInstance = { meta -> deleteInstance(meta) },   // ★ 추가
-                    onImportMap = { meta -> startMapImport(meta) },        // ★ 추가
+                    onOpenInstanceSettings = { meta ->
+                        InstanceSettingsActivity.start(this@MainActivity, meta.id, meta.name)
+                    },
                     onOpenContents = { ContentPackBrowserActivity.start(this@MainActivity) },
                     onOpenNetworkSettings = { NetworkSettingsActivity.start(this@MainActivity) },
                     onOpenKeySettings = { KeyboardLayoutEditorActivity.start(this@MainActivity) },
@@ -465,63 +451,6 @@ class MainActivity : BaseActivity() {
                 }
             } catch (e: Exception) {
                 Log.e("PING_LAUNCHER", "인스턴스 실행 실패: ${e.message}", e)
-            }
-        }
-    }
-
-    private fun deleteInstance(meta: InstanceMeta) {
-        lifecycleScope.launch(Dispatchers.IO) {
-            InstanceManager.deleteInstance(this@MainActivity, meta.id)
-            refreshInstances()
-        }
-    }
-
-    /** 🗺 맵 가져오기 시작 — 대상 인스턴스를 기억하고 SAF 파일 피커를 연다. */
-    private fun startMapImport(meta: InstanceMeta) {
-        pendingMapImportInstanceId = meta.id
-        // zip MIME 우선, 일부 기기/제공자가 zip 을 octet-stream 으로 노출하므로 함께 허용
-        val mimeTypes = arrayOf(
-            "application/zip",
-            "application/x-zip-compressed",
-            "application/octet-stream",
-        )
-        try {
-            mapImportLauncher.launch(mimeTypes)
-        } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "맵 가져오기 피커 실행 실패: ${e.message}", e)
-            Toast.makeText(this, "파일 선택기를 열 수 없습니다.", Toast.LENGTH_SHORT).show()
-            pendingMapImportInstanceId = null
-        }
-    }
-
-    /** 고른 zip 을 해당 인스턴스의 saves/ 로 압축 해제 (IO 스레드). */
-    private fun importMapZip(instanceId: String, zipUri: Uri) {
-        val instanceDir = InstanceManager.instanceDir(this, instanceId)
-        val savesDir = File(instanceDir, "saves")
-
-        Toast.makeText(this, "맵 가져오는 중…", Toast.LENGTH_SHORT).show()
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            val result = MapImporter.importZip(
-                context = applicationContext,
-                zipUri = zipUri,
-                savesDir = savesDir,
-            )
-            withContext(Dispatchers.Main) {
-                when (result) {
-                    is MapImporter.Result.Success ->
-                        Toast.makeText(
-                            this@MainActivity,
-                            "‘${result.worldName}’ 맵을 가져왔습니다 (${result.fileCount}개 파일)",
-                            Toast.LENGTH_LONG
-                        ).show()
-                    is MapImporter.Result.Failure ->
-                        Toast.makeText(
-                            this@MainActivity,
-                            result.reason,
-                            Toast.LENGTH_LONG
-                        ).show()
-                }
             }
         }
     }

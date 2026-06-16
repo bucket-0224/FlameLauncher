@@ -43,6 +43,9 @@
         <activity android:name=".presentation.CrashReportActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
+        <activity android:name=".presentation.InstanceSettingsActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
         <activity android:name=".presentation.ContentPackBrowserActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"/>
