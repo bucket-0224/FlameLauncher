@@ -311,8 +311,14 @@ class MinecraftActivity : BaseActivity() {
 
     private fun startGrabStatePolling() {
         lifecycleScope.launch {
+            var shownOnce = false
             while (true) {
                 if (jvmStarted) {
+                    // JVM 시작 직후 1회: grab 변화가 없어도(타이틀은 grab=false 유지) 컨트롤러를 표시.
+                    if (!shownOnce) {
+                        shownOnce = true
+                        updateGameControllerVisibility()
+                    }
                     val grab = isGrabbing
                     if (grab != lastGrabState) {
                         lastGrabState = grab
@@ -365,12 +371,13 @@ class MinecraftActivity : BaseActivity() {
      */
     internal fun updateGameControllerVisibility() {
         val hasExternalInput = hasHardwareKeyboardOrMouse()
-        // 월드 진입(첫 grab) 후에는 컨트롤러 뷰를 계속 표시하되, 내부에서 버튼을 거른다:
+        // JVM 시작 후에는 컨트롤러 뷰를 계속 표시하되, 내부에서 버튼을 거른다:
         //   - grab(플레이) 또는 IME(채팅) → 전체 버튼
-        //   - 그 외(인벤토리/ESC메뉴/타이틀) → ESC + 키보드 버튼만 (뒤로가기 + 채팅 열기용)
+        //   - 그 외(타이틀/인벤토리/ESC메뉴) → ESC + 키보드 버튼만 (뒤로가기 + 채팅 열기용)
         //   - 물리 키보드/마우스 → 전체 숨김
+        //   ※ 최초 타이틀 화면부터 ESC/키보드가 보이도록 hasEnteredWorld 게이트는 쓰지 않는다.
         val fullControl = isGrabbing || imeVisible
-        val shouldShow = hasEnteredWorld && !hasExternalInput
+        val shouldShow = jvmStarted && !hasExternalInput
         val target = if (shouldShow) View.VISIBLE else View.INVISIBLE
         runOnUiThread {
             val view = gameControllerView ?: return@runOnUiThread
@@ -1384,7 +1391,15 @@ class MinecraftActivity : BaseActivity() {
                 val needed = listOf(
                     "ForgeAutoRenamingTool", "BinaryPatcher", "binarypatcher",
                     "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch",
-                    "commons-collections4"
+                    "commons-collections4",
+                    // 모드가 shade 한 라이브러리와 classpath 라이브러리의 split-package 충돌 회피:
+                    //   KryptonReforged / AgeOfWeapons 등이 org.checkerframework.framework.qual 를
+                    //   자기 jar 에 포함(shade)하는데, classpath 의 checker-qual.jar(=checker.qual 모듈)도
+                    //   같은 패키지를 export 해 "Modules krypton and checker.qual export package
+                    //   org.checkerframework.framework.qual" module resolution 충돌이 난다.
+                    //   ignoreList 는 classpath jar 에만 적용되므로 checker-qual 을 넣으면 named module
+                    //   이 안 되고(unnamed classpath 로 남음) 모드 shade 본만 모듈로 남아 충돌 해소.
+                    "checker-qual"
                 ).filterNot { arg.contains(",$it") || arg.endsWith("=$it") }
 
                 if (needed.isNotEmpty()) {

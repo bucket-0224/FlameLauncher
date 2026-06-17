@@ -63,7 +63,6 @@
             android:exported="false"
             android:windowSoftInputMode="adjustNothing"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"
-            android:theme="@android:style/Theme.NoTitleBar.Fullscreen"
             android:process=":minecraft" />
         <activity
             android:name=".presentation.MainActivity"
