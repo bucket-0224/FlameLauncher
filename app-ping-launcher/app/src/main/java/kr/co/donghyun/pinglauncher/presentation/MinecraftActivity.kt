@@ -1363,7 +1363,8 @@ class MinecraftActivity : BaseActivity() {
                 val needed = listOf(
                     "ForgeAutoRenamingTool", "BinaryPatcher", "binarypatcher",
                     "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch",
-                    "commons-collections4"
+                    "commons-collections4",
+                    "-srg", "-slim", "-srg-and-extra", "client-extra"
                 ).filterNot { arg.contains(",$it") || arg.endsWith("=$it") }
 
                 if (needed.isNotEmpty()) {
