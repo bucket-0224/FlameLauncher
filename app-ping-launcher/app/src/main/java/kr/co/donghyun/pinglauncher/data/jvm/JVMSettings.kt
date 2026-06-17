@@ -6,7 +6,7 @@ import kr.co.donghyun.pinglauncher.data.renderer.RendererManager
 import java.io.File
 
 data class JvmSettings(
-    val maxHeapMb: Int = 2048,
+    val maxHeapMb: Int = 4096,
     val minHeapMb: Int = 512,
     val useG1GC: Boolean = true,
     val gcPauseMillis: Int = 100,

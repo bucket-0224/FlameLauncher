@@ -318,8 +318,8 @@ class GameControllerView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         buttons.forEach { button ->
-            // ESC 전용 모드면 ESC(256) 외에는 그리지 않음
-            if (escOnlyMode && button.glfwCode != 256) return@forEach
+            // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 그린다(나머지 숨김).
+            if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
             val rect = buttonRects[button.id] ?: return@forEach
             val isPressed = pressedButtons.containsKey(button.id)
 
@@ -425,8 +425,8 @@ class GameControllerView(context: Context) : View(context) {
 
     private fun findButton(x: Float, y: Float): KeyButton? {
         buttons.forEach { button ->
-            // ESC 전용 모드면 ESC(256) 외에는 무시
-            if (escOnlyMode && button.glfwCode != 256) return@forEach
+            // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 입력 받는다.
+            if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
             val rect = buttonRects[button.id] ?: return@forEach
             if (rect.contains(x, y)) return button
         }

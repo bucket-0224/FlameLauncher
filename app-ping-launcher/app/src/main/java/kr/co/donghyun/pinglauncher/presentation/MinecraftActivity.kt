@@ -367,14 +367,14 @@ class MinecraftActivity : BaseActivity() {
         val hasExternalInput = hasHardwareKeyboardOrMouse()
         // 월드 진입(첫 grab) 후에는 컨트롤러 뷰를 계속 표시하되, 내부에서 버튼을 거른다:
         //   - grab(플레이) 또는 IME(채팅) → 전체 버튼
-        //   - 그 외(인벤토리/ESC메뉴/타이틀) → ESC 버튼만 (인벤토리에서 뒤로가기용)
+        //   - 그 외(인벤토리/ESC메뉴/타이틀) → ESC + 키보드 버튼만 (뒤로가기 + 채팅 열기용)
         //   - 물리 키보드/마우스 → 전체 숨김
         val fullControl = isGrabbing || imeVisible
         val shouldShow = hasEnteredWorld && !hasExternalInput
         val target = if (shouldShow) View.VISIBLE else View.INVISIBLE
         runOnUiThread {
             val view = gameControllerView ?: return@runOnUiThread
-            view.setEscOnlyMode(!fullControl)   // grab/IME 아니면 ESC 만
+            view.setEscOnlyMode(!fullControl)   // grab/IME 아니면 ESC + 키보드만
             if (view.visibility != target) {
                 view.visibility = target
             }
@@ -1183,13 +1183,28 @@ class MinecraftActivity : BaseActivity() {
                     if (!f.isFile || f.extension != "jar") return@forEach
                     if (f.name.contains("natives-linux")) return@forEach
 
-                    if (isModernLoader && f.absolutePath.contains("/net/minecraft/")) {
+                    // ZL2 방식: NeoForge 게임 jar 는 classpath 에서 제외한다.
+                    //   NeoForge 는 -DlibraryDirectory + --fml.mcVersion/neoFormVersion 좌표로
+                    //   net/minecraft/client/<ver>/ (srg) 와 net/neoforged/neoforge/<ver>/ (client)
+                    //   게임 jar 를 찾아 transformer module 'minecraft' 로 직접 로드한다.
+                    //   이걸 classpath 에 또 넣으면 자동 모듈 'client'/'minecraft' 로 중복 생성되어
+                    //   "Module minecraft contains package net.minecraft.X, module client exports
+                    //    package net.minecraft.X to minecraft" module resolution 충돌이 난다.
+                    //   ZL2 도 version.json libraries(게임 jar 없음) + 바닐라 clientJar 만 classpath 에 넣고
+                    //   게임 jar(srg/slim/neoforge-client/universal)는 넣지 않는다.
+                    if (isModernLoader) {
                         val n = f.name
-                        val gameLayerOnly = n.contains("-srg.")
-                                || n.contains("-slim.")
-                                || n.contains("-srg-and-extra.")
-                        if (gameLayerOnly) {
-                            Log.d("PING_LAUNCHER", "🚫 modern Forge/NeoForge — game-layer 전용 jar classpath 제외: ${f.name}")
+                        val ap = f.absolutePath
+                        val isGameJar =
+                            // net/minecraft/client/<ver>/ 아래 srg/slim/extra
+                            (ap.contains("/net/minecraft/")
+                                    && (n.contains("-srg.") || n.contains("-slim.")
+                                    || n.contains("-srg-and-extra.") || n.contains("-extra.")))
+                                    // net/neoforged/neoforge/<ver>/ 아래 client/universal (게임 클래스 포함)
+                                    || (ap.contains("/net/neoforged/neoforge/")
+                                    && (n.endsWith("-client.jar") || n.endsWith("-universal.jar")))
+                        if (isGameJar) {
+                            Log.d("PING_LAUNCHER", "🚫 NeoForge 게임 jar classpath 제외 (좌표로 자동 로드, ZL2 방식): ${f.name}")
                             return@forEach
                         }
                     }
@@ -1266,11 +1281,13 @@ class MinecraftActivity : BaseActivity() {
             .firstOrNull { it.exists() }
 
         versionJar?.let {
-            if (isModernLoader) {
-                Log.d("PING_LAUNCHER",
-                    "🚫 modern Forge/NeoForge — 바닐라 ${it.name} 는 processor 입력 전용, classpath 제외")
-            } else if (!jarList.contains(it.absolutePath)) {
+            // ZL2 방식: 바닐라 client jar 를 NeoForge 에서도 classpath 에 포함한다.
+            //   ZL2 generateLaunchClassPath 는 clientJar(= inheritsFrom 의 바닐라 <ver>.jar)를
+            //   항상 classpath 에 추가한다(if clientJar.exists() classpathList.add). 바닐라 jar 는
+            //   난독화돼 net.minecraft.* 가 없으므로 deobf 게임 jar 와 패키지 충돌도 없다.
+            if (!jarList.contains(it.absolutePath)) {
                 jarList.add(it.absolutePath)
+                Log.d("PING_LAUNCHER", "✅ 바닐라 client jar classpath 포함 (ZL2 방식): ${it.name}")
             }
         }
 
@@ -1360,11 +1377,14 @@ class MinecraftActivity : BaseActivity() {
         val metaJvmArgs: Array<String> = metaJvmArgsRaw.map { arg ->
             if (isModernLoader && arg.startsWith("-DignoreList=")) {
                 // 이미 들어있는지 확인 후 없으면 추가.
+                //   ⚠️ ZL2 방식: 게임 jar(-srg/-slim/-srg-and-extra)는 ignoreList 에 넣지 않는다.
+                //     게임 jar 를 classpath 에 포함시켜 NeoForge 가 minecraft 모듈로 만들어야 하는데,
+                //     ignoreList 에 넣으면 module 변환에서 빠져 net.minecraft.* 가 다시 누락된다.
+                //     프로세서 전용 jar(installertools/ForgeAutoRenamingTool 등)만 제외 유지.
                 val needed = listOf(
                     "ForgeAutoRenamingTool", "BinaryPatcher", "binarypatcher",
                     "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch",
-                    "commons-collections4",
-                    "-srg", "-slim", "-srg-and-extra", "client-extra"
+                    "commons-collections4"
                 ).filterNot { arg.contains(",$it") || arg.endsWith("=$it") }
 
                 if (needed.isNotEmpty()) {
