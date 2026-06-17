@@ -288,6 +288,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         detailLauncher.launch(intent)
     }
 
+
     /**
      * CurseForge 의 월드(맵) zip 을 받아 인스턴스의 saves/ 에 추출.
      * zip 레이아웃 두 가지를 모두 허용:

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.hardware.input.InputManager.InputDeviceListener
+import android.net.Uri
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -12,12 +13,18 @@ import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.Modifier
 import androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.instance.InstanceManager
+import kr.co.donghyun.pinglauncher.data.instance.InstanceType
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettings
 import kr.co.donghyun.pinglauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.pinglauncher.data.jvm.isLegacyVersion
@@ -31,6 +38,7 @@ import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.pinglauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.pinglauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.pinglauncher.presentation.util.minecraft.MinecraftJREPreparer
+import kr.co.donghyun.pinglauncher.presentation.util.resources.ResourcePackImporter
 import org.lwjgl.glfw.GLFW.GLFW_KEY_A
 import org.lwjgl.glfw.GLFW.GLFW_KEY_D
 import org.lwjgl.glfw.GLFW.GLFW_KEY_E
@@ -40,6 +48,8 @@ import org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_CONTROL
 import org.lwjgl.glfw.GLFW.GLFW_KEY_LEFT_SHIFT
 import org.lwjgl.glfw.GLFW.GLFW_KEY_S
 import org.lwjgl.glfw.GLFW.GLFW_KEY_SPACE
+import org.lwjgl.glfw.GLFW.GLFW_KEY_SLASH
+import org.lwjgl.glfw.GLFW.GLFW_KEY_T
 import org.lwjgl.glfw.GLFW.GLFW_KEY_TAB
 import org.lwjgl.glfw.GLFW.GLFW_KEY_W
 import org.lwjgl.glfw.GLFW.GLFW_PRESS
@@ -94,7 +104,10 @@ class MinecraftActivity : BaseActivity() {
     private var inputDeviceListener: InputDeviceListener? = null
 
     internal val isGrabbing: Boolean
-        get() = try { nativeIsGrabbing() } catch (_: Exception) { false }
+        get() {
+            if (!jvmStarted) return false
+            return try { nativeIsGrabbing() } catch (_: Throwable) { false }
+        }
 
     private var jvmStarted = false
     private var javaMajor: Int = 21
@@ -138,6 +151,57 @@ class MinecraftActivity : BaseActivity() {
     }
 
 
+    // ── 게임 내 "리소스팩 폴더 열기" → SAF 로 .zip 선택해 resourcepacks/ 에 복사 ──
+    //   MainActivity(stub).openLink 가 resourcepacks 경로를 감지하면 이 Activity 의
+    //   openResourcePackPicker(dir) 를 호출한다. 피커 결과는 아래 런처가 받는다.
+    //   (런처 등록은 필드 초기화 시점 = RESUMED 이전이라 게임 중에도 launch 가능)
+    private var pendingResourcePacksDir: File? = null
+
+    private val resourcePackPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val dir = pendingResourcePacksDir
+        pendingResourcePacksDir = null
+        if (uri == null || dir == null) return@registerForActivityResult
+        Toast.makeText(this, "리소스팩 가져오는 중…", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = ResourcePackImporter.importZip(
+                context = applicationContext,
+                zipUri = uri,
+                resourcePacksDir = dir,
+            )
+            withContext(Dispatchers.Main) {
+                val msg = when (result) {
+                    is ResourcePackImporter.Result.Success ->
+                        "‘${result.packName}’ 추가됨. 게임 리소스팩 목록에서 활성화하세요."
+                    is ResourcePackImporter.Result.Failure ->
+                        result.reason
+                }
+                Toast.makeText(this@MinecraftActivity, msg, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    /**
+     * 게임 내 "리소스팩 폴더 열기"에서 호출됨(MainActivity stub 경유).
+     * 폴더 선택 대신 .zip 파일 피커를 띄워, 고른 팩을 해당 resourcepacks 폴더로 복사한다.
+     */
+    fun openResourcePackPicker(resourcePacksDir: File) {
+        pendingResourcePacksDir = resourcePacksDir.apply { mkdirs() }
+        val mimeTypes = arrayOf(
+            "application/zip",
+            "application/x-zip-compressed",
+            "application/octet-stream",
+        )
+        try {
+            resourcePackPickerLauncher.launch(mimeTypes)
+            Toast.makeText(this, "추가할 리소스팩 .zip 을 선택하세요", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "리소스팩 피커 실행 실패: ${e.message}", e)
+            pendingResourcePacksDir = null
+        }
+    }
+
     override fun onCreated() {
         hideNavigation()
         currentInstance = this
@@ -154,6 +218,10 @@ class MinecraftActivity : BaseActivity() {
         setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
             val ime = insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime())
             gameControllerView?.setImeVisibleExternal(ime)
+            if (ime != imeVisible) {
+                imeVisible = ime
+                updateGameControllerVisibility()
+            }
             insets
         }
 
@@ -229,21 +297,38 @@ class MinecraftActivity : BaseActivity() {
             }
         }
         im.registerInputDeviceListener(inputDeviceListener, null)
+
+        // ── grab 상태 폴링(가벼움, 500ms) ──
+        //   마인크래프트 onGrabStateChanged JNI 콜백은 모듈 레이어 불일치로 NoSuchMethodError 라
+        //   신뢰 불가. nativeIsGrabbing()(=pojav_environ->isGrabbing, 정상 갱신)을 폴링해
+        //   '첫 grab=true' 를 월드 진입으로 보고, 이후 컨트롤러를 계속 표시(A-1).
+        startGrabStatePolling()
     }
 
-    private fun canUseZink(): Boolean {
-        // Vulkan 1.1 헤더 존재 확인
-        val hasVk11 = packageManager.hasSystemFeature(
-            PackageManager.FEATURE_VULKAN_HARDWARE_VERSION,
-            0x401000  // VK_API_VERSION_1_1
-        )
-        if (!hasVk11) {
-            Log.w("PING_LAUNCHER", "Zink probe: Vulkan 1.1 system feature 없음")
-            return false
+    private var lastGrabState: Boolean? = null
+    private var imeVisible = false
+    private var hasEnteredWorld = false
+
+    private fun startGrabStatePolling() {
+        lifecycleScope.launch {
+            var shownOnce = false
+            while (true) {
+                if (jvmStarted) {
+                    // JVM 시작 직후 1회: grab 변화가 없어도(타이틀은 grab=false 유지) 컨트롤러를 표시.
+                    if (!shownOnce) {
+                        shownOnce = true
+                        updateGameControllerVisibility()
+                    }
+                    val grab = isGrabbing
+                    if (grab != lastGrabState) {
+                        lastGrabState = grab
+                        if (grab) hasEnteredWorld = true   // 첫 grab = 월드 진입
+                        updateGameControllerVisibility()
+                    }
+                }
+                kotlinx.coroutines.delay(300)
+            }
         }
-        // 추가로 vkEnumeratePhysicalDevices 가 1개 이상 리턴하는지 확인하면 더 정확하지만
-        // 일단 system feature 만으로도 에뮬레이터는 거의 다 걸러짐
-        return true
     }
 
     /** 현재 물리 키보드 또는 마우스가 연결되어 있는지 */
@@ -274,19 +359,32 @@ class MinecraftActivity : BaseActivity() {
 
 
     /**
-     * 물리 키보드/마우스가 연결되어 있으면 GameControllerView 를 숨긴다.
+     * GameControllerView 가시성 갱신.
+     * 표시 조건: 월드에서 플레이 중(마우스 grab) AND 물리 키보드/마우스 미연결.
      *
      * 판정 기준:
+     *  - grab: nativeIsGrabbing() — 마인크래프트가 마우스를 잡은 상태(=월드 플레이 중)
      *  - 키보드: SOURCE_KEYBOARD 비트 + KEYBOARD_TYPE_ALPHABETIC (소프트 IME 제외)
      *  - 마우스: SOURCE_MOUSE 비트 (또는 SOURCE_MOUSE_RELATIVE)
-     *  - 둘 중 하나라도 있으면 숨김
+     *  - 물리 입력이 하나라도 있으면 숨김 (물리로 조작)
+     *  - grab 이 풀리면(메뉴/인벤토리/채팅) 숨김 (커서로 조작)
      */
     internal fun updateGameControllerVisibility() {
         val hasExternalInput = hasHardwareKeyboardOrMouse()
-        val shouldShow = !hasExternalInput
-
+        // JVM 시작 후에는 컨트롤러 뷰를 계속 표시하되, 내부에서 버튼을 거른다:
+        //   - grab(플레이) 또는 IME(채팅) → 전체 버튼
+        //   - 그 외(타이틀/인벤토리/ESC메뉴) → ESC + 키보드 버튼만 (뒤로가기 + 채팅 열기용)
+        //   - 물리 키보드/마우스 → 전체 숨김
+        //   ※ 최초 타이틀 화면부터 ESC/키보드가 보이도록 hasEnteredWorld 게이트는 쓰지 않는다.
+        val fullControl = isGrabbing || imeVisible
+        val shouldShow = jvmStarted && !hasExternalInput
+        val target = if (shouldShow) View.VISIBLE else View.INVISIBLE
         runOnUiThread {
-            gameControllerView?.visibility = if (shouldShow) View.VISIBLE else View.GONE
+            val view = gameControllerView ?: return@runOnUiThread
+            view.setEscOnlyMode(!fullControl)   // grab/IME 아니면 ESC + 키보드만
+            if (view.visibility != target) {
+                view.visibility = target
+            }
         }
     }
 
@@ -306,25 +404,7 @@ class MinecraftActivity : BaseActivity() {
         }
 
 
-
-        // ── 렌더러별 .so 먼저 로드 (preloadAwtStubs 이전에) ───────────────
-        // preloadAwtStubs 같은 JNI 바인딩 함수에서 실패가 나더라도,
-        // 핵심 .so 들은 이미 메모리에 올라와 있어야 JVM 부팅이 가능하다.
-
         var renderer = RendererManager.load(this)
-
-//        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
-//            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
-//            runOnUiThread {
-//                Toast.makeText(
-//                    this,
-//                    "이 기기의 GPU는 Zink 미지원 — GL4ES로 전환합니다",
-//                    Toast.LENGTH_LONG
-//                ).show()
-//            }
-//            renderer = Renderer.fromId("gl4es")  // 또는 "gl4es" — 둘 중 가용한 것
-//        }
-
 
         when (renderer.id) {
             "mobileglues" -> {
@@ -407,18 +487,6 @@ class MinecraftActivity : BaseActivity() {
         }
     }
 
-    private fun resolveForgePlaceholders(
-        raw: String,
-        librariesDir: File,
-        nativesDir: File,
-        versionId: String
-    ): String = raw
-        .replace("\${library_directory}",   librariesDir.absolutePath)
-        .replace("\${libraries_directory}", librariesDir.absolutePath)   // 표기 둘 다 본 적 있음
-        .replace("\${classpath_separator}", File.pathSeparator)
-        .replace("\${version_name}",        versionId)
-        .replace("\${natives_directory}",   nativesDir.absolutePath)
-
 
     private fun startCrashWatcher() {
         val instanceBase = instanceDir?.let { File(it) }
@@ -459,6 +527,41 @@ class MinecraftActivity : BaseActivity() {
     internal var currentCursorX = 1280f  // 화면 중앙 근처
     internal var currentCursorY = 720f
     internal val MOUSE_SENSITIVITY = 1.5f
+
+    // 마인크래프트 GUI 스케일(options.txt). 핫바 영역 계산에 사용. 게임 실행 시 갱신.
+    @Volatile internal var mcGuiScale: Int = 0   // 0 = 자동(auto)
+
+    /**
+     * 핫바 슬롯 선택 (index 0~8). 화면 하단 핫바 영역 터치 시 호출.
+     * 마인크래프트는 1~9 키로 슬롯을 직접 선택하므로 GLFW_KEY_1(49)+index 를 전송.
+     */
+    internal fun selectHotbarSlot(index: Int) {
+        if (index !in 0..8) return
+        val key = 49 + index   // GLFW_KEY_1 = 49
+        sendKey(key, GLFW_PRESS)
+        sendKey(key, GLFW_RELEASE)
+    }
+
+    /**
+     * 현재 화면 크기 기준 핫바의 화면상 사각형(left,right,top,bottom px)을 계산한다.
+     * ZL2 와 동일한 규칙: slotSize = guiScale*20, 핫바너비 = slotSize*9, 화면 하단 중앙.
+     * guiScale 이 0(자동)이면 해상도로 계산. 핫바가 화면에 없으면 null.
+     */
+    internal fun computeHotbarRect(viewW: Int, viewH: Int): android.graphics.RectF? {
+        if (viewW <= 0 || viewH <= 0) return null
+        val auto = minOf(viewW / 320, viewH / 240).coerceAtLeast(1)
+        val scale = if (mcGuiScale in 1..auto) mcGuiScale else auto
+        val slot = scale * 20f
+        val total = slot * 9f
+        if (total <= 0f || total > viewW) return null
+        val left = (viewW - total) / 2f
+        val right = left + total
+        // 핫바는 화면 맨 아래에서 살짝 위. MC 기본은 바닥에서 약 (slot/ ... ) 위지만,
+        //   터치 편의상 바닥 ~ slotHeight*1.0 영역으로 잡는다.
+        val bottom = viewH.toFloat()
+        val top = bottom - slot
+        return android.graphics.RectF(left, top, right, bottom)
+    }
 
 
     /**
@@ -806,6 +909,37 @@ class MinecraftActivity : BaseActivity() {
 
         nativeSendKey(glfwKeyCode, scancode, action, 0)
 
+        // 채팅/명령어 키 → 소프트 키보드 자동 표시 (T=84, /=47).
+        //   엔터(257)/ESC(256) → 채팅 닫힘이므로 키보드 숨김.
+        if (action == GLFW_PRESS) {
+            when (glfwKeyCode) {
+                GLFW_KEY_T, GLFW_KEY_SLASH -> showGameSoftKeyboard()   // 채팅 / 명령어
+                GLFW_KEY_ENTER, GLFW_KEY_ESCAPE -> hideGameSoftKeyboard()  // 전송/취소
+            }
+        }
+    }
+
+    private fun showGameSoftKeyboard() {
+        // 물리 키보드가 있으면 surface 의 onCreateInputConnection 이 null 을 반환하므로
+        //   소프트 키보드를 띄우지 않는다(물리 키로 입력).
+        if (hasHardwareKeyboardOrMouse()) return
+        runOnUiThread {
+            val surface = window.decorView.findViewWithTag<View>("minecraft_surface") ?: return@runOnUiThread
+            surface.isFocusableInTouchMode = true
+            surface.requestFocus()
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.showSoftInput(surface, android.view.inputmethod.InputMethodManager.SHOW_IMPLICIT)
+        }
+    }
+
+    private fun hideGameSoftKeyboard() {
+        runOnUiThread {
+            val surface = window.decorView.findViewWithTag<View>("minecraft_surface")
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+            imm?.hideSoftInputFromWindow(
+                (surface ?: window.decorView).windowToken, 0
+            )
+        }
     }
 
 
@@ -1056,13 +1190,28 @@ class MinecraftActivity : BaseActivity() {
                     if (!f.isFile || f.extension != "jar") return@forEach
                     if (f.name.contains("natives-linux")) return@forEach
 
-                    if (isModernLoader && f.absolutePath.contains("/net/minecraft/")) {
+                    // ZL2 방식: NeoForge 게임 jar 는 classpath 에서 제외한다.
+                    //   NeoForge 는 -DlibraryDirectory + --fml.mcVersion/neoFormVersion 좌표로
+                    //   net/minecraft/client/<ver>/ (srg) 와 net/neoforged/neoforge/<ver>/ (client)
+                    //   게임 jar 를 찾아 transformer module 'minecraft' 로 직접 로드한다.
+                    //   이걸 classpath 에 또 넣으면 자동 모듈 'client'/'minecraft' 로 중복 생성되어
+                    //   "Module minecraft contains package net.minecraft.X, module client exports
+                    //    package net.minecraft.X to minecraft" module resolution 충돌이 난다.
+                    //   ZL2 도 version.json libraries(게임 jar 없음) + 바닐라 clientJar 만 classpath 에 넣고
+                    //   게임 jar(srg/slim/neoforge-client/universal)는 넣지 않는다.
+                    if (isModernLoader) {
                         val n = f.name
-                        val gameLayerOnly = n.contains("-srg.")
-                                || n.contains("-slim.")
-                                || n.contains("-srg-and-extra.")
-                        if (gameLayerOnly) {
-                            Log.d("PING_LAUNCHER", "🚫 modern Forge/NeoForge — game-layer 전용 jar classpath 제외: ${f.name}")
+                        val ap = f.absolutePath
+                        val isGameJar =
+                            // net/minecraft/client/<ver>/ 아래 srg/slim/extra
+                            (ap.contains("/net/minecraft/")
+                                    && (n.contains("-srg.") || n.contains("-slim.")
+                                    || n.contains("-srg-and-extra.") || n.contains("-extra.")))
+                                    // net/neoforged/neoforge/<ver>/ 아래 client/universal (게임 클래스 포함)
+                                    || (ap.contains("/net/neoforged/neoforge/")
+                                    && (n.endsWith("-client.jar") || n.endsWith("-universal.jar")))
+                        if (isGameJar) {
+                            Log.d("PING_LAUNCHER", "🚫 NeoForge 게임 jar classpath 제외 (좌표로 자동 로드, ZL2 방식): ${f.name}")
                             return@forEach
                         }
                     }
@@ -1139,11 +1288,13 @@ class MinecraftActivity : BaseActivity() {
             .firstOrNull { it.exists() }
 
         versionJar?.let {
-            if (isModernLoader) {
-                Log.d("PING_LAUNCHER",
-                    "🚫 modern Forge/NeoForge — 바닐라 ${it.name} 는 processor 입력 전용, classpath 제외")
-            } else if (!jarList.contains(it.absolutePath)) {
+            // ZL2 방식: 바닐라 client jar 를 NeoForge 에서도 classpath 에 포함한다.
+            //   ZL2 generateLaunchClassPath 는 clientJar(= inheritsFrom 의 바닐라 <ver>.jar)를
+            //   항상 classpath 에 추가한다(if clientJar.exists() classpathList.add). 바닐라 jar 는
+            //   난독화돼 net.minecraft.* 가 없으므로 deobf 게임 jar 와 패키지 충돌도 없다.
+            if (!jarList.contains(it.absolutePath)) {
                 jarList.add(it.absolutePath)
+                Log.d("PING_LAUNCHER", "✅ 바닐라 client jar classpath 포함 (ZL2 방식): ${it.name}")
             }
         }
 
@@ -1165,9 +1316,17 @@ class MinecraftActivity : BaseActivity() {
 
         syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings)
         // Forge/NeoForge early loading window(망치/여우 로딩 화면) 설정.
-        // ZL2 와 동일하게 켜는 게 기본. 끄려면 syncFmlConfig 의 ENABLE_EARLY_WINDOW=false.
+        // ZL2 와 동일하게 켜는 게 기본. 단, 모드팩(특히 Sinytra Connector 포함)은 early window 의
+        //   acceptGameLayer → DisplayWindow.updateModuleReads 단계에서 게임 클래스
+        //   (net.minecraft.client.gui.screens.LoadingOverlay)를 읽지 못해 NoClassDefFoundError 로
+        //   크래시한다. 복잡한 모듈 구성 때문이므로 모드팩 인스턴스는 early window 를 끈다.
+        //   (일반 Forge/NeoForge 는 켜서 망치/여우 애니메이션 유지)
         // (앱이 자기 외부 디렉토리 파일을 쓰는 것이라 권한 문제 없음)
-        syncFmlConfig(File(mcDir, "config/fml.toml"))
+        val enableEarlyWindow = instanceMeta?.type != InstanceType.MODPACK
+        if (!enableEarlyWindow) {
+            Log.d("PING_LAUNCHER", "🪟 모드팩 인스턴스 — early window 비활성화(Connector 모듈 호환)")
+        }
+        syncFmlConfig(File(mcDir, "config/fml.toml"), true)
 
 // ★ JDK 9+ 전용 플래그는 javaMajor>=9 일 때만 부착
         val isModularJre = javaMajor >= 9
@@ -1225,9 +1384,22 @@ class MinecraftActivity : BaseActivity() {
         val metaJvmArgs: Array<String> = metaJvmArgsRaw.map { arg ->
             if (isModernLoader && arg.startsWith("-DignoreList=")) {
                 // 이미 들어있는지 확인 후 없으면 추가.
+                //   ⚠️ ZL2 방식: 게임 jar(-srg/-slim/-srg-and-extra)는 ignoreList 에 넣지 않는다.
+                //     게임 jar 를 classpath 에 포함시켜 NeoForge 가 minecraft 모듈로 만들어야 하는데,
+                //     ignoreList 에 넣으면 module 변환에서 빠져 net.minecraft.* 가 다시 누락된다.
+                //     프로세서 전용 jar(installertools/ForgeAutoRenamingTool 등)만 제외 유지.
                 val needed = listOf(
                     "ForgeAutoRenamingTool", "BinaryPatcher", "binarypatcher",
-                    "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch"
+                    "jarsplitter", "installertools", "vignette", "DiffPatch", "diffpatch",
+                    "commons-collections4",
+                    // 모드가 shade 한 라이브러리와 classpath 라이브러리의 split-package 충돌 회피:
+                    //   KryptonReforged / AgeOfWeapons 등이 org.checkerframework.framework.qual 를
+                    //   자기 jar 에 포함(shade)하는데, classpath 의 checker-qual.jar(=checker.qual 모듈)도
+                    //   같은 패키지를 export 해 "Modules krypton and checker.qual export package
+                    //   org.checkerframework.framework.qual" module resolution 충돌이 난다.
+                    //   ignoreList 는 classpath jar 에만 적용되므로 checker-qual 을 넣으면 named module
+                    //   이 안 되고(unnamed classpath 로 남음) 모드 shade 본만 모듈로 남아 충돌 해소.
+                    "checker-qual"
                 ).filterNot { arg.contains(",$it") || arg.endsWith("=$it") }
 
                 if (needed.isNotEmpty()) {
@@ -1486,7 +1658,10 @@ class MinecraftActivity : BaseActivity() {
                     ?.any { it.extension == "txt" &&
                             System.currentTimeMillis() - it.lastModified() < 60_000 } == true
                 if (hasCrash) {
-                    runOnUiThread { CrashReportActivity.start(this, instanceBase.absolutePath) }
+                    runOnUiThread {
+                        finish()
+                        CrashReportActivity.start(this, instanceBase.absolutePath)
+                    }
                 }
             }
         }.start()
@@ -1729,6 +1904,10 @@ class MinecraftActivity : BaseActivity() {
         //   밉맵 0 이면 아틀라스가 ...x0 으로 생성되어 크래시가 사라짐.
         upsert("mipmapLevels",   "0")
 
+        // 핫바 영역 계산용 — options.txt 의 guiScale 을 읽어둔다(없으면 0=자동).
+        mcGuiScale = existing.firstOrNull { it.startsWith("guiScale:") }
+            ?.substringAfter("guiScale:")?.trim()?.toIntOrNull() ?: 0
+
         optionsFile.writeText(existing.joinToString("\n"))
         Log.d("PING_LAUNCHER",
             "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD mipmap=0")
@@ -1751,9 +1930,11 @@ class MinecraftActivity : BaseActivity() {
      * 나머지 기본값을 자기 형식으로 채워 넣는다. 앱이 자기 파일을 쓰는 것이라
      * adb push 때와 달리 권한(AccessDenied) 문제가 없다.
      */
-    private fun syncFmlConfig(fmlToml: File) {
-        // ★ early window 토글. 문제가 재발하면 false 로 바꾸면 된다.
-        val ENABLE_EARLY_WINDOW = false
+    private fun syncFmlConfig(fmlToml: File, enableEarlyWindow: Boolean = true) {
+        // ★ early window 토글. 호출부에서 인스턴스 종류에 따라 결정해 넘긴다.
+        //   (모드팩/Connector 인스턴스는 early window 의 acceptGameLayer 단계에서
+        //    게임 클래스(LoadingOverlay 등) 로드에 실패하므로 OFF 로 넘어온다)
+        val ENABLE_EARLY_WINDOW = enableEarlyWindow
         try {
             fmlToml.parentFile?.mkdirs()
 

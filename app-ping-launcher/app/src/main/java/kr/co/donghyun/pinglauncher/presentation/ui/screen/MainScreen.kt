@@ -61,8 +61,7 @@ fun MainScreen(
     onLaunchForge: (VersionEntry, String) -> Unit,
     onLaunchNeoForge: (VersionEntry, String) -> Unit,
     onLaunchInstance: (InstanceMeta) -> Unit,
-    onDeleteInstance: (InstanceMeta) -> Unit,
-    onImportMap: (InstanceMeta) -> Unit,
+    onOpenInstanceSettings: (InstanceMeta) -> Unit,
     onOpenContents: () -> Unit,
     onOpenNetworkSettings: () -> Unit,
     onOpenKeySettings: () -> Unit,
@@ -145,7 +144,7 @@ fun MainScreen(
                 Row(modifier = Modifier.fillMaxSize().weight(1f)) {
                     Box(modifier = Modifier.weight(0.62f).fillMaxHeight()) {
                         when (selectedTab) {
-                            MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance, onImportMap)
+                            MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onOpenInstanceSettings)
                             else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                         }
                     }
@@ -176,7 +175,7 @@ fun MainScreen(
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
                     when (selectedTab) {
-                        MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onDeleteInstance, onImportMap)
+                        MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onOpenInstanceSettings)
                         else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                     }
                 }
@@ -233,8 +232,7 @@ private fun VersionsList(
 private fun InstancesList(
     instances: List<InstanceMeta>,
     onLaunch: (InstanceMeta) -> Unit,
-    onDelete: (InstanceMeta) -> Unit,
-    onImport: (InstanceMeta) -> Unit,
+    onOpenSettings: (InstanceMeta) -> Unit,
 ) {
     if (instances.isEmpty()) {
         Box(
@@ -269,8 +267,7 @@ private fun InstancesList(
             InstanceItem(
                 meta,
                 onLaunch = { onLaunch(meta) },
-                onDelete = { onDelete(meta) },
-                onImport = { onImport(meta) },
+                onOpenSettings = { onOpenSettings(meta) },
             )
         }
         item { Box(modifier = Modifier.height(64.dp)) }
@@ -281,11 +278,9 @@ private fun InstancesList(
 private fun InstanceItem(
     meta: InstanceMeta,
     onLaunch: () -> Unit,
-    onDelete: () -> Unit,
-    onImport: () -> Unit,
+    onOpenSettings: () -> Unit,
 ) {
     val tablet = isTablet()
-    var showConfirmDelete by remember { mutableStateOf(false) }
 
     Row(
         modifier = Modifier
@@ -323,30 +318,17 @@ private fun InstanceItem(
             )
         }
 
-        // 맵(월드) 가져오기
+        // 설정 (맵/리소스팩 가져오기, 삭제 등)
         Box(
             modifier = Modifier
                 .size(if (tablet) 32.dp else 28.dp)
                 .clip(RoundedCornerShape(6.dp))
                 .background(BgDark)
                 .border(1.dp, BgBorder, RoundedCornerShape(6.dp))
-                .clickable { onImport() },
+                .clickable { onOpenSettings() },
             contentAlignment = Alignment.Center,
         ) {
-            Text("🗺", fontSize = if (tablet) 14.sp else 12.sp)
-        }
-
-        // 삭제
-        Box(
-            modifier = Modifier
-                .size(if (tablet) 32.dp else 28.dp)
-                .clip(RoundedCornerShape(6.dp))
-                .background(BgDark)
-                .border(1.dp, BgBorder, RoundedCornerShape(6.dp))
-                .clickable { showConfirmDelete = true },
-            contentAlignment = Alignment.Center,
-        ) {
-            Text("🗑", fontSize = if (tablet) 14.sp else 12.sp)
+            Text("⚙️", fontSize = if (tablet) 14.sp else 12.sp)
         }
 
         // 실행
@@ -364,32 +346,6 @@ private fun InstanceItem(
                 fontWeight = FontWeight.Bold,
             )
         }
-    }
-
-    if (showConfirmDelete) {
-        AlertDialog(
-            onDismissRequest = { showConfirmDelete = false },
-            title = { Text("인스턴스 삭제", color = TextPrimary) },
-            text = {
-                Text(
-                    "‘${meta.name}’ 인스턴스의 모든 파일(월드, 모드, 설정)을 삭제합니다. 되돌릴 수 없습니다.",
-                    color = TextSecondary,
-                    fontSize = 13.sp,
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showConfirmDelete = false
-                    onDelete()
-                }) { Text("삭제", color = Color(0xFFFF6B6B)) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showConfirmDelete = false }) {
-                    Text("취소", color = TextSecondary)
-                }
-            },
-            containerColor = BgSurface,
-        )
     }
 }
 
@@ -592,7 +548,6 @@ fun ProfileHeader(
                 listOf(
                     "📦 추가 컨텐츠" to onOpenContents,
                     "🎮 키 설정" to onOpenKeySettings,
-                    "🎨 렌더러" to onOpenRendererSettings,
                     "⚙️ JVM" to onOpenJVMSettings,
                     "🌐 네트워크" to onOpenNetworkSettings,
                 ).forEach { (label, action) ->

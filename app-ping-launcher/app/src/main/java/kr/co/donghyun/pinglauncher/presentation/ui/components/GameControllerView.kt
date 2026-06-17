@@ -32,23 +32,31 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     83  to (0.14f to 0.88f),  // S
     68  to (0.22f to 0.88f),  // D
     256 to (0.06f to 0.10f),  // ESC
-    292 to (0.14f to 0.10f),  // F3
-    294 to (0.22f to 0.10f),  // F5
-    -6  to (0.30f to 0.10f),  // keyboard toggle
+    -6  to (0.14f to 0.10f),  // keyboard toggle
+    292 to (0.22f to 0.10f),  // F3
+    294 to (0.3f to 0.10f),  // F5
     84  to (0.06f to 0.28f),  // T
     47  to (0.14f to 0.28f),  // /
     81  to (0.22f to 0.28f),  // Q
-    69  to (0.96f to 0.7f),  // E (inventory)
-    -4  to (0.88f to 0.7f),  // prev slot
-    -5  to (0.88f to 0.52f),  // next slot
+    69  to (0.92f to 0.7f),  // E (inventory)
     340 to (0.76f to 0.88f),  // shift = sneak
     341 to (0.84f to 0.88f),  // ctrl  = sprint
     32  to (0.92f to 0.88f),  // space = jump
-    -7 to (0.8f to 0.7f),
+    -7 to (0.84f to 0.7f),
 )
 
 class GameControllerView(context: Context) : View(context) {
     private var imeVisible: Boolean = false
+
+    // ESC 전용 모드: grab/IME 가 아닐 때(인벤토리/메뉴/타이틀) ESC 버튼만 표시·입력.
+    private var escOnlyMode: Boolean = false
+
+    fun setEscOnlyMode(enabled: Boolean) {
+        if (escOnlyMode != enabled) {
+            escOnlyMode = enabled
+            invalidate()
+        }
+    }
 
     private val activity = context as MinecraftActivity
     private var buttons: List<KeyButton> = KeyLayoutManager.load(context)
@@ -310,6 +318,8 @@ class GameControllerView(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         buttons.forEach { button ->
+            // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 그린다(나머지 숨김).
+            if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
             val rect = buttonRects[button.id] ?: return@forEach
             val isPressed = pressedButtons.containsKey(button.id)
 
@@ -415,6 +425,8 @@ class GameControllerView(context: Context) : View(context) {
 
     private fun findButton(x: Float, y: Float): KeyButton? {
         buttons.forEach { button ->
+            // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 입력 받는다.
+            if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
             val rect = buttonRects[button.id] ?: return@forEach
             if (rect.contains(x, y)) return button
         }
@@ -427,18 +439,6 @@ class GameControllerView(context: Context) : View(context) {
             glfwCode == -1 -> activity.sendMouseButton(0, action)
             glfwCode == -2 -> activity.sendMouseButton(1, action)
             glfwCode == -3 -> activity.sendMouseButton(2, action)
-            glfwCode == -4 && action == GLFW_PRESS -> {
-                val prev = (currentHotbarSlot - 1 + 9) % 9
-                currentHotbarSlot = prev
-                activity.sendKey(49 + prev, GLFW_PRESS)
-                activity.sendKey(49 + prev, GLFW_RELEASE)
-            }
-            glfwCode == -5 && action == GLFW_PRESS -> {
-                val next = (currentHotbarSlot + 1) % 9
-                currentHotbarSlot = next
-                activity.sendKey(49 + next, GLFW_PRESS)
-                activity.sendKey(49 + next, GLFW_RELEASE)
-            }
             // glfwCode == -6 분기 전체 교체
             glfwCode == -6 && action == GLFW_PRESS -> {
                 val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
@@ -477,13 +477,6 @@ class GameControllerView(context: Context) : View(context) {
     }
 
     override fun setVisibility(visibility: Int) {
-        val from = when (visibility) {
-            View.VISIBLE -> "VISIBLE"
-            View.INVISIBLE -> "INVISIBLE"
-            View.GONE -> "GONE"
-            else -> "?$visibility"
-        }
-        Log.d("GCV_VIS", "setVisibility($from)", Throwable("setVisibility trace"))
         super.setVisibility(visibility)
     }
 

@@ -34,7 +34,7 @@ import java.util.UUID
 
 private val Pink = Color(0xFFE91E8C)
 private val TextMain = Color(0xFFFCE4EC)
-private val TextSub = Color(0xFFBB86A0)
+internal val TextSub = Color(0xFFBB86A0)
 
 // ────────────────────────────────────────────────────────────────────────
 // 공통 스케일 상수 (GameControllerView 와 반드시 동일하게 유지)
@@ -61,9 +61,9 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
 
     // 기능키 (좌측 상단)
     256 to (0.06f to 0.10f),  // ESC
-    292 to (0.14f to 0.10f),  // F3
-    294 to (0.22f to 0.10f),  // F5
-    -6  to (0.30f to 0.10f),  // 키보드 토글
+    -6  to (0.14f to 0.10f),  // 키보드 토글
+    292 to (0.22f to 0.10f),  // F3
+    294 to (0.30f to 0.10f),  // F5
 
     // 채팅/커맨드/드롭 (좌측 중단)
     84  to (0.06f to 0.28f),  // T
@@ -71,10 +71,8 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     81  to (0.22f to 0.28f),  // Q
 
     // 우측 인벤토리 / 슬롯
-    69  to (0.96f to 0.7f),  // E (인벤토리)
-    -4  to (0.88f to 0.7f),  // 이전 슬롯
-    -7 to (0.8f to 0.7f),
-    -5  to (0.88f to 0.52f),  // 다음 슬롯
+    69  to (0.92f to 0.7f),  // E (인벤토리)
+    -7 to (0.84f to 0.7f),
 
     // 점프/슬쩍/달리기 (우측 하단)
     340 to (0.76f to 0.88f),  // shift = sneak

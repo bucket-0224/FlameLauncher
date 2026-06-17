@@ -293,10 +293,13 @@ int pojavInitOpenGL() {
             set_osm_bridge_tbl();
             setenv("MESA_GL_MAX_TEXTURE_SIZE", "4096", 1);  // 또는 2048
 
-            setenv("ZINK_DESCRIPTORS", "lazy", 1);          // 이미 있을 수도
-            setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);   // Mali Vulkan이 1.2 일부 기능 불안정 시
+            // ★ Zink 성능 핵심 env (support-forge 와 동일). 이게 빠지면 descriptor 가
+            //   매 프레임 누적 할당되어 glFinish 가 점점 폭증(14ms→수백 ms)하며 fps 가
+            //   시간 지날수록 2~3fps 로 추락한다.
+            setenv("ZINK_DESCRIPTORS", "lazy", 1);          // descriptor 지연 할당(누적 방지)
+            setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);   // Mali Vulkan 1.1 고정(안정)
             setenv("ZINK_DEBUG", "compact", 1);             // descriptor 압축 모드
-            setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);  // present 모드 고정 (mailbox 등에서 죽으면)
+            setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);  // present 모드 고정
 
             printf("OpenGL: set_osm_bridge_tbl() done (Zink path)\n");
 
@@ -306,10 +309,12 @@ int pojavInitOpenGL() {
         printf("OpenGL: unknown renderer '%s', defaulting to vulkan_zink\n", renderer);
         pojav_environ->config_renderer = RENDERER_VK_ZINK;
         load_vulkan();
-        setenv("ZINK_DESCRIPTORS", "lazy", 1);          // 이미 있을 수도
-        setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);   // Mali Vulkan이 1.2 일부 기능 불안정 시
-        setenv("ZINK_DEBUG", "compact", 1);             // descriptor 압축 모드
-        setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);  // present 모드 고정 (mailbox 등에서 죽으면)
+        setenv("GALLIUM_DRIVER", "zink", 1);
+        // ★ Zink 성능 핵심 env (Zink 경로와 동일) — fallback 에서도 동일하게 적용
+        setenv("ZINK_DESCRIPTORS", "lazy", 1);
+        setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);
+        setenv("ZINK_DEBUG", "compact", 1);
+        setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);
         set_osm_bridge_tbl();
         printf("OpenGL: set_osm_bridge_tbl() done (fallback path)\n");
     }
@@ -408,7 +413,6 @@ EXTERNAL_API void* pojavGetCurrentContext() {
 }
 
 EXTERNAL_API void pojavMakeCurrent(void* window) {
-    printf("pojavMakeCurrent: tid=%d window=%p\n", gettid(), window);
     if (br_make_current == NULL) {
         printf("pojavMakeCurrent: br_make_current is NULL!\n");
         return;
