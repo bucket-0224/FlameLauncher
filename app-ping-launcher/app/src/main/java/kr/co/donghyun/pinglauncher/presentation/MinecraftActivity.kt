@@ -1302,7 +1302,7 @@ class MinecraftActivity : BaseActivity() {
         if (!enableEarlyWindow) {
             Log.d("PING_LAUNCHER", "🪟 모드팩 인스턴스 — early window 비활성화(Connector 모듈 호환)")
         }
-        syncFmlConfig(File(mcDir, "config/fml.toml"), enableEarlyWindow)
+        syncFmlConfig(File(mcDir, "config/fml.toml"), true)
 
 // ★ JDK 9+ 전용 플래그는 javaMajor>=9 일 때만 부착
         val isModularJre = javaMajor >= 9
@@ -1622,7 +1622,10 @@ class MinecraftActivity : BaseActivity() {
                     ?.any { it.extension == "txt" &&
                             System.currentTimeMillis() - it.lastModified() < 60_000 } == true
                 if (hasCrash) {
-                    runOnUiThread { CrashReportActivity.start(this, instanceBase.absolutePath) }
+                    runOnUiThread {
+                        finish()
+                        CrashReportActivity.start(this, instanceBase.absolutePath)
+                    }
                 }
             }
         }.start()

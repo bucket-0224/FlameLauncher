@@ -457,12 +457,6 @@ class MainActivity : BaseActivity() {
 
     override fun onResume() {
         super.onResume()
-        val prefs = getSharedPreferences("ping_launcher", MODE_PRIVATE)
-        val pendingCrash = prefs.getString("pending_crash_instance", null)
-        if (pendingCrash != null) {
-            prefs.edit().remove("pending_crash_instance").apply()
-            CrashReportActivity.start(this, pendingCrash)
-        }
         refreshLoginState()
         refreshInstances()
     }

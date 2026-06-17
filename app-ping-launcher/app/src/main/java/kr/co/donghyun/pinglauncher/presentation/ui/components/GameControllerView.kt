@@ -32,17 +32,17 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
     83  to (0.14f to 0.88f),  // S
     68  to (0.22f to 0.88f),  // D
     256 to (0.06f to 0.10f),  // ESC
-    292 to (0.14f to 0.10f),  // F3
-    294 to (0.22f to 0.10f),  // F5
-    -6  to (0.30f to 0.10f),  // keyboard toggle
+    -6  to (0.14f to 0.10f),  // keyboard toggle
+    292 to (0.22f to 0.10f),  // F3
+    294 to (0.3f to 0.10f),  // F5
     84  to (0.06f to 0.28f),  // T
     47  to (0.14f to 0.28f),  // /
     81  to (0.22f to 0.28f),  // Q
-    69  to (0.96f to 0.7f),  // E (inventory)
+    69  to (0.92f to 0.7f),  // E (inventory)
     340 to (0.76f to 0.88f),  // shift = sneak
     341 to (0.84f to 0.88f),  // ctrl  = sprint
     32  to (0.92f to 0.88f),  // space = jump
-    -7 to (0.8f to 0.7f),
+    -7 to (0.84f to 0.7f),
 )
 
 class GameControllerView(context: Context) : View(context) {

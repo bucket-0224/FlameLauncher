@@ -30,8 +30,6 @@ object KeyLayoutManager {
         KeyButton("sneak",  "🔽",  340,  0.80f, 0.83f, width = 52f, height = 52f),
         KeyButton("sprint", "⏫",  341,  0.84f, 0.83f, width = 52f, height = 52f),
         KeyButton("inv",    "E",  69,   0.92f, 0.72f, width = 52f, height = 52f),
-        KeyButton("prev_slot", "⬅️", -4,   0.76f, 0.72f, width = 52f, height = 52f),
-        KeyButton("next_slot", "➡️", -5,   0.84f, 0.72f, width = 52f, height = 52f),
         KeyButton("esc",    "ESC", 256, 0.04f, 0.04f, width = 52f, height = 52f),
         KeyButton("f3",     "F3",  292, 0.08f, 0.04f, width = 52f, height = 52f),
         KeyButton("f5",     "F5",  294, 0.12f, 0.04f, width = 52f, height = 52f),
