@@ -3,6 +3,7 @@ package kr.co.donghyun.pinglauncher.presentation
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import android.widget.Toast
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -412,7 +413,7 @@ class ContentPackBrowserActivity : BaseActivity() {
     /** 추가 정보 없이 바로 설치 (모드팩/텍스처팩/쉐이더팩 케이스) */
     private fun installDirect(mod: CurseForgeMod, contentType: ContentType) {
         lifecycleScope.launch {
-            beginInstall(mod, "${contentType.label} 설치 중...")
+            if (!beginInstall(mod, "${contentType.label} 설치 중...")) return@launch
             try {
                 when (contentType) {
                     ContentType.MODPACK -> installModpack(mod)
@@ -522,7 +523,7 @@ class ContentPackBrowserActivity : BaseActivity() {
 
         // Sodium 본체만 트리거 — addon 류는 무시
         // 파일명 prefix 가 정확히 "sodium" / "sodium-fabric" / "sodium-neoforge" 중 하나일 때만
-        val sodiumPrefixes = setOf("sodium", "sodium-fabric", "sodium-neoforge")
+        val sodiumPrefixes = setOf("sodium", "sodium-fabric", "sodium-neoforge","embeddium")
         val sodiumJar = jars.firstOrNull { f ->
             extractModFilePrefix(f.name).lowercase() in sodiumPrefixes
         }
@@ -802,7 +803,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         contentType: ContentType
     ) {
         lifecycleScope.launch {
-            beginInstall(mod, "${mod.name} → 인스턴스($instanceId) 설치 중...")
+            if (!beginInstall(mod, "${mod.name} → 인스턴스($instanceId) 설치 중...")) return@launch
             try {
                 addContentToInstance(mod, instanceId, contentType)
                 refreshInstalledIds()
@@ -822,7 +823,7 @@ class ContentPackBrowserActivity : BaseActivity() {
     ) {
         lifecycleScope.launch {
             val loaderName = loader?.displayName ?: "Vanilla"
-            beginInstall(mod, "$loaderName $mcVersion 인스턴스 준비 중...")
+            if (!beginInstall(mod, "$loaderName $mcVersion 인스턴스 준비 중...")) return@launch
             try {
                 val versionEntry = withContext(Dispatchers.IO) {
                     VersionRepository().fetchVersionList().firstOrNull { it.id == mcVersion }
@@ -1541,11 +1542,26 @@ class ContentPackBrowserActivity : BaseActivity() {
         }
     }
 
-    private fun beginInstall(mod: CurseForgeMod, message: String) {
+    /**
+     * 설치(다운로드) 시작. 이미 다른 설치가 진행 중이면 거부하고 false 를 반환한다.
+     * (동시 다운로드 방지 — 모든 설치 경로가 이 함수를 단일 관문으로 통과한다)
+     */
+    private fun beginInstall(mod: CurseForgeMod, message: String): Boolean {
+        if (_isInstalling.value) {
+            val current = _installingModId.value
+            Toast.makeText(
+                this,
+                if (current == mod.id) "이미 설치 중입니다."
+                else "다른 항목을 설치하는 중입니다. 완료된 후 다시 시도해주세요.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return false
+        }
         _isInstalling.value = true
         _installingModId.value = mod.id
         _statusMessage.value = message
         _progress.value = DownloadProgress()
+        return true
     }
 
     private fun endInstall() {

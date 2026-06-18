@@ -41,18 +41,25 @@ import kr.co.donghyun.pinglauncher.presentation.ui.theme.TextPrimary
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.TextSecondary
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 
-// ── 진행/결과 상태 (Compose 에서 관찰) ──
-private val importing = mutableStateOf(false)            // 맵 가져오는 중(다이얼로그)
-private val importMessage = mutableStateOf("맵을 가져오는 중…")
-private val deletedFinish = mutableStateOf(false)
-
+/**
+ * 진행/결과 상태는 모두 이 Composable 이 소유한다(remember).
+ * Activity 는 상태를 들고 있지 않고, 콜백으로 전달받은 MutableState 를 갱신만 한다.
+ *  - importMap(message, importing, ...) : 가져오기 시작/종료 시 importing 을 켜고 끔
+ *  - deleteInstance(finish)             : 삭제 완료 시 finish.value = true
+ */
 @Composable
 fun InstanceSettingsScreen(
     instanceName : String,
-    launchMapPicker : (message : String, importing : Boolean) -> Unit,
+    // 맵 가져오기: Screen 이 만든 상태(message, importing)를 그대로 넘겨 Activity 가 갱신하게 한다
+    launchMapPicker : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
     deleteInstance : (finish : MutableState<Boolean>) -> Unit,
     finish : () -> Unit
 ) {
+    // ── 화면이 살아있는 동안만 유지되는 상태 (진입할 때마다 false 로 초기화) ──
+    val importing = remember { mutableStateOf(false) }
+    val importMessage = remember { mutableStateOf("맵을 가져오는 중…") }
+    val deletedFinish = remember { mutableStateOf(false) }
+
     var showDeleteConfirm by remember { mutableStateOf(false) }
     val isImporting by importing
     val msg by importMessage
@@ -74,7 +81,7 @@ fun InstanceSettingsScreen(
             // ── 헤더 ──
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = finish) {
-                    Text("뒤로", color = TextSub, fontSize = if (tablet) 14.sp else 11.sp)
+                    Text("뒤로", color = TextSecondary, fontSize = if (tablet) 14.sp else 11.sp)
                 }
 
                 Spacer(Modifier.width(12.dp))
@@ -92,7 +99,7 @@ fun InstanceSettingsScreen(
                 title = "맵 가져오기",
                 subtitle = "zip 으로 받은 월드를 이 인스턴스에 추가",
                 enabled = !isImporting,
-            ) { launchMapPicker(importMessage.value, importing.value) }
+            ) { launchMapPicker(importMessage, importing) }
 
             Spacer(Modifier.height(10.dp))
 
