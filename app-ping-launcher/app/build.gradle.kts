@@ -219,6 +219,7 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+    implementation(libs.androidx.compose.material.icons.core)
 
     // PojavLauncher patched LWJGL (컴파일 시점에만 클래스 참조용)
     compileOnly(files("src/main/assets/lwjgl3/lwjgl-glfw-classes.jar"))

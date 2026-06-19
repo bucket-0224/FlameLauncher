@@ -76,6 +76,19 @@ public class CallbackBridge {
         }
     }
 
+    /**
+     * 게임이 첫 프레임을 화면에 그린 직후 네이티브(egl_bridge.c::pojavSwapBuffers)가 호출.
+     * 부팅 로딩 다이얼로그를 닫는 신호로 쓴다. 렌더 스레드에서 불리므로 dispatch 만 한다.
+     */
+    public static void onFirstFrameRendered() {
+        Log.d(TAG, "onFirstFrameRendered");
+        try {
+            MinecraftActivityBridge.onFirstFrameRendered();
+        } catch (Throwable t) {
+            Log.w(TAG, "onFirstFrameRendered dispatch failed", t);
+        }
+    }
+
     public static void sendData(int type, String data) {
         nativeSendData(true, type, data);
     }

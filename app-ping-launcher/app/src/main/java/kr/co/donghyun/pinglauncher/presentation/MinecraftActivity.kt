@@ -16,6 +16,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener
 import androidx.lifecycle.lifecycleScope
@@ -32,6 +36,7 @@ import kr.co.donghyun.pinglauncher.data.renderer.Renderer
 import kr.co.donghyun.pinglauncher.data.renderer.RendererManager
 import kr.co.donghyun.pinglauncher.presentation.base.BaseActivity
 import kr.co.donghyun.pinglauncher.presentation.ui.components.GameControllerView
+import kr.co.donghyun.pinglauncher.presentation.ui.components.MinecraftBootOverlay
 import kr.co.donghyun.pinglauncher.presentation.ui.components.MinecraftSurface
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.PingLauncherTheme
 import kr.co.donghyun.pinglauncher.presentation.util.MinecraftActivityBridge
@@ -111,6 +116,14 @@ class MinecraftActivity : BaseActivity() {
 
     private var jvmStarted = false
     private var javaMajor: Int = 21
+
+    // ── 부팅 로딩 오버레이 상태 ──
+    // showBootOverlay 가 true 인 동안 게임 surface 위에 "부팅 중" 다이얼로그를 표시한다.
+    // 첫 프레임 콜백(MinecraftActivityBridge.onFirstFrameRendered) 또는 타임아웃에 false 가 된다.
+    private var showBootOverlay by mutableStateOf(true)
+    private var bootModCount by mutableIntStateOf(0)
+    private var bootMaxDelayMin by mutableIntStateOf(2)
+    @Volatile private var bootOverlayDismissed = false
 
 
     companion object {
@@ -255,11 +268,33 @@ class MinecraftActivity : BaseActivity() {
                         },
                     )
                     // GameControllerOverlay() ← 제거
+
+                    // 부팅 로딩 오버레이 (첫 프레임 렌더링 전까지 표시)
+                    if (showBootOverlay) {
+                        MinecraftBootOverlay(
+                            modCount = bootModCount,
+                            maxDelayMinutes = bootMaxDelayMin,
+                            onClose = { dismissBootOverlay("user-close") },
+                        )
+                    }
                 }
             }
         }
 
 
+        // GameControllerView 는 부팅 오버레이가 닫힌 뒤(첫 프레임 이후) 추가한다.
+        // 부팅 중에는 오버레이가 컨트롤러 위가 아니라, 컨트롤러 자체가 아직 없도록 한다.
+
+        // 초기 상태 반영 + 디바이스 변화 감지
+        setupInputDeviceWatching()
+        installPhysicalKeyboardInterceptor()
+
+        setupBootOverlay()
+    }
+
+    /** 게임 컨트롤러 오버레이 뷰를 화면에 추가한다. 첫 프레임 이후 1회 호출. */
+    private fun attachGameControllerView() {
+        if (gameControllerView != null) return   // 중복 추가 방지
         gameControllerView = GameControllerView(this).also { view ->
             addContentView(
                 view,
@@ -269,10 +304,56 @@ class MinecraftActivity : BaseActivity() {
                 )
             )
         }
+        // 현재 입력 상태 즉시 반영(컨트롤러가 늦게 붙으므로).
+        // setupInputDeviceWatching() 을 다시 부르면 리스너/폴링이 중복 등록되므로,
+        // 가시성 갱신만 호출한다. (리스너·폴링은 onCreate 에서 이미 살아있음)
+        try { updateGameControllerVisibility() } catch (_: Throwable) {}
+    }
 
-        // 초기 상태 반영 + 디바이스 변화 감지
-        setupInputDeviceWatching()
-        installPhysicalKeyboardInterceptor()
+    /**
+     * 부팅 로딩 오버레이 준비:
+     *  - mods 폴더의 .jar 개수를 세어 모드팩 여부/지연 안내 시간 결정
+     *  - 첫 프레임 콜백 등록 (네이티브가 첫 swap 시 호출 → 오버레이 닫기)
+     *  - 콜백이 오지 않을 경우를 대비한 타임아웃 안전망
+     */
+    private fun setupBootOverlay() {
+        // 모드 개수 계산 (mcDir/mods 의 .jar). 0 이면 바닐라로 간주.
+        val count = try {
+            val base = instanceDir?.let { File(it) }
+                ?: customGameDir?.let { File(it) }
+                ?: File(getExternalFilesDir(null), "instances/vanilla_$versionId")
+            File(base, "mods").listFiles()
+                ?.count { it.isFile && it.extension.equals("jar", ignoreCase = true) }
+                ?: 0
+        } catch (_: Exception) { 0 }
+
+        bootModCount = count
+        // 대략적 안내값: 기본 2분 + 모드 50개당 약 1분, 최대 10분으로 캡.
+        bootMaxDelayMin = (2 + count / 50).coerceIn(2, 10)
+
+        // 첫 프레임 콜백 등록 (렌더 스레드에서 불리므로 UI 스레드로 전환)
+        MinecraftActivityBridge.setFirstFrameListener {
+            runOnUiThread { dismissBootOverlay("first-frame") }
+        }
+
+        // 타임아웃 안전망: 콜백이 어떤 이유로 안 와도 무한 로딩이 되지 않게.
+        // 모드 수에 비례해 넉넉히 잡되(분→ms), 최소 30초.
+        val timeoutMs = (bootMaxDelayMin.toLong() * 60_000L).coerceAtLeast(30_000L)
+        window.decorView.postDelayed({
+            if (!bootOverlayDismissed) {
+                Log.w("PING_LAUNCHER", "부팅 오버레이 타임아웃(${timeoutMs}ms) — 강제 닫기")
+                dismissBootOverlay("timeout")
+            }
+        }, timeoutMs)
+    }
+
+    private fun dismissBootOverlay(reason: String) {
+        if (bootOverlayDismissed) return
+        bootOverlayDismissed = true
+        showBootOverlay = false
+        Log.d("PING_LAUNCHER", "부팅 오버레이 닫음 ($reason)")
+        // 오버레이가 사라진 뒤에야 게임 컨트롤러를 화면에 올린다.
+        attachGameControllerView()
     }
 
     private fun setupInputDeviceWatching() {
@@ -1052,11 +1133,76 @@ class MinecraftActivity : BaseActivity() {
         "--limit-modules", "--module", "-m"
     )
 
-    private fun normalizeJvmArgsForJni(args: Array<String>): Array<String> {
+    /**
+     * Android(bionic)에서 동작 불가능한 모드를 로드에서 제외한다.
+     *
+     * 현재 대상: controllable (controllable-forge / controllable-sdl)
+     *   - SDL2 네이티브를 jar 에 번들하는데, 그게 데스크톱 glibc 빌드라
+     *     "libm.so.6 not found" 로 dlopen 실패 → onClientSetup 단계에서 크래시.
+     *   - ZL2 포함 어떤 PojavLauncher 계열도 못 쓰는 데스크톱 전용 네이티브라,
+     *     모바일에선 영구 제외가 맞다(복원 불필요).
+     *
+     * Forge 의 mods 스캐너는 .jar 확장자만 로드하므로, .jar → .jar.pingdisabled
+     * 로 rename 해서 제외한다. (파일 삭제 아님 — 모드팩 무결성 보존)
+     *
+     * 주의: "controlling"(옵션 화면 검색 모드)은 이름이 비슷하지만 전혀 다른 모드이고
+     *       네이티브가 없어 정상 동작하므로 제외 대상이 아니다.
+     */
+    private fun disableUnsupportedMods(modsDir: File) {
+        if (!modsDir.isDirectory) return
+        // 로드 불가 모드의 파일명 prefix (소문자 비교). controlling 은 제외하기 위해 '-' 포함.
+        val blocked = listOf("controllable-forge", "controllable-sdl")
+        modsDir.listFiles()?.forEach { f ->
+            if (!f.isFile) return@forEach
+            val name = f.name
+            if (!name.endsWith(".jar", ignoreCase = true)) return@forEach
+            val lower = name.lowercase()
+            if (blocked.any { lower.startsWith(it) }) {
+                val disabled = File(f.parentFile, "$name.pingdisabled")
+                try {
+                    if (disabled.exists()) disabled.delete()
+                    if (f.renameTo(disabled)) {
+                        Log.d("PING_LAUNCHER", "🎮 모드 로드 제외 (SDL2 미지원, Android 불가): $name")
+                    } else {
+                        Log.w("PING_LAUNCHER", "⚠️ 모드 제외 실패 (rename): $name")
+                    }
+                } catch (e: Exception) {
+                    Log.w("PING_LAUNCHER", "⚠️ 모드 제외 중 오류: $name — ${e.message}")
+                }
+            }
+        }
+    }
+
+    private fun normalizeJvmArgsForJni(
+        args: Array<String>,
+        freetypeLibPath: String? = null,
+        jnaBootPath: String? = null,
+        jnaTmpDir: String? = null,
+    ): Array<String> {
         val out = ArrayList<String>(args.size)
         var i = 0
         while (i < args.size) {
             val a = args[i]
+            // freetype libname 은 별도로 강제하므로, 기존에 들어온 것들은 모두 제거(ZL2 purgeArg 방식).
+            // version.json / 사용자 설정이 데스크톱용 경로를 넣었을 수 있어 충돌을 막는다.
+            if (freetypeLibPath != null && a.startsWith("-Dorg.lwjgl.freetype.libname")) {
+                i++
+                continue
+            }
+            // jna.boot.library.path 도 우리가 강제하므로 기존 것은 제거.
+            // (JNA 는 이 경로에서 libjnidispatch.so 를 직접 로드 → 추출 실패로 인한
+            //  "Could not initialize class com.sun.jna.NativeLibrary" 방지)
+            if (jnaBootPath != null && a.startsWith("-Djna.boot.library.path")) {
+                i++
+                continue
+            }
+            // jna.tmpdir 는 안드로이드에서 쓰기 가능한 캐시 경로로 치환 (ZL2 방식).
+            // 폴백 추출이 필요할 때 읽기 전용 경로라 실패하는 것을 막는다.
+            if (jnaTmpDir != null && a.startsWith("-Djna.tmpdir")) {
+                out.add("-Djna.tmpdir=$jnaTmpDir")
+                i++
+                continue
+            }
             // 이미 "--add-opens=..." 처럼 = 가 붙어있으면 그대로
             val isBare = a in JLI_TWO_TOKEN_OPTS
             if (isBare && i + 1 < args.size) {
@@ -1068,6 +1214,16 @@ class MinecraftActivity : BaseActivity() {
                 out.add(a)
                 i++
             }
+        }
+        // 제거 후 우리가 계산한 freetype 경로를 단 하나만 추가
+        if (freetypeLibPath != null) {
+            out.add("-Dorg.lwjgl.freetype.libname=$freetypeLibPath")
+        }
+        // JNA 부트 경로 강제 (단 하나만)
+        if (jnaBootPath != null) {
+            out.add("-Djna.boot.library.path=$jnaBootPath")
+            // JNA 가 시스템 경로의 jnidispatch 를 먼저 찾도록(추출 회피). 실패 시 boot path 폴백.
+            out.add("-Djna.nosys=false")
         }
         return out.toTypedArray()
     }
@@ -1535,6 +1691,18 @@ class MinecraftActivity : BaseActivity() {
         else
             emptyArray()
 
+        // ── LWJGL FreeType 네이티브 강제 지정 (ZL2 방식) ──
+        // 게임이 LWJGL 3.3.6 으로 도는데 .lwjgl/3.3.6/ 추출 디렉터리에 네이티브가
+        // prepopulate 되지 않으면 libfreetype.so 를 못 찾아 "Default font failed to load" 로 크래시한다.
+        // 버전별 추출 디렉터리에 의존하지 않도록, 앱에 포함된 arm64 libfreetype.so 의
+        // 절대경로를 LWJGL 에 직접 지정한다. (실제 인자 주입/중복 제거는 normalizeJvmArgsForJni 에서 수행)
+        val freetypeSo = File(applicationInfo.nativeLibraryDir, "libfreetype.so")
+        if (freetypeSo.exists()) {
+            Log.d("PING_LAUNCHER", "🔤 freetype 강제 지정: ${freetypeSo.absolutePath}")
+        } else {
+            Log.w("PING_LAUNCHER", "⚠️ libfreetype.so 가 nativeLibraryDir 에 없음 — 폰트 로딩 실패 가능")
+        }
+
         val jvmArgs = jvm8CompatArgs +
                 jniDebugArgs +
                 jvmSettings.toJvmArgArray(
@@ -1556,6 +1724,11 @@ class MinecraftActivity : BaseActivity() {
 
         Log.d("PING_LAUNCHER", "═══ classpath 항목 ${dedupedJars.size}개 ═══")
         dedupedJars.forEachIndexed { i, p -> Log.d("PING_LAUNCHER", "  [$i] ${File(p).name}") }
+
+        // SDL2 기반 모드(controllable)는 데스크톱 glibc 네이티브(libm.so.6 의존)를 번들해
+        // Android(bionic)에서 로드 불가 → 부팅 직전 .jar 확장자를 바꿔 로드에서 제외한다.
+        disableUnsupportedMods(File(mcDir, "mods"))
+
         Log.d("PING_LAUNCHER", "═══ mods/ 폴더 ═══")
         File(mcDir, "mods").listFiles()?.forEach {
             Log.d("PING_LAUNCHER", "  ${it.name} (${it.length()}B)")
@@ -1639,7 +1812,24 @@ class MinecraftActivity : BaseActivity() {
                 rendererEnv.forEach { (k, v) -> Log.d("PING_LAUNCHER", "  env $k=$v") }
                 launcher.applyEnv(rendererEnv)
 
-                val normalizedJvmArgs = normalizeJvmArgsForJni(jvmArgs)
+                // JNA 네이티브(libjnidispatch.so) 강제 지정 (ZL2 방식).
+                // jniLibs 에 번들된 arm64 libjnidispatch.so 가 nativeLibraryDir 에 있으므로,
+                // 그 경로를 jna.boot.library.path 로 지정해 추출 없이 직접 로드하게 한다.
+                val jnaDispatch = File(applicationInfo.nativeLibraryDir, "libjnidispatch.so")
+                val jnaBootPath = if (jnaDispatch.exists()) {
+                    Log.d("PING_LAUNCHER", "🧩 JNA 부트 경로: ${applicationInfo.nativeLibraryDir}")
+                    applicationInfo.nativeLibraryDir
+                } else {
+                    Log.w("PING_LAUNCHER", "⚠️ libjnidispatch.so 가 nativeLibraryDir 에 없음 — JNA 모드 크래시 가능")
+                    null
+                }
+
+                val normalizedJvmArgs = normalizeJvmArgsForJni(
+                    jvmArgs,
+                    freetypeLibPath = if (freetypeSo.exists()) freetypeSo.absolutePath else null,
+                    jnaBootPath = jnaBootPath,
+                    jnaTmpDir = cacheDir.absolutePath,
+                )
 
                 Log.d("PING_LAUNCHER", "정규화 후 JVM 인자 ${normalizedJvmArgs.size}개")
                 normalizedJvmArgs.forEachIndexed { idx, a ->
@@ -2043,6 +2233,8 @@ class MinecraftActivity : BaseActivity() {
 
     override fun onDestroy() {
         currentInstance = null
+        // ★ 첫 프레임 리스너 해제 (Activity 누수 방지)
+        MinecraftActivityBridge.setFirstFrameListener(null)
         // ★ 리스너 해제
         inputDeviceListener?.let { listener ->
             try {
