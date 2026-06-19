@@ -386,6 +386,61 @@ EXTERNAL_API void pojavSetWindowHint(int hint, int value) {
 
 extern void pojavBootDispatchFramebufferSize(void);
 
+// ── 첫 프레임 콜백 (부팅 로딩 다이얼로그를 닫기 위함) ──
+// 게임이 surface 에 처음 그리는 순간(첫 swap)을 감지해 Java 측에 한 번 알린다.
+//
+// 중요: CallbackBridge 는 "dalvik(앱) VM" 의 클래스다. 게임 런타임 JVM(glfwThreadVmEnv)
+// 에서 FindClass 로 찾으면 클래스로더가 달라 '메서드 없는' 다른 클래스를 잡는다.
+// 그래서 input_bridge_v3.c::JNI_OnLoad 가 캐시해둔 dalvik 전역 참조
+// (pojav_environ->bridgeClazz) 를 그대로 쓰고, 호출도 dalvik VM env 로 한다.
+// (clipboard/grab 콜백과 동일한 검증된 경로)
+static bool firstFrameReported = false;
+static jmethodID s_method_onFirstFrameRendered = NULL;
+
+static void reportFirstFrameToJava() {
+    if (firstFrameReported) return;
+    firstFrameReported = true;
+
+    if (pojav_environ == NULL || pojav_environ->dalvikJavaVMPtr == NULL) {
+        printf("reportFirstFrame: no dalvik JavaVM, skip\n");
+        return;
+    }
+    if (pojav_environ->bridgeClazz == NULL) {
+        printf("reportFirstFrame: bridgeClazz not cached yet, skip\n");
+        return;
+    }
+
+    // dalvik VM 의 env 확보 (clipboard 콜백과 동일 패턴)
+    JNIEnv* dalvikEnv = NULL;
+    jint envStat = (*pojav_environ->dalvikJavaVMPtr)->GetEnv(
+            pojav_environ->dalvikJavaVMPtr, (void**)&dalvikEnv, JNI_VERSION_1_6);
+    if (envStat == JNI_EDETACHED) {
+        (*pojav_environ->dalvikJavaVMPtr)->AttachCurrentThread(
+                pojav_environ->dalvikJavaVMPtr, &dalvikEnv, NULL);
+    }
+    if (dalvikEnv == NULL) {
+        printf("reportFirstFrame: failed to get dalvik JNIEnv\n");
+        return;
+    }
+
+    // 메서드 ID 한 번만 조회해서 캐시 (올바른 클래스이므로 정상적으로 찾아진다)
+    if (s_method_onFirstFrameRendered == NULL) {
+        s_method_onFirstFrameRendered = (*dalvikEnv)->GetStaticMethodID(
+                dalvikEnv, pojav_environ->bridgeClazz, "onFirstFrameRendered", "()V");
+        if (s_method_onFirstFrameRendered == NULL) {
+            if ((*dalvikEnv)->ExceptionCheck(dalvikEnv)) (*dalvikEnv)->ExceptionClear(dalvikEnv);
+            printf("reportFirstFrame: onFirstFrameRendered() not found on bridgeClazz\n");
+            return;
+        }
+    }
+
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, pojav_environ->bridgeClazz,
+                                       s_method_onFirstFrameRendered);
+    if ((*dalvikEnv)->ExceptionCheck(dalvikEnv)) (*dalvikEnv)->ExceptionClear(dalvikEnv);
+    // DetachCurrentThread 하지 않음 (clipboard 콜백과 동일 — 이후 재사용)
+    printf("reportFirstFrame: notified Java (first frame rendered)\n");
+}
+
 EXTERNAL_API void pojavSwapBuffers() {
     static int counter = 0;
     if ((++counter % 60) == 0) {
@@ -395,6 +450,11 @@ EXTERNAL_API void pojavSwapBuffers() {
     pojavBootDispatchFramebufferSize();   // ★ 추가: 첫 swap 직전 한 번 발화
 
     br_swap_buffers();
+
+    // ★ 첫 프레임을 실제로 화면에 올린 직후 Java 측에 알림 (로딩 다이얼로그 닫기)
+    if (!firstFrameReported) {
+        reportFirstFrameToJava();
+    }
 }
 
 EXTERNAL_API void* pojavGetCurrentContext() {

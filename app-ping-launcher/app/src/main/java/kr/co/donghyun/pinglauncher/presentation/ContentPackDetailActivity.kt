@@ -15,7 +15,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -503,7 +505,6 @@ private fun InstallTargetDialog(
     val chipPadV          = if (tablet) 7.dp else 5.dp
     val loaderRowPadV     = if (tablet) 12.dp else 8.dp
     val actionButtonH     = if (tablet) 44.dp else 38.dp
-    val maxExistingHeight = if (tablet) 220.dp else 160.dp
 
     // ── 로더 후보 — supportedLoaders 가 비어있으면 (감지 실패) 폴백으로 전체 ──
     val loaderOptions: List<ModLoader> = when {
@@ -514,7 +515,7 @@ private fun InstallTargetDialog(
     val supportedSingle = supportedLoaders.size == 1
     val loaderLocked = supportedSingle    // 로더가 하나뿐이면 선택 불가, 표시만
 
-    val supportedVersions = listOf("1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
+    val supportedVersions = listOf("26.2", "1.21.8", "1.21.6", "1.21.5", "1.21.4", "1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
     var selectedVersion by remember { mutableStateOf(supportedVersions.first()) }
 
     // ── 기본 선택 로더 ──
@@ -542,10 +543,12 @@ private fun InstallTargetDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth(dialogWidthRatio)
+                    .heightIn(max = 560.dp)
                     .clip(RoundedCornerShape(14.dp))
                     .background(BgSurface)
                     .border(1.dp, BgBorder, RoundedCornerShape(14.dp))
                     .clickable(enabled = false) {}
+                    .verticalScroll(rememberScrollState())
                     .padding(outerPad),
                 verticalArrangement = Arrangement.spacedBy(verticalGap)
             ) {
@@ -576,11 +579,12 @@ private fun InstallTargetDialog(
                 if (existingInstances.isNotEmpty()) {
                     Text("기존 인스턴스 (호환되는 것만)", color = TextMain,
                         fontSize = sectionSize, fontWeight = FontWeight.Bold)
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = maxExistingHeight),
+                    // 부모 Column 이 이미 verticalScroll 이므로 여기서는 LazyColumn 대신
+                    // 일반 Column 으로 나열한다. (스크롤 중첩 방지 + 항목이 잘리지 않음)
+                    Column(
                         verticalArrangement = Arrangement.spacedBy(sectionGap)
                     ) {
-                        items(existingInstances, key = { it.id }) { inst ->
+                        existingInstances.forEach { inst ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()

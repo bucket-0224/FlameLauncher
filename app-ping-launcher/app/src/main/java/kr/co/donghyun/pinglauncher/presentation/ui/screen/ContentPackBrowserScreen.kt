@@ -18,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -97,7 +98,7 @@ fun ContentPackBrowserScreen(
     var showCautionDialog by remember { mutableStateOf(false) }
     var searchQuery by remember { mutableStateOf("") }
     val ctx = LocalContext.current
-    val supportedVersions = listOf("", "1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
+    val supportedVersions = listOf("", "26.2", "1.21.8", "1.21.6", "1.21.5", "1.21.4", "1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
 
     val Pink = Color(0xFFE91E8C)
     val BgDark = Color(0xFF120B10)
@@ -309,10 +310,12 @@ fun ContentPackItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .height(if (tablet) 84.dp else 72.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(BgSurface)
             .border(1.dp, if (isInstalled) Pink else BgBorder, RoundedCornerShape(10.dp))
-            .clickable { onDetail() }
+            // 설치(다운로드) 중인 카드는 탭으로 상세 진입을 막는다.
+            .clickable(enabled = !isInstalling) { onDetail() }
             .padding(if (tablet) 12.dp else 10.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -322,11 +325,18 @@ fun ContentPackItem(
             contentDescription = null,
             modifier = Modifier
                 .size(if (tablet) 60.dp else 48.dp)
-                .clip(RoundedCornerShape(8.dp)),
+                .clip(RoundedCornerShape(8.dp))
+                // 설치 중이면 콘텐츠를 흐리게 하여 비활성 상태임을 표시
+                .alpha(if (isInstalling) 0.4f else 1f),
             contentScale = ContentScale.Crop
         )
 
-        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .alpha(if (isInstalling) 0.4f else 1f),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
             Text(
                 text = mod.name,
                 color = TextMain,
@@ -339,30 +349,30 @@ fun ContentPackItem(
                 text = mod.summary,
                 color = TextSub,
                 fontSize = if (tablet) 11.sp else 9.sp,
+                minLines = 2,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
         }
 
-//        Box(contentAlignment = Alignment.Center) {
-//            if (isInstalling) {
-//                CircularProgressIndicator(color = Pink, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-//            } else {
-//                Button(
-//                    onClick = { if (isInstalled) onLaunch() else onInstall() },
-//                    colors = ButtonDefaults.buttonColors(containerColor = Pink),
-//                    shape = RoundedCornerShape(6.dp),
-//                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
-//                    modifier = Modifier.height(if (tablet) 32.dp else 28.dp)
-//                ) {
-//                    Text(
-//                        text = if (isInstalled) "▶ 열기" else "설치",
-//                        color = Color.White,
-//                        fontSize = if (tablet) 11.sp else 9.sp,
-//                        fontWeight = FontWeight.Bold
-//                    )
-//                }
-//            }
-//        }
+        // 설치(다운로드) 중인 카드에만 진행 표시
+        if (isInstalling) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                CircularProgressIndicator(
+                    color = Pink,
+                    strokeWidth = 2.dp,
+                    modifier = Modifier.size(if (tablet) 22.dp else 18.dp)
+                )
+                Text(
+                    text = "설치 중",
+                    color = Pink,
+                    fontSize = if (tablet) 11.sp else 9.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
     }
 }
