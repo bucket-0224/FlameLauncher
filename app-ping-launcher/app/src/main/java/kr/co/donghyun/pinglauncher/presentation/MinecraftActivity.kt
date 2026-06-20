@@ -22,6 +22,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.graphics.Insets
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -228,14 +231,24 @@ class MinecraftActivity : BaseActivity() {
         customGameDir = intent.getStringExtra(EXTRA_GAME_DIR)
         Log.d("PING_LAUNCHER", "customGameDir 수신: $customGameDir")  // ← 추가
 
+        // 엣지투엣지로 직접 제어 — 시스템이 IME 에 맞춰 윈도우를 리사이즈/팬 하지 않게 한다.
+        // (adjustNothing 만으로는 Compose/surface 로 IME insets 가 전파되어 화면이 밀리고
+        //  번쩍이므로, 아래 리스너에서 IME insets 를 소비해 하위 전파를 끊는다.)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
         setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
-            val ime = insets.isVisible(androidx.core.view.WindowInsetsCompat.Type.ime())
+            val ime = insets.isVisible(WindowInsetsCompat.Type.ime())
             gameControllerView?.setImeVisibleExternal(ime)
             if (ime != imeVisible) {
                 imeVisible = ime
                 updateGameControllerVisibility()
             }
-            insets
+            // IME insets 를 0 으로 덮어써서 하위(Compose/Surface)로의 전파를 차단.
+            //   → 게임 화면이 IME 에 밀리지 않고(다 해결), surface 재레이아웃 번쩍임(가)도 사라진다.
+            //   다른 insets(상태바/제스처 등)는 그대로 유지.
+            WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+                .build()
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -452,12 +465,13 @@ class MinecraftActivity : BaseActivity() {
      */
     internal fun updateGameControllerVisibility() {
         val hasExternalInput = hasHardwareKeyboardOrMouse()
-        // JVM 시작 후에는 컨트롤러 뷰를 계속 표시하되, 내부에서 버튼을 거른다:
-        //   - grab(플레이) 또는 IME(채팅) → 전체 버튼
-        //   - 그 외(타이틀/인벤토리/ESC메뉴) → ESC + 키보드 버튼만 (뒤로가기 + 채팅 열기용)
+        // 전체 버튼은 "실제 플레이 중(grab) 이면서 IME(채팅)가 닫혀있을 때"만.
+        //   - grab + IME 닫힘 → 전체 버튼 (WASD 등 플레이 조작)
+        //   - grab + IME 열림(채팅) → ESC + 키보드 버튼만 (다른 버튼이 채팅을 가리지 않도록)
+        //   - 그 외(타이틀/인벤토리/ESC메뉴) → ESC + 키보드 버튼만
         //   - 물리 키보드/마우스 → 전체 숨김
         //   ※ 최초 타이틀 화면부터 ESC/키보드가 보이도록 hasEnteredWorld 게이트는 쓰지 않는다.
-        val fullControl = isGrabbing || imeVisible
+        val fullControl = isGrabbing && !imeVisible
         val shouldShow = jvmStarted && !hasExternalInput
         val target = if (shouldShow) View.VISIBLE else View.INVISIBLE
         runOnUiThread {

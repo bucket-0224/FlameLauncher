@@ -114,18 +114,20 @@ class ContentPackBrowserActivity : BaseActivity() {
                 val targetVersion = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_VERSION)
                 val targetLoader = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_LOADER)
                     ?.let { runCatching { ModLoader.valueOf(it) }.getOrNull() }
+                val targetWorld = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_WORLD)
 
                 val contentType = _selectedContentType.value
                 Log.d("PING_LAUNCHER",
                     "install request: mod=${mod.name} type=$contentType " +
-                            "targetInstance=$targetInstanceId targetVersion=$targetVersion targetLoader=$targetLoader")
+                            "targetInstance=$targetInstanceId targetVersion=$targetVersion " +
+                            "targetLoader=$targetLoader targetWorld=$targetWorld")
 
                 when {
-                    // 기존 인스턴스 선택
+                    // 기존 인스턴스 선택 (데이터팩이면 targetWorld 도 함께 전달)
                     targetInstanceId != null ->
-                        installToExistingInstance(mod, targetInstanceId, contentType)
+                        installToExistingInstance(mod, targetInstanceId, contentType, targetWorld)
 
-                    // 새 인스턴스 — loader 가 null 이어도 Vanilla 로 진행되어야 함 (★ 수정 포인트)
+                    // 새 인스턴스 — loader 가 null 이어도 Vanilla 로 진행되어야 함
                     targetVersion != null ->
                         installToNewInstance(mod, targetVersion, targetLoader, contentType)
 
@@ -410,6 +412,95 @@ class ContentPackBrowserActivity : BaseActivity() {
         }
     }
 
+    /**
+     * 인스턴스 안의 월드(세이브) 목록. level.dat 가 있는 폴더만 월드로 간주한다.
+     * @return 월드 폴더명 리스트 (saves/ 아래 디렉터리명)
+     */
+    fun listWorlds(instanceDir: File, mcVersion: String): List<String> {
+        val savesDir = if (isLegacyVersion(mcVersion))
+            instanceDir.resolve(".minecraft/saves")
+        else
+            instanceDir.resolve("saves")
+        if (!savesDir.isDirectory) return emptyList()
+        return savesDir.listFiles()
+            ?.filter { it.isDirectory && File(it, "level.dat").exists() }
+            ?.map { it.name }
+            ?.sorted()
+            ?: emptyList()
+    }
+
+    /**
+     * CurseForge 데이터팩 zip 을 받아 특정 월드의 datapacks/ 에 넣는다.
+     * 데이터팩은 압축 해제 없이 zip 그대로 둔다 — Minecraft 가 zip 데이터팩을 직접 읽는다.
+     * (pack.mcmeta 가 zip 루트에 있어야 정상 인식되며, 그 검증까지 해준다.)
+     *
+     * @param worldName saves/ 아래 대상 월드 폴더명 (listWorlds 로 고른 것)
+     */
+    private suspend fun installDatapack(
+        file: CurseForgeFile,
+        instanceDir: File,
+        mcVersion: String,
+        worldName: String,
+    ): Boolean = withContext(Dispatchers.IO) {
+        val savesDir = if (isLegacyVersion(mcVersion))
+            instanceDir.resolve(".minecraft/saves")
+        else
+            instanceDir.resolve("saves")
+        val worldDir = savesDir.resolve(worldName)
+        if (!worldDir.isDirectory) {
+            Log.e("PING_LAUNCHER", "📦 대상 월드 없음: $worldName")
+            return@withContext false
+        }
+        val datapacksDir = worldDir.resolve("datapacks")
+        datapacksDir.mkdirs()
+
+        val tmpZip = File.createTempFile("datapack-", ".zip", cacheDir)
+        try {
+            // 1) 다운로드
+            val url = resolveDownloadUrl(file)
+            downloadFile(url, tmpZip, file.fileName)
+
+            // 2) 데이터팩 zip 검증 — pack.mcmeta 가 루트에 있어야 함
+            val hasPackMeta = ZipFile(tmpZip).use { zip ->
+                zip.entries().asSequence().any { !it.isDirectory && it.name == "pack.mcmeta" }
+            }
+            if (!hasPackMeta) {
+                // 루트가 아닌 한 단계 안에 있는 경우(폴더로 감싼 zip) — 그건 그대로 두면
+                // Minecraft 가 인식 못 하므로 실패 처리(추후 재포장 로직 추가 가능).
+                val nested = ZipFile(tmpZip).use { zip ->
+                    zip.entries().asSequence().any { !it.isDirectory && it.name.endsWith("/pack.mcmeta") }
+                }
+                if (nested) {
+                    Log.e("PING_LAUNCHER", "📦 데이터팩이 폴더로 감싸져 있음(루트에 pack.mcmeta 없음): ${file.fileName}")
+                } else {
+                    Log.e("PING_LAUNCHER", "📦 pack.mcmeta 없음 — 데이터팩 아님? ${file.fileName}")
+                }
+                return@withContext false
+            }
+
+            // 3) datapacks/ 에 zip 그대로 복사 (충돌 시 번호 붙임)
+            val safeName = file.fileName
+                .replace(Regex("[^A-Za-z0-9가-힣 _.\\-]"), "_")
+                .let { if (it.endsWith(".zip", true)) it else "$it.zip" }
+            var target = datapacksDir.resolve(safeName)
+            var n = 1
+            val base = safeName.substringBeforeLast(".zip")
+            while (target.exists()) {
+                target = datapacksDir.resolve("$base ($n).zip")
+                n++
+            }
+            tmpZip.copyTo(target, overwrite = false)
+
+            Log.d("PING_LAUNCHER", "📦 데이터팩 설치 완료: ${target.name} → $worldName/datapacks/")
+            true
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "📦 데이터팩 설치 실패: ${e.message}", e)
+            false
+        } finally {
+            tmpZip.delete()
+        }
+    }
+
     /** 추가 정보 없이 바로 설치 (모드팩/텍스처팩/쉐이더팩 케이스) */
     private fun installDirect(mod: CurseForgeMod, contentType: ContentType) {
         lifecycleScope.launch {
@@ -619,7 +710,8 @@ class ContentPackBrowserActivity : BaseActivity() {
     private suspend fun addContentToInstance(
         mod: CurseForgeMod,
         instanceId: String,
-        contentType: ContentType
+        contentType: ContentType,
+        worldName: String? = null,   // 데이터팩 설치 대상 월드 (DATAPACK 일 때만 사용)
     ): Boolean {
         val instanceDir = InstanceManager.instanceDir(this, instanceId)
         val meta = InstanceManager.loadMeta(instanceDir)
@@ -628,7 +720,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         val loaderFilter = if (contentType == ContentType.MOD) meta.loaderType else null
         Log.d("PING_LAUNCHER",
             "addContentToInstance: mod=${mod.id} type=$contentType " +
-                    "instance=$instanceId mc=${meta.mcVersion} loaderFilter=$loaderFilter")
+                    "instance=$instanceId mc=${meta.mcVersion} loaderFilter=$loaderFilter world=$worldName")
 
         // ── 1) 메인 파일 결정 ─────────────────────────────────────────
         val rootFile = withContext(Dispatchers.IO) {
@@ -642,6 +734,16 @@ class ContentPackBrowserActivity : BaseActivity() {
         if (contentType == ContentType.WORLD) {
             _statusMessage.value = "맵 설치 중..."
             return installWorld(rootFile, instanceDir, meta.mcVersion)
+        }
+
+        if (contentType == ContentType.DATAPACK) {
+            if (worldName.isNullOrBlank()) {
+                Log.e("PING_LAUNCHER", "📦 데이터팩 설치인데 대상 월드가 지정되지 않음")
+                _statusMessage.value = "데이터팩을 넣을 월드를 선택해주세요."
+                return false
+            }
+            _statusMessage.value = "데이터팩 설치 중..."
+            return installDatapack(rootFile, instanceDir, meta.mcVersion, worldName)
         }
 
         // ── 2) MOD 타입이면 의존성 재귀 해결 ─────────────────────────
@@ -669,6 +771,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             ContentType.SHADER_PACK  -> "shaderpacks"
             ContentType.MODPACK      -> "mods"
             ContentType.WORLD        -> "saves"
+            ContentType.DATAPACK     -> "saves"   // 실제로는 위에서 early-return (월드별 처리)
         }
         val baseDir = if (isLegacyVersion(meta.mcVersion))
             instanceDir.resolve(".minecraft") else instanceDir
@@ -800,12 +903,13 @@ class ContentPackBrowserActivity : BaseActivity() {
     private fun installToExistingInstance(
         mod: CurseForgeMod,
         instanceId: String,
-        contentType: ContentType
+        contentType: ContentType,
+        worldName: String? = null,   // 데이터팩일 때 대상 월드
     ) {
         lifecycleScope.launch {
             if (!beginInstall(mod, "${mod.name} → 인스턴스($instanceId) 설치 중...")) return@launch
             try {
-                addContentToInstance(mod, instanceId, contentType)
+                addContentToInstance(mod, instanceId, contentType, worldName)
                 refreshInstalledIds()
             } catch (e: Exception) {
                 Log.e("PING_LAUNCHER", "기존 인스턴스 설치 실패: ${e.message}", e)
