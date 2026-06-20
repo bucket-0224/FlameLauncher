@@ -24,6 +24,7 @@ import coil.compose.AsyncImage
 import kr.co.donghyun.pinglauncher.data.setting.Setting
 import kr.co.donghyun.pinglauncher.data.setting.SettingManager
 import kr.co.donghyun.pinglauncher.presentation.ContentDetail
+import kr.co.donghyun.pinglauncher.presentation.ui.screen.ContentType
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.TextPrimary
 import kr.co.donghyun.pinglauncher.presentation.ui.theme.TextSecondary
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
@@ -49,6 +50,7 @@ fun ContentPackDetailScreen(
     detail: ContentDetail?,
     isLoading: Boolean,
     isInstalled: Boolean,
+    contentType: ContentType,
     onBack: () -> Unit,
     onInstall: () -> Unit,
     onLaunch: () -> Unit,
@@ -248,10 +250,12 @@ fun ContentPackDetailScreen(
         ) {
             Button(
                 onClick = { if (isInstalled) onLaunch() else {
-                    if(setting.neverShowCautionAgain) {
-                        onInstall()
-                    } else {
+                    // 모드팩만 "완전하지 않습니다" 경고를 띄운다.
+                    // 데이터팩/리소스팩/셰이더 등은 해당 경고가 부적절하므로 바로 설치 흐름으로.
+                    if (contentType == ContentType.MODPACK && !setting.neverShowCautionAgain) {
                         showCautionDialog = true
+                    } else {
+                        onInstall()
                     }
                 }},
                 colors = ButtonDefaults.buttonColors(containerColor = Pink),

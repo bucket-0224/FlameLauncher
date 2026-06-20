@@ -144,7 +144,7 @@ fun MainScreen(
                 Row(modifier = Modifier.fillMaxSize().weight(1f)) {
                     Box(modifier = Modifier.weight(0.62f).fillMaxHeight()) {
                         when (selectedTab) {
-                            MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onOpenInstanceSettings)
+                            MainTab.INSTALLED -> InstancesList(isLoggedIn, instances, onLaunchInstance, onOpenInstanceSettings)
                             else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                         }
                     }
@@ -175,7 +175,7 @@ fun MainScreen(
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
                     when (selectedTab) {
-                        MainTab.INSTALLED -> InstancesList(instances, onLaunchInstance, onOpenInstanceSettings)
+                        MainTab.INSTALLED -> InstancesList(isLoggedIn, instances, onLaunchInstance, onOpenInstanceSettings)
                         else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                     }
                 }
@@ -230,6 +230,7 @@ private fun VersionsList(
 
 @Composable
 private fun InstancesList(
+    isLoggedIn: Boolean,
     instances: List<InstanceMeta>,
     onLaunch: (InstanceMeta) -> Unit,
     onOpenSettings: (InstanceMeta) -> Unit,
@@ -266,6 +267,7 @@ private fun InstancesList(
         items(instances, key = { it.id }) { meta ->
             InstanceItem(
                 meta,
+                isLoggedIn = isLoggedIn,
                 onLaunch = { onLaunch(meta) },
                 onOpenSettings = { onOpenSettings(meta) },
             )
@@ -278,6 +280,7 @@ private fun InstancesList(
 private fun InstanceItem(
     meta: InstanceMeta,
     onLaunch: () -> Unit,
+    isLoggedIn: Boolean,
     onOpenSettings: () -> Unit,
 ) {
     val tablet = isTablet()
@@ -334,7 +337,11 @@ private fun InstanceItem(
         // 실행
         Button(
             onClick = onLaunch,
-            colors = ButtonDefaults.buttonColors(containerColor = PinkPrimary),
+            enabled = isLoggedIn,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = PinkPrimary,
+                disabledContainerColor = BgBorder
+            ),
             shape = RoundedCornerShape(8.dp),
             contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
             modifier = Modifier.height(if (tablet) 36.dp else 30.dp),
@@ -441,9 +448,15 @@ private fun SidePlayPanel(
             // 💡 이제 ColumnScope 내부이므로 weight가 올바르게 인식됩니다.
             Spacer(modifier = Modifier.weight(1f, fill = true))
 
+            if(!isLoggedIn) {
+                Text("로그인이 필요합니다.",
+                    color = TextSecondary,
+                    fontSize = if (isTablet()) 14.sp else 10.sp, fontWeight = FontWeight.Normal)
+            }
+            Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = onPlayClick,
-                enabled = selectedVersion != null && !isDownloading && isSupported,
+                enabled = selectedVersion != null && !isDownloading && isSupported && isLoggedIn,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = PinkPrimary,
                     disabledContainerColor = BgBorder
@@ -715,6 +728,11 @@ fun BottomPanel(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Column {
+                if(!isLoggedIn) {
+                    Text("로그인이 필요합니다.",
+                        color = TextSecondary,
+                        fontSize = if (isTablet()) 14.sp else 10.sp, fontWeight = FontWeight.Normal)
+                }
                 Text(selectedVersion?.id ?: "버전을 선택하세요",
                     color = if (selectedVersion != null) TextPrimary else TextSecondary,
                     fontSize = if (isTablet()) 15.sp else 11.sp, fontWeight = FontWeight.SemiBold)
