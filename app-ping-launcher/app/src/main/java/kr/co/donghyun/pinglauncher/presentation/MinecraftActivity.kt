@@ -1484,7 +1484,11 @@ class MinecraftActivity : BaseActivity() {
         val libJvmPath = MinecraftJREPreparer.prepareJreAndGetPath(this, versionId)
         val jvmSettings = JvmSettingsManager.load(this)
 
-        syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings)
+        // 모드 개수 — 첫 실행 시 모드팩이 무거우면 렌더 설정을 강제로 낮추기 위함.
+        // disableUnsupportedMods 로 .pingdisabled 처리된 것도 실제 로드되진 않지만,
+        // 메모리/로딩 부담은 "설치된 모드 수" 기준으로 보는 게 안전하므로 .jar / .jar.pingdisabled 둘 다 센다.
+        val installedModCount = countInstalledMods(File(mcDir, "mods"))
+        syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings, installedModCount)
         // Forge/NeoForge early loading window(망치/여우 로딩 화면) 설정.
         // ZL2 와 동일하게 켜는 게 기본. 단, 모드팩(특히 Sinytra Connector 포함)은 early window 의
         //   acceptGameLayer → DisplayWindow.updateModuleReads 단계에서 게임 클래스
@@ -2076,10 +2080,106 @@ class MinecraftActivity : BaseActivity() {
     }
 
     /**
-     * options.txt 의 maxFps / enableVsync 만 강제로 우리 설정에 맞춰 덮어쓴다.
-     * 나머지 옵션(키 바인딩, 볼륨 등) 은 사용자 변경을 보존.
+     * mods 폴더에 설치된 모드 개수.
+     * Forge 스캐너가 로드하는 .jar 뿐 아니라, 우리가 호환성 때문에 비활성화한
+     * .jar.pingdisabled 도 함께 센다(설치된 총량 기준으로 무게를 판단).
+     * 하위 폴더(예: 1.16 이하의 일부 구조)는 보지 않는다 — 표준 mods/ 평면 구조만.
      */
-    private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings) {
+    private fun countInstalledMods(modsDir: File): Int {
+        if (!modsDir.isDirectory) return 0
+        return modsDir.listFiles()?.count { f ->
+            f.isFile && (
+                    f.name.endsWith(".jar", ignoreCase = true) ||
+                            f.name.endsWith(".jar.pingdisabled", ignoreCase = true)
+                    )
+        } ?: 0
+    }
+
+    /**
+     * 모드 개수에 따른 성능 등급. 첫 실행 시 options.txt 강제 하향에 사용.
+     * 임계값은 arm64 모바일(Mali + Zink/OSMesa) 기준 보수적으로 잡음.
+     */
+    private enum class PerfTier { VANILLA, LIGHT, MEDIUM, HEAVY, EXTREME }
+
+    private fun computePerfTier(modCount: Int): PerfTier = when {
+        modCount <= 0   -> PerfTier.VANILLA   // 바닐라/데이터팩 — 강제 하향 안 함
+        modCount < 30   -> PerfTier.LIGHT     // 가벼운 모드 몇 개
+        modCount < 80   -> PerfTier.MEDIUM    // 중형 모드팩
+        modCount < 150  -> PerfTier.HEAVY     // 대형 모드팩
+        else            -> PerfTier.EXTREME   // 초대형(150+) — 최소 옵션
+    }
+
+    /**
+     * 성능 등급별 강제 옵션값.
+     * 첫 실행에서만 적용하며(아래 syncOptionsTxt 참고), 이후엔 사용자가 게임 내에서
+     * 올린 값을 보존한다. VANILLA 는 null 을 반환해 강제 하향을 건너뛴다.
+     *
+     * 키 의미:
+     *  - renderDistance     : 청크 렌더 거리 (가장 무거운 항목)
+     *  - simulationDistance  : 시뮬레이션 거리 (엔티티/틱 부하) — 1.18+
+     *  - graphicsMode        : 0=Fast, 1=Fancy, 2=Fabulous
+     *  - entityDistanceScaling: 엔티티 렌더 비율(0.5~5.0)
+     *  - particles           : 0=All, 1=Decreased, 2=Minimal
+     *  - ao                  : 0=Off, 1=Min, 2=Max (Ambient Occlusion)
+     *  - biomeBlendRadius     : 바이옴 경계 블렌딩 반경(0=꺼짐)
+     */
+    private fun perfFloorOptions(tier: PerfTier): Map<String, String>? = when (tier) {
+        PerfTier.VANILLA -> null
+        PerfTier.LIGHT -> mapOf(
+            "renderDistance" to "8",
+            "simulationDistance" to "6",
+            "graphicsMode" to "1",
+            "entityDistanceScaling" to "0.75",
+            "particles" to "1",
+            "biomeBlendRadius" to "1",
+        )
+        PerfTier.MEDIUM -> mapOf(
+            "renderDistance" to "6",
+            "simulationDistance" to "5",
+            "graphicsMode" to "0",
+            "entityDistanceScaling" to "0.75",
+            "particles" to "1",
+            "ao" to "1",
+            "biomeBlendRadius" to "1",
+            "renderClouds" to "false",
+        )
+        PerfTier.HEAVY -> mapOf(
+            "renderDistance" to "5",
+            "simulationDistance" to "4",
+            "graphicsMode" to "0",
+            "entityDistanceScaling" to "0.5",
+            "particles" to "2",
+            "ao" to "0",
+            "biomeBlendRadius" to "0",
+            "renderClouds" to "false",
+            "mobSpawning" to "true",
+        )
+        PerfTier.EXTREME -> mapOf(
+            "renderDistance" to "4",
+            "simulationDistance" to "4",
+            "graphicsMode" to "0",
+            "entityDistanceScaling" to "0.5",
+            "particles" to "2",
+            "ao" to "0",
+            "biomeBlendRadius" to "0",
+            "renderClouds" to "false",
+            "fancyGraphics" to "false",   // 일부 레거시 버전은 graphicsMode 대신 이 키 사용
+        )
+    }
+
+    /**
+     * options.txt 동기화.
+     *
+     *  1) 항상 강제: maxFps / enableVsync / mipmapLevels(=0, Mali+Zink 크래시 회피).
+     *  2) 첫 실행 + 모드팩이 무거우면(PerfTier ≥ LIGHT) 렌더/시뮬레이션/기타 렌더 옵션을
+     *     성능 등급에 맞춰 강제로 낮춘다.
+     *     - "첫 실행" 판정: options.txt 와 같은 폴더의 마커 파일(.ping_perf_applied) 부재.
+     *       한 번 적용하면 마커를 남겨, 이후엔 사용자가 게임 내에서 올린 값을 덮어쓰지 않는다.
+     *     - 단, 사용자가 직접 정한 기본값(settings.renderDistance/graphicsMode)이 성능 등급
+     *       상한보다 낮다면 그 낮은 값을 존중한다(= min 으로 합침). 절대 사용자보다 높이지 않음.
+     *  3) 그 외(키 바인딩/볼륨 등)는 사용자 변경을 보존.
+     */
+    private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings, modCount: Int = 0) {
         val targetMaxFps   = if (settings.unlockFps) 260 else 120
         val targetVsync    = if (settings.unlockFps) "false" else "true"
         val targetRenderD  = settings.renderDistance
@@ -2096,6 +2196,10 @@ class MinecraftActivity : BaseActivity() {
             if (idx >= 0) existing[idx] = line else existing.add(line)
         }
 
+        fun currentInt(key: String): Int? =
+            existing.firstOrNull { it.startsWith("$key:") }
+                ?.substringAfter("$key:")?.trim()?.toIntOrNull()
+
         upsert("maxFps",         targetMaxFps.toString())
         upsert("enableVsync",    targetVsync)
         upsert("renderDistance", targetRenderD.toString())
@@ -2108,13 +2212,48 @@ class MinecraftActivity : BaseActivity() {
         //   밉맵 0 이면 아틀라스가 ...x0 으로 생성되어 크래시가 사라짐.
         upsert("mipmapLevels",   "0")
 
+        // ── 첫 실행 + 무거운 모드팩 → 렌더 설정 강제 하향 ──
+        val tier = computePerfTier(modCount)
+        val marker = File(optionsFile.parentFile, ".ping_perf_applied")
+        val isFirstLaunch = !marker.exists()
+
+        if (isFirstLaunch && tier != PerfTier.VANILLA) {
+            val floor = perfFloorOptions(tier)
+            if (floor != null) {
+                floor.forEach { (key, value) ->
+                    // 정수형 렌더 옵션은 "사용자/기존 값이 더 낮으면 그 값 유지"(절대 높이지 않음).
+                    val flInt = value.toIntOrNull()
+                    if (flInt != null) {
+                        val cur = currentInt(key)
+                        val applied = if (cur != null) minOf(cur, flInt) else flInt
+                        upsert(key, applied.toString())
+                    } else {
+                        // 불리언/문자열 옵션(renderClouds, fancyGraphics 등)은 그대로 강제.
+                        upsert(key, value)
+                    }
+                }
+                // 한 번만 적용되도록 마커 남김.
+                runCatching {
+                    marker.parentFile?.mkdirs()
+                    marker.writeText("tier=$tier\nmodCount=$modCount\n")
+                }
+                Log.d("PING_LAUNCHER",
+                    "⚙️ 첫 실행 성능 하향 적용: tier=$tier modCount=$modCount floor=$floor")
+            }
+        } else if (tier != PerfTier.VANILLA) {
+            Log.d("PING_LAUNCHER",
+                "⚙️ 성능 하향 건너뜀(이미 적용됨): tier=$tier modCount=$modCount")
+        }
+
         // 핫바 영역 계산용 — options.txt 의 guiScale 을 읽어둔다(없으면 0=자동).
         mcGuiScale = existing.firstOrNull { it.startsWith("guiScale:") }
             ?.substringAfter("guiScale:")?.trim()?.toIntOrNull() ?: 0
 
         optionsFile.writeText(existing.joinToString("\n"))
         Log.d("PING_LAUNCHER",
-            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync renderDist=$targetRenderD mipmap=0")
+            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync " +
+                    "renderDist=${currentInt("renderDistance")} simDist=${currentInt("simulationDistance")} " +
+                    "tier=$tier mipmap=0")
     }
 
     /**

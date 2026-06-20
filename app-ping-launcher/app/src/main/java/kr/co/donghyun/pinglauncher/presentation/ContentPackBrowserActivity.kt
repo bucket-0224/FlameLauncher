@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kr.co.donghyun.pinglauncher.BuildConfig
+import kr.co.donghyun.pinglauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeFile
 import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeListResponse
 import kr.co.donghyun.pinglauncher.data.curseforge.CurseForgeLogo
@@ -1553,47 +1554,54 @@ class ContentPackBrowserActivity : BaseActivity() {
     }
 
     private fun launchMod(mod: CurseForgeMod) {
-        val instanceId = InstanceManager.modpackId(mod.name)
-        val instanceDir = InstanceManager.instanceDir(this, instanceId)
-        val meta = InstanceManager.loadMeta(instanceDir)
-        if (meta == null) {
-            Log.e("PING_LAUNCHER", "❌ 인스턴스 메타 없음: $instanceId — 모드팩을 다시 설치하세요")
-            _statusMessage.value = "❌ ${mod.name} 인스턴스가 없음 — 다시 설치하세요"
-            return
-        }
+        val session = MicrosoftAuthManager.loadSession(this)
+        val isLoggedIn = session != null && session.refreshToken.isNotEmpty()
 
-        Log.d("PING_LAUNCHER",
-            "▶ 실행: id=$instanceId mc=${meta.mcVersion} loader=${meta.loaderType ?: "vanilla"} " +
-                    "mainClass=${meta.mainClass} extraJars=${meta.extraJars.size}")
+        if(isLoggedIn) {
+            val instanceId = InstanceManager.modpackId(mod.name)
+            val instanceDir = InstanceManager.instanceDir(this, instanceId)
+            val meta = InstanceManager.loadMeta(instanceDir)
+            if (meta == null) {
+                Log.e("PING_LAUNCHER", "❌ 인스턴스 메타 없음: $instanceId — 모드팩을 다시 설치하세요")
+                _statusMessage.value = "❌ ${mod.name} 인스턴스가 없음 — 다시 설치하세요"
+                return
+            }
 
-        // natives / lwjgl 준비는 IO 스레드에서 — 첫 실행이면 시간이 좀 걸린다
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val internalBase = applicationContext.filesDir
-                val nativesDir = File(internalBase, "natives")
+            Log.d("PING_LAUNCHER",
+                "▶ 실행: id=$instanceId mc=${meta.mcVersion} loader=${meta.loaderType ?: "vanilla"} " +
+                        "mainClass=${meta.mainClass} extraJars=${meta.extraJars.size}")
 
-                // 1) APK 의 .so → filesDir/natives/ 로 복사 (MinecraftActivity 가 여기서 dlopen)
-                copyNativesFromApkLibDir(nativesDir)
+            // natives / lwjgl 준비는 IO 스레드에서 — 첫 실행이면 시간이 좀 걸린다
+            lifecycleScope.launch(Dispatchers.IO) {
+                try {
+                    val internalBase = applicationContext.filesDir
+                    val nativesDir = File(internalBase, "natives")
 
-                // 2) LWJGL 이 native 추출하려는 폴더에 미리 .so 깔아두기 (mc 버전마다)
-                prePopulateLwjglExtractDir(nativesDir, meta.mcVersion)
+                    // 1) APK 의 .so → filesDir/natives/ 로 복사 (MinecraftActivity 가 여기서 dlopen)
+                    copyNativesFromApkLibDir(nativesDir)
 
-                withContext(Dispatchers.Main) {
-                    MinecraftActivity.start(
-                        this@ContentPackBrowserActivity,
-                        versionId   = meta.mcVersion,
-                        assetIndex  = meta.assetIndexId,
-                        extraJars   = meta.extraJars,
-                        mainClass   = meta.mainClass,
-                        instanceDir = instanceDir.absolutePath,
-                    )
-                }
-            } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "▶ 실행 준비 실패: ${e.message}", e)
-                withContext(Dispatchers.Main) {
-                    _statusMessage.value = "❌ 실행 실패: ${e.message}"
+                    // 2) LWJGL 이 native 추출하려는 폴더에 미리 .so 깔아두기 (mc 버전마다)
+                    prePopulateLwjglExtractDir(nativesDir, meta.mcVersion)
+
+                    withContext(Dispatchers.Main) {
+                        MinecraftActivity.start(
+                            this@ContentPackBrowserActivity,
+                            versionId   = meta.mcVersion,
+                            assetIndex  = meta.assetIndexId,
+                            extraJars   = meta.extraJars,
+                            mainClass   = meta.mainClass,
+                            instanceDir = instanceDir.absolutePath,
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.e("PING_LAUNCHER", "▶ 실행 준비 실패: ${e.message}", e)
+                    withContext(Dispatchers.Main) {
+                        _statusMessage.value = "❌ 실행 실패: ${e.message}"
+                    }
                 }
             }
+        } else {
+            Toast.makeText(this@ContentPackBrowserActivity, "로그인 이후에 플레이가 가능합니다.", Toast.LENGTH_SHORT).show()
         }
     }
 

@@ -27,6 +27,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -84,6 +85,49 @@ data class InstanceSummary(
     val loader: ModLoader?
 )
 
+/**
+ * 모드/모드팩이 실제로 제공하는 (MC 버전 × 로더) 조합 한 개.
+ * CurseForge files 응답에서 파일별로 뽑아 중복 제거해 만든다.
+ * 사용자가 이 조합 하나를 탭하면 버전·로더를 따로 고를 필요 없이 그대로 새 인스턴스가 만들어진다.
+ *
+ * @param loader null이면 바닐라(로더 무관 — 텍스처/쉐이더/월드 등)
+ * @param sortKey 내림차순 정렬용 비교키(major*10000 + minor*100 + patch). 최신 버전이 위로.
+ */
+data class VersionLoaderCombo(
+    val mcVersion: String,
+    val loader: ModLoader?,
+    val sortKey: Int
+) {
+    /** 칩/리스트에 표시할 라벨. 예: "1.20.1 · Forge", "1.21.1 · Vanilla" */
+    val label: String get() = "$mcVersion · ${loader?.displayName ?: "Vanilla"}"
+}
+
+/**
+ * MC 버전 → 사람이 알아보기 쉬운 업데이트 이름.
+ * 모르는 버전은 null (호출부에서 버전 숫자만 표시).
+ */
+fun mcVersionNickname(version: String): String? = when (version) {
+    "1.21.8", "1.21.7", "1.21.6" -> "Chase the Skies"
+    "1.21.5"                     -> "Spring to Life"
+    "1.21.4"                     -> "The Garden Awakens"
+    "1.21.2", "1.21.3"           -> "Bundles of Bravery"
+    "1.21", "1.21.1"             -> "Tricky Trials"
+    "1.20.5", "1.20.6"           -> "Armored Paws"
+    "1.20.3", "1.20.4"           -> "Decorated Pots"
+    "1.20.2"                     -> "Playful Update"
+    "1.20", "1.20.1"             -> "Trails & Tales"
+    "1.19.4"                     -> "Feature Preview"
+    "1.19", "1.19.1", "1.19.2", "1.19.3" -> "The Wild Update"
+    "1.18", "1.18.1", "1.18.2"   -> "Caves & Cliffs II"
+    "1.17", "1.17.1"             -> "Caves & Cliffs I"
+    "1.16", "1.16.1", "1.16.2", "1.16.3", "1.16.4", "1.16.5" -> "Nether Update"
+    "1.15", "1.15.1", "1.15.2"   -> "Buzzy Bees"
+    "1.14", "1.14.1", "1.14.2", "1.14.3", "1.14.4" -> "Village & Pillage"
+    "1.13", "1.13.1", "1.13.2"   -> "Update Aquatic"
+    "1.12", "1.12.1", "1.12.2"   -> "World of Color"
+    else -> null
+}
+
 class ContentPackDetailActivity : BaseActivity() {
 
     private val _detail = MutableStateFlow<ContentDetail?>(null)
@@ -96,12 +140,18 @@ class ContentPackDetailActivity : BaseActivity() {
     private val _supportedLoaders = MutableStateFlow<Set<ModLoader>>(emptySet())
     private val _supportedMcVersions = MutableStateFlow<Set<String>>(emptySet())   // 데이터팩 지원 MC 버전
 
+    // 자동 감지된 (MC 버전 × 로더) 조합 — 새 인스턴스 만들기에서 버전/로더 따로 고를 필요 없이 한 번에 선택
+    private val _supportedCombos = MutableStateFlow<List<VersionLoaderCombo>>(emptyList())
+
     // ── 데이터팩 전용: 인스턴스 선택 후 월드 선택 단계 ──
     private val _showWorldDialog = MutableStateFlow(false)
     private val _worldCandidates = MutableStateFlow<List<String>>(emptyList())
     private var _pendingDatapackInstance: InstanceSummary? = null
 
     companion object {
+        // "1.x" / "1.x.y" 형태만 매칭 (gameVersions 의 로더 태그와 MC 버전 구분)
+        private val MC_VERSION_REGEX = Regex("""^\d+\.\d+(\.\d+)?$""")
+
         const val EXTRA_MOD_ID = "mod_id"
         const val EXTRA_MOD_NAME = "mod_name"
         const val EXTRA_MOD_SUMMARY = "mod_summary"
@@ -251,6 +301,7 @@ class ContentPackDetailActivity : BaseActivity() {
                     val loaderInstances by _loaderInstances.asStateFlow().collectAsState()
                     val supportedLoaders by _supportedLoaders.asStateFlow().collectAsState()   // ★ 추가
                     val supportedMcVersions by _supportedMcVersions.asStateFlow().collectAsState()
+                    val supportedCombos by _supportedCombos.asStateFlow().collectAsState()
 
                     if (showInstallDialog) {
                         InstallTargetDialog(
@@ -260,6 +311,7 @@ class ContentPackDetailActivity : BaseActivity() {
                             allowVanilla = !contentType.requiresModLoader && supportedLoaders.isEmpty(),
                             supportedLoaders = supportedLoaders,         // ★ 추가
                             supportedMcVersions = supportedMcVersions,
+                            supportedCombos = supportedCombos,           // ★ 자동 감지 조합
                             existingInstances = loaderInstances,
                             // 데이터팩은 기존 인스턴스(+월드)에만 설치 — 새 인스턴스 생성 불가
                             hideCreateNew = contentType == ContentType.DATAPACK,
@@ -368,35 +420,39 @@ class ContentPackDetailActivity : BaseActivity() {
         }
 
         lifecycleScope.launch(Dispatchers.IO) {
-            // 1) 이 모드가 지원하는 로더 집합 감지
-            val supported = detectSupportedLoaders(modId)
+            // 파일 목록 한 번만 받아서 로더/버전/조합을 모두 뽑는다 (API 호출 1회로 통합)
+            val files = fetchFilesForDetect(modId)
+
+            // 1) 이 모드가 지원하는 로더 집합
+            val supported = extractSupportedLoaders(files)
             _supportedLoaders.value = supported
 
             // 2) Vanilla 허용 여부:
             //    - 텍스처/쉐이더 (requiresModLoader=false) 이고
             //    - 감지된 로더가 없는 경우 (= 로더 무관 자원)
-            //    두 조건 모두 만족할 때만 바닐라 후보
             val includeVanilla = !contentType.requiresModLoader && supported.isEmpty()
 
             // 3) 데이터팩은 MC 버전(pack_format)에 민감 → 호환 버전 인스턴스만 노출.
-            //    그 외 타입은 버전 필터 미적용(emptySet).
             val supportedMcVersions = if (contentType == ContentType.DATAPACK)
-                detectSupportedMcVersions(modId)
+                extractSupportedMcVersions(files)
             else emptySet()
             _supportedMcVersions.value = supportedMcVersions
 
-            // 4) 인스턴스 목록 — 로더 + (데이터팩이면) MC 버전 필터 적용
+            // 4) (MC 버전 × 로더) 조합 자동 감지 — 새 인스턴스 만들기에서 한 번에 선택
+            //    로더가 필요 없는 콘텐츠(allowVanilla)는 로더 없는 버전-only 조합으로.
+            _supportedCombos.value = extractVersionLoaderCombos(files, includeVanilla)
+
+            // 5) 인스턴스 목록 — 로더 + (데이터팩이면) MC 버전 필터 적용
             _loaderInstances.value = scanInstances(includeVanilla, supported, supportedMcVersions)
             _showInstallTargetDialog.value = true
         }
     }
 
     /**
-     * CurseForge files API 한 번 쳐서 gameVersions 의 로더 태그를 모은다.
-     *  - 최신 50개 파일을 보면 거의 모든 활성 모드는 지원 로더가 다 잡힘
-     *  - 네트워크 실패 / 응답 비어있음 → emptySet (호출자가 폴백 처리)
+     * 감지용 파일 목록 1회 페치. 로더/버전/조합 추출에 공통으로 쓴다.
+     * 네트워크 실패 / 비어있음 → emptyList (각 추출 함수가 폴백 처리).
      */
-    private fun detectSupportedLoaders(modId: Int): Set<ModLoader> {
+    private fun fetchFilesForDetect(modId: Int): List<CurseForgeFile> {
         val client = OkHttpClient()
         val req = Request.Builder()
             .url("https://api.curseforge.com/v1/mods/$modId/files?pageSize=50&index=0")
@@ -405,66 +461,103 @@ class ContentPackDetailActivity : BaseActivity() {
             .build()
         return try {
             client.newCall(req).execute().use { resp ->
-                val body = resp.body?.string() ?: return emptySet()
+                val body = resp.body?.string() ?: return emptyList()
                 val type = object : TypeToken<CurseForgeListResponse<CurseForgeFile>>(){}.type
-                val files = Gson().fromJson<CurseForgeListResponse<CurseForgeFile>>(body, type).data
-
-                val out = mutableSetOf<ModLoader>()
-                files.forEach { f ->
-                    f.gameVersions.forEach { gv ->
-                        when (gv.lowercase()) {
-                            "forge"    -> out += ModLoader.FORGE
-                            "fabric"   -> out += ModLoader.FABRIC
-                            "neoforge" -> out += ModLoader.NEOFORGE
-                            // Quilt 는 ModLoader enum 에 없어서 skip
-                        }
-                    }
-                }
-                Log.d("PING_LAUNCHER",
-                    "🔍 mod $modId supported loaders: $out (files=${files.size})")
-                out
+                Gson().fromJson<CurseForgeListResponse<CurseForgeFile>>(body, type).data ?: emptyList()
             }
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "로더 감지 실패: ${e.message}")
-            emptySet()
+            Log.w("PING_LAUNCHER", "파일 감지 페치 실패: ${e.message}")
+            emptyList()
         }
     }
 
     /**
-     * CurseForge files API 에서 이 콘텐츠가 지원하는 MC 버전 집합을 모은다.
+     * 파일 목록의 gameVersions 로더 태그를 모은다.
+     *  - 네트워크 실패 / 응답 비어있음 → emptySet (호출자가 폴백 처리)
+     */
+    private fun extractSupportedLoaders(files: List<CurseForgeFile>): Set<ModLoader> {
+        val out = mutableSetOf<ModLoader>()
+        files.forEach { f ->
+            f.gameVersions.forEach { gv ->
+                when (gv.lowercase()) {
+                    "forge"    -> out += ModLoader.FORGE
+                    "fabric"   -> out += ModLoader.FABRIC
+                    "neoforge" -> out += ModLoader.NEOFORGE
+                    // Quilt 는 ModLoader enum 에 없어서 skip
+                }
+            }
+        }
+        Log.d("PING_LAUNCHER", "🔍 supported loaders: $out (files=${files.size})")
+        return out
+    }
+
+    /**
+     * 파일 목록에서 이 콘텐츠가 지원하는 MC 버전 집합을 모은다.
      * gameVersions 에는 로더 태그("Forge")와 MC 버전("1.20.1")이 섞여 있으므로,
      * "1.x" / "1.x.y" 형태(숫자.숫자[.숫자])만 골라낸다.
-     * 데이터팩처럼 버전 민감(pack_format)한 콘텐츠의 인스턴스 필터에 쓴다.
-     *  - 네트워크 실패 / 비어있음 → emptySet (호출자가 폴백: 버전 필터 미적용)
      */
-    private fun detectSupportedMcVersions(modId: Int): Set<String> {
-        val client = OkHttpClient()
-        val req = Request.Builder()
-            .url("https://api.curseforge.com/v1/mods/$modId/files?pageSize=50&index=0")
-            .header("x-api-key", BuildConfig.CURSEFORGE_API_KEY)
-            .header("Accept", "application/json")
-            .build()
-        val versionRegex = Regex("""^\d+\.\d+(\.\d+)?$""")
-        return try {
-            client.newCall(req).execute().use { resp ->
-                val body = resp.body?.string() ?: return emptySet()
-                val type = object : TypeToken<CurseForgeListResponse<CurseForgeFile>>(){}.type
-                val files = Gson().fromJson<CurseForgeListResponse<CurseForgeFile>>(body, type).data
-
-                val out = mutableSetOf<String>()
-                files.forEach { f ->
-                    f.gameVersions.forEach { gv ->
-                        if (versionRegex.matches(gv.trim())) out += gv.trim()
-                    }
-                }
-                Log.d("PING_LAUNCHER",
-                    "🔍 mod $modId supported MC versions: $out (files=${files.size})")
-                out
+    private fun extractSupportedMcVersions(files: List<CurseForgeFile>): Set<String> {
+        val out = mutableSetOf<String>()
+        files.forEach { f ->
+            f.gameVersions.forEach { gv ->
+                if (MC_VERSION_REGEX.matches(gv.trim())) out += gv.trim()
             }
-        } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "MC 버전 감지 실패: ${e.message}")
-            emptySet()
         }
+        Log.d("PING_LAUNCHER", "🔍 supported MC versions: $out (files=${files.size})")
+        return out
+    }
+
+    /**
+     * 파일 목록에서 (MC 버전 × 로더) 조합을 전부 뽑아 중복 제거 후 최신순 정렬.
+     *
+     * 한 파일의 gameVersions 안에는 MC 버전 여러 개 + 로더 태그 여러 개가 섞여 있을 수 있다.
+     * 따라서 파일별로 (그 파일의 MC 버전들) × (그 파일의 로더들) 을 곱해 조합을 만든다.
+     *  - 로더 태그가 전혀 없는 파일:
+     *      · allowVanilla=true  → 로더 null(바닐라) 조합으로 추가 (텍스처/쉐이더/월드 등)
+     *      · allowVanilla=false → 로더를 특정할 수 없으므로 건너뜀
+     *  - 네트워크 실패로 files 가 비면 emptyList → 다이얼로그가 정적 폴백 목록 사용
+     */
+    private fun extractVersionLoaderCombos(
+        files: List<CurseForgeFile>,
+        allowVanilla: Boolean,
+    ): List<VersionLoaderCombo> {
+        val combos = linkedSetOf<Pair<String, ModLoader?>>()  // 삽입 순서 유지 + 중복 제거
+
+        files.forEach { f ->
+            val versions = f.gameVersions.map { it.trim() }.filter { MC_VERSION_REGEX.matches(it) }
+            if (versions.isEmpty()) return@forEach
+
+            val loaders = f.gameVersions.mapNotNull { gv ->
+                when (gv.lowercase()) {
+                    "forge"    -> ModLoader.FORGE
+                    "fabric"   -> ModLoader.FABRIC
+                    "neoforge" -> ModLoader.NEOFORGE
+                    else       -> null
+                }
+            }.distinct()
+
+            when {
+                loaders.isNotEmpty() ->
+                    versions.forEach { v -> loaders.forEach { l -> combos += v to l } }
+                allowVanilla ->
+                    versions.forEach { v -> combos += v to null }
+                // 로더도 없고 바닐라도 불허 → 스킵 (모드인데 로더 태그 누락된 비정상 파일)
+            }
+        }
+
+        val result = combos.map { (v, l) -> VersionLoaderCombo(v, l, mcVersionSortKey(v)) }
+            // 최신 버전 먼저, 같은 버전이면 로더 enum 순서(Fabric→Forge→NeoForge)
+            .sortedWith(compareByDescending<VersionLoaderCombo> { it.sortKey }
+                .thenBy { it.loader?.ordinal ?: -1 })
+
+        Log.d("PING_LAUNCHER", "🔍 version×loader combos: ${result.map { it.label }} (files=${files.size})")
+        return result
+    }
+
+    /** "1.20.1" → 비교키(major*10000 + minor*100 + patch). 정렬 전용. */
+    private fun mcVersionSortKey(v: String): Int {
+        val p = v.split(".").mapNotNull { it.toIntOrNull() }
+        return (p.getOrElse(0) { 0 } * 10000) + (p.getOrElse(1) { 0 } * 100) + p.getOrElse(2) { 0 }
     }
 
     /**
@@ -593,6 +686,7 @@ private fun InstallTargetDialog(
     allowVanilla: Boolean,
     supportedLoaders: Set<ModLoader>,           // ★ 추가
     supportedMcVersions: Set<String> = emptySet(),   // 데이터팩 지원 MC 버전(표기용)
+    supportedCombos: List<VersionLoaderCombo> = emptyList(),   // 자동 감지된 (버전×로더) 조합
     existingInstances: List<InstanceSummary>,
     onDismiss: () -> Unit,
     onUseExisting: (InstanceSummary) -> Unit,
@@ -600,6 +694,10 @@ private fun InstallTargetDialog(
     hideCreateNew: Boolean = false,   // 데이터팩 등 — 새 인스턴스 생성 섹션 숨김(인스턴스 선택만)
 ) {
     val tablet = isTablet()
+
+    // 화면 높이의 90% 를 다이얼로그 최대 높이로. 내용이 짧으면 그만큼만 차지(wrap),
+    // 길면 이 값에서 멈추고 내부 LazyColumn 이 스크롤 → 하단 버튼은 항상 보임.
+    val maxDialogHeight = (LocalConfiguration.current.screenHeightDp * 0.9f).dp
 
     // (색상/디멘션 변수들 — 기존 그대로)
     val Pink = Color(0xFFE91E8C)
@@ -639,13 +737,16 @@ private fun InstallTargetDialog(
     val supportedSingle = supportedLoaders.size == 1
     val loaderLocked = supportedSingle    // 로더가 하나뿐이면 선택 불가, 표시만
 
-    val supportedVersions = listOf("26.2", "1.21.8", "1.21.6", "1.21.5", "1.21.4", "1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
-    var selectedVersion by remember { mutableStateOf(supportedVersions.first()) }
+    // 자동 감지 조합이 있으면 그걸 1순위로 쓴다. (버전/로더 따로 고를 필요 X)
+    // 비어있으면 = 감지 실패 → 아래 정적 폴백(수동 버전/로더 선택) 으로 떨어진다.
+    val hasCombos = supportedCombos.isNotEmpty()
+    var selectedCombo by remember(supportedCombos) {
+        mutableStateOf(supportedCombos.firstOrNull())
+    }
 
-    // ── 기본 선택 로더 ──
-    //   1) 지원 로더가 정확히 1개면 강제로 그것
-    //   2) Vanilla 허용이면 null
-    //   3) 아니면 후보 첫 번째 (없으면 Fabric)
+    // ── 정적 폴백 (조합 감지 실패 시에만 사용) ──
+    val fallbackVersions = listOf("26.2", "1.21.8", "1.21.6", "1.21.5", "1.21.4", "1.21.1", "1.20.1", "1.19.4", "1.18.2", "1.16.5", "1.12.2")
+    var selectedVersion by remember { mutableStateOf(fallbackVersions.first()) }
     var selectedLoader by remember {
         mutableStateOf<ModLoader?>(
             when {
@@ -667,11 +768,14 @@ private fun InstallTargetDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth(dialogWidthRatio)
-                    .heightIn(max = 560.dp)
+                    // 짧은 기기에서도 버튼이 안 잘리도록 화면 90%로 상한만 두고, 내용은 wrap
+                    .heightIn(max = maxDialogHeight)
                     .clip(RoundedCornerShape(14.dp))
                     .background(BgSurface)
                     .border(1.dp, BgBorder, RoundedCornerShape(14.dp))
                     .clickable(enabled = false) {}
+                    // 키보드/내비게이션 바가 떠도 내용이 안 가려지게
+                    .imePadding()
                     .padding(outerPad),
                 verticalArrangement = Arrangement.spacedBy(verticalGap)
             ) {
@@ -679,57 +783,51 @@ private fun InstallTargetDialog(
                 Text("${contentType.label} 설치 대상 선택",
                     color = TextMain, fontSize = titleSize, fontWeight = FontWeight.Bold)
 
-                // ── 지원 로더 안내 줄 ──
-                val supportLine = when {
-                    supportedLoaders.isEmpty() && contentType.requiresModLoader ->
-                        "지원 로더 정보를 가져올 수 없어 모든 로더를 표시합니다."
-                    supportedLoaders.isEmpty() ->
-                        "이 콘텐츠는 로더와 무관합니다."
-                    supportedSingle ->
-                        "이 모드는 ${supportedLoaders.first().displayName} 전용입니다."
-                    else ->
-                        "지원 로더: ${supportedLoaders.joinToString(", ") { it.displayName }}"
-                }
-                Text(supportLine, color = TextSub, fontSize = descSize)
+                // ── 스크롤 영역 (헤더와 하단 버튼을 제외한 전부) ──
+                //   하나의 LazyColumn 으로 묶어 weight(1f) 를 줘서
+                //   내용이 길어도 하단 버튼이 절대 잘리지 않게 한다.
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(verticalGap)
+                ) {
+                    // ── 안내 줄들 ──
+                    item {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            val supportLine = when {
+                                supportedLoaders.isEmpty() && contentType.requiresModLoader ->
+                                    "지원 로더 정보를 가져올 수 없어 모든 로더를 표시합니다."
+                                supportedLoaders.isEmpty() ->
+                                    "이 콘텐츠는 로더와 무관합니다."
+                                supportedSingle ->
+                                    "이 모드는 ${supportedLoaders.first().displayName} 전용입니다."
+                                else ->
+                                    "지원 로더: ${supportedLoaders.joinToString(", ") { it.displayName }}"
+                            }
+                            Text(supportLine, color = TextSub, fontSize = descSize)
 
-                // ── 지원 버전 안내 줄 (감지된 경우만 — 주로 데이터팩) ──
-                if (supportedMcVersions.isNotEmpty()) {
-                    val sortedVersions = supportedMcVersions.sortedWith(compareByDescending { v ->
-                        // "1.20.1" → 정렬용 비교키 (major, minor, patch)
-                        val parts = v.split(".").mapNotNull { it.toIntOrNull() }
-                        (parts.getOrElse(0) { 0 } * 10000) +
-                                (parts.getOrElse(1) { 0 } * 100) +
-                                parts.getOrElse(2) { 0 }
-                    })
-                    Text(
-                        "지원 버전: ${sortedVersions.joinToString(", ")}",
-                        color = TextSub, fontSize = descSize
-                    )
-                }
+                            Text(
+                                text = when {
+                                    hideCreateNew && existingInstances.isEmpty() ->
+                                        "설치할 수 있는 인스턴스가 없습니다."
+                                    hideCreateNew ->
+                                        "데이터팩을 추가할 인스턴스를 선택하세요. (다음 단계에서 월드를 고릅니다)"
+                                    existingInstances.isEmpty() ->
+                                        "호환 인스턴스 없음 — 새로 만듭니다."
+                                    else -> "기존 인스턴스에 추가하거나, 새로 만들 수 있습니다."
+                                },
+                                color = TextSub, fontSize = descSize
+                            )
+                        }
+                    }
 
-                Text(
-                    text = when {
-                        hideCreateNew && existingInstances.isEmpty() ->
-                            "설치할 수 있는 인스턴스가 없습니다."
-                        hideCreateNew ->
-                            "데이터팩을 추가할 인스턴스를 선택하세요. (다음 단계에서 월드를 고릅니다)"
-                        existingInstances.isEmpty() ->
-                            "호환 인스턴스 없음 — 새로 만듭니다."
-                        else -> "기존 인스턴스에 추가하거나, 새로 만들 수 있습니다."
-                    },
-                    color = TextSub, fontSize = descSize
-                )
-
-                // ── 기존 인스턴스 (이 영역만 스크롤) ──
-                if (existingInstances.isNotEmpty()) {
-                    Text("기존 인스턴스 (호환되는 것만)", color = TextMain,
-                        fontSize = sectionSize, fontWeight = FontWeight.Bold)
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f, fill = false),   // 목록만 스크롤, 남는 공간 차지
-                        verticalArrangement = Arrangement.spacedBy(sectionGap)
-                    ) {
+                    // ── 기존 인스턴스 ──
+                    if (existingInstances.isNotEmpty()) {
+                        item {
+                            Text("기존 인스턴스 (호환되는 것만)", color = TextMain,
+                                fontSize = sectionSize, fontWeight = FontWeight.Bold)
+                        }
                         items(existingInstances) { inst ->
                             Row(
                                 modifier = Modifier
@@ -754,90 +852,168 @@ private fun InstallTargetDialog(
                             }
                         }
                     }
-                }
 
-                // ── 새 인스턴스 만들기 (데이터팩이면 숨김) ──
-                if (!hideCreateNew) {
-                    if (existingInstances.isNotEmpty()) {
-                        HorizontalDivider(color = BgBorder)
-                    }
-                    Text("새 인스턴스 만들기", color = TextMain,
-                        fontSize = sectionSize, fontWeight = FontWeight.Bold)
-
-                    Text("버전", color = TextSub, fontSize = pickerLabelSize)
-                    androidx.compose.foundation.lazy.LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(sectionGap)
-                    ) {
-                        items(supportedVersions) { v ->
-                            val sel = v == selectedVersion
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .background(if (sel) Pink else BgDark)
-                                    .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(16.dp))
-                                    .clickable { selectedVersion = v }
-                                    .padding(horizontal = chipPadH, vertical = chipPadV)
-                            ) {
-                                Text(v,
-                                    color = if (sel) Color.White else TextSub,
-                                    fontSize = chipSize,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
-                            }
+                    // ── 새 인스턴스 만들기 (데이터팩이면 숨김) ──
+                    if (!hideCreateNew) {
+                        if (existingInstances.isNotEmpty()) {
+                            item { HorizontalDivider(color = BgBorder) }
                         }
-                    }
-
-                    // ── 로더 칩 — supportedLoaders 가 1개면 잠금 표시 ──
-                    Text(
-                        when {
-                            loaderLocked -> "로더 (이 모드 전용)"
-                            allowVanilla -> "타입"
-                            else         -> "모드 로더"
-                        },
-                        color = TextSub, fontSize = pickerLabelSize
-                    )
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(sectionGap)
-                    ) {
-                        // Vanilla 칩 — allowVanilla 일 때만
-                        if (allowVanilla) {
-                            val sel = selectedLoader == null
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (sel) Pink else BgDark)
-                                    .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
-                                    .clickable { selectedLoader = null }
-                                    .padding(vertical = loaderRowPadV),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("Vanilla",
-                                    color = if (sel) Color.White else TextSub,
-                                    fontSize = chipSize,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
-                            }
+                        item {
+                            Text("새 인스턴스 만들기", color = TextMain,
+                                fontSize = sectionSize, fontWeight = FontWeight.Bold)
                         }
 
-                        loaderOptions.forEach { loader ->
-                            val sel = loader == selectedLoader
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (sel) Pink else BgDark)
-                                    .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
-                                    .let {
-                                        if (loaderLocked) it
-                                        else it.clickable { selectedLoader = loader }
+                        if (hasCombos) {
+                            // ── 자동 감지된 (버전 × 로더) 조합을 버전별로 그룹지어 리스트로 표시 ──
+                            item {
+                                Text("호환 버전 / 로더 (자동 감지)", color = TextSub, fontSize = pickerLabelSize)
+                            }
+                            // 버전 단위로 묶기 (combos 는 이미 최신 버전 → 로더 순으로 정렬돼 있음)
+                            val grouped: Map<String, List<VersionLoaderCombo>> =
+                                supportedCombos.groupBy { it.mcVersion }
+
+                            grouped.forEach { (version, combos) ->
+                                // 버전 헤더 (이름 포함)
+                                item(key = "ver_$version") {
+                                    val nick = mcVersionNickname(version)
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        modifier = Modifier.padding(top = 2.dp)
+                                    ) {
+                                        Text("MC $version", color = TextMain,
+                                            fontSize = itemTitleSize, fontWeight = FontWeight.Bold)
+                                        if (nick != null) {
+                                            Text("· $nick", color = TextSub, fontSize = itemSubSize,
+                                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        }
                                     }
-                                    .padding(vertical = loaderRowPadV),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text(loader.displayName,
-                                    color = if (sel) Color.White else TextSub,
-                                    fontSize = chipSize,
-                                    fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
+                                }
+                                // 해당 버전의 로더 행들
+                                items(combos, key = { "${it.mcVersion}_${it.loader?.name ?: "vanilla"}" }) { combo ->
+                                    val sel = combo == selectedCombo
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(if (sel) Pink.copy(alpha = 0.18f) else BgDark)
+                                            .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
+                                            .clickable { selectedCombo = combo }
+                                            .padding(horizontal = listItemPadH, vertical = listItemPadV),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        // 선택 표시 라디오 점
+                                        Box(
+                                            modifier = Modifier
+                                                .size(if (tablet) 16.dp else 14.dp)
+                                                .clip(RoundedCornerShape(50))
+                                                .background(if (sel) Pink else Color.Transparent)
+                                                .border(
+                                                    1.5.dp,
+                                                    if (sel) Pink else TextSub,
+                                                    RoundedCornerShape(50)
+                                                )
+                                        )
+                                        Spacer(Modifier.width(10.dp))
+                                        Text(
+                                            combo.loader?.displayName ?: "Vanilla",
+                                            color = if (sel) TextMain else TextSub,
+                                            fontSize = itemTitleSize,
+                                            fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        if (sel) {
+                                            Text("선택됨", color = Pink,
+                                                fontSize = labelSize, fontWeight = FontWeight.Bold)
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // ── 폴백: 조합 감지 실패 시 수동으로 버전/로더 선택 ──
+                            item {
+                                Text("버전", color = TextSub, fontSize = pickerLabelSize)
+                            }
+                            item {
+                                androidx.compose.foundation.lazy.LazyRow(
+                                    horizontalArrangement = Arrangement.spacedBy(sectionGap)
+                                ) {
+                                    items(fallbackVersions) { v ->
+                                        val sel = v == selectedVersion
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(16.dp))
+                                                .background(if (sel) Pink else BgDark)
+                                                .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(16.dp))
+                                                .clickable { selectedVersion = v }
+                                                .padding(horizontal = chipPadH, vertical = chipPadV)
+                                        ) {
+                                            Text(v,
+                                                color = if (sel) Color.White else TextSub,
+                                                fontSize = chipSize,
+                                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
+                                        }
+                                    }
+                                }
+                            }
+
+                            item {
+                                Text(
+                                    when {
+                                        loaderLocked -> "로더 (이 모드 전용)"
+                                        allowVanilla -> "타입"
+                                        else         -> "모드 로더"
+                                    },
+                                    color = TextSub, fontSize = pickerLabelSize
+                                )
+                            }
+                            item {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(sectionGap)
+                                ) {
+                                    // Vanilla 칩 — allowVanilla 일 때만
+                                    if (allowVanilla) {
+                                        val sel = selectedLoader == null
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (sel) Pink else BgDark)
+                                                .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
+                                                .clickable { selectedLoader = null }
+                                                .padding(vertical = loaderRowPadV),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text("Vanilla",
+                                                color = if (sel) Color.White else TextSub,
+                                                fontSize = chipSize,
+                                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
+                                        }
+                                    }
+
+                                    loaderOptions.forEach { loader ->
+                                        val sel = loader == selectedLoader
+                                        Box(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (sel) Pink else BgDark)
+                                                .border(1.dp, if (sel) Pink else BgBorder, RoundedCornerShape(8.dp))
+                                                .let {
+                                                    if (loaderLocked) it
+                                                    else it.clickable { selectedLoader = loader }
+                                                }
+                                                .padding(vertical = loaderRowPadV),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(loader.displayName,
+                                                color = if (sel) Color.White else TextSub,
+                                                fontSize = chipSize,
+                                                fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -856,14 +1032,27 @@ private fun InstallTargetDialog(
                     ) { Text("취소", fontSize = buttonSize) }
                     // 새로 만들고 설치 버튼 — 데이터팩이면 숨김(인스턴스 선택만)
                     if (!hideCreateNew) {
+                        // 조합 모드면 selectedCombo, 폴백이면 selectedVersion/selectedLoader 사용
+                        val createEnabled = if (hasCombos) selectedCombo != null else true
                         Button(
-                            onClick = { onCreateNew(selectedVersion, selectedLoader) },
+                            onClick = {
+                                if (hasCombos) {
+                                    selectedCombo?.let { onCreateNew(it.mcVersion, it.loader) }
+                                } else {
+                                    onCreateNew(selectedVersion, selectedLoader)
+                                }
+                            },
+                            enabled = createEnabled,
                             modifier = Modifier.weight(1f).height(actionButtonH),
-                            colors = ButtonDefaults.buttonColors(containerColor = Pink),
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Pink,
+                                disabledContainerColor = BgDark
+                            ),
                             shape = RoundedCornerShape(8.dp)
                         ) {
                             Text("새로 만들고 설치",
-                                color = Color.White, fontSize = buttonSize, fontWeight = FontWeight.Bold)
+                                color = if (createEnabled) Color.White else TextSub,
+                                fontSize = buttonSize, fontWeight = FontWeight.Bold)
                         }
                     }
                 }
