@@ -242,7 +242,25 @@ class GameControllerView(context: Context) : View(context) {
         val py = event.getY(index)
         // 🎮 토글 영역 또는 일반 버튼 위면 우리가 처리(keep), 아니면 surface 로 forward.
         val onUs = toggleRect.contains(px, py) || findButton(px, py) != null
-        if (!onUs) forwardedPids.add(pid)
+        if (!onUs) {
+            forwardedPids.add(pid)
+        } else {
+            // 이 포인터가 버튼/토글을 잡았다.
+            //   단, 이미 surface 로 forward 중인 포인터(카메라 드래그용 손가락)가 있으면
+            //   그건 정당한 멀티터치(이동+시점)이므로 건드리지 않는다.
+            //   forward 중인 게 없을 때만(단일 탭으로 버튼을 누른 상황) surface 의
+            //   잔류 드래그를 CANCEL 해 동시 입력/획 돎을 막는다.
+            if (forwardedPids.isEmpty()) cancelSurfaceTouch()
+        }
+    }
+
+    /** SurfaceView 로 ACTION_CANCEL 1회 전송 — 진행 중 드래그 강제 종료. */
+    private fun cancelSurfaceTouch() {
+        val sv = surfaceView() ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+        try { sv.dispatchTouchEvent(cancel) } catch (_: Exception) {}
+        cancel.recycle()
     }
 
     /**

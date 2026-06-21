@@ -8,6 +8,7 @@ import android.net.Uri
 import android.util.Log
 import android.view.InputDevice
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.View
 import android.widget.Toast
@@ -508,6 +509,27 @@ class MinecraftActivity : BaseActivity() {
             if (view.visibility != View.VISIBLE) {
                 view.visibility = View.VISIBLE
             }
+            // 물리 마우스용 OS 포인터 표시 제어:
+            //   - 인게임(grab): 마인크래프트가 자체 십자선을 그리므로 OS 화살표는 숨김
+            //     (둘이 겹쳐 보이는 것 방지). 또한 grab 진입 시 마우스 델타 기준점 리셋.
+            //   - 메뉴(비 grab): OS 화살표 보이게 두어 메뉴 클릭이 자연스럽게.
+            updatePointerIconForGrab(isGrabbing)
+        }
+    }
+
+    /** grab 상태에 맞춰 SurfaceView 의 OS 포인터 아이콘을 숨기거나(NULL) 기본(ARROW)으로. */
+    private fun updatePointerIconForGrab(grabbing: Boolean) {
+        // grab 전환 시 마우스 델타 기준점 리셋(시점이 확 튀지 않도록).
+        lastMouseX = -1f
+        lastMouseY = -1f
+        if (pointerHidden == grabbing) return
+        pointerHidden = grabbing
+        val sv = window.decorView.findViewWithTag<View>("minecraft_surface") ?: return
+        sv.pointerIcon = if (grabbing) {
+            // 빈(NULL) 아이콘 = 커서 숨김
+            android.view.PointerIcon.getSystemIcon(this, android.view.PointerIcon.TYPE_NULL)
+        } else {
+            android.view.PointerIcon.getSystemIcon(this, android.view.PointerIcon.TYPE_ARROW)
         }
     }
 
@@ -650,6 +672,15 @@ class MinecraftActivity : BaseActivity() {
     internal var currentCursorX = 1280f  // 화면 중앙 근처
     internal var currentCursorY = 720f
     internal val MOUSE_SENSITIVITY = 1.5f
+
+    // ── 물리 마우스 상태 ──
+    //   onGenericMotionEvent 로 들어오는 외장 마우스 hover/move 의 직전 위치.
+    //   인게임(grab)에서는 절대 좌표가 아니라 이 값과의 "델타"로 시점을 돌린다.
+    //   -1f = 아직 기준점 없음(다음 이벤트에서 기준만 잡고 델타는 보내지 않음 → 첫 진입 시 획 돎 방지).
+    private var lastMouseX = -1f
+    private var lastMouseY = -1f
+    // 직전에 우리가 마우스를 위해 OS 포인터를 숨겼는지(grab 상태에 따라 토글).
+    private var pointerHidden = false
 
     // 마인크래프트 GUI 스케일(options.txt). 핫바 영역 계산에 사용. 게임 실행 시 갱신.
     @Volatile internal var mcGuiScale: Int = 0   // 0 = 자동(auto)
@@ -1020,7 +1051,7 @@ class MinecraftActivity : BaseActivity() {
     }
 
     internal fun sendCursorPos(x: Float, y: Float) {
-        Log.d("PING_LAUNCHER", "sendCursorPos: x=$x y=$y")
+        Log.d("PING_LAUNCHER", "sendCursorPos: x=$x y=$y", Throwable("호출스택"))
         nativeSendCursorPos(x, y)
     }
 
@@ -1637,19 +1668,6 @@ class MinecraftActivity : BaseActivity() {
 
         var renderer = RendererManager.load(this)
 
-//        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
-//            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
-//            runOnUiThread {
-//                Toast.makeText(
-//                    this,
-//                    "이 기기의 GPU는 Zink 미지원 — GL4ES로 전환합니다",
-//                    Toast.LENGTH_LONG
-//                ).show()
-//            }
-//            renderer = Renderer.fromId("gl4es")  // 또는 "gl4es" — 둘 중 가용한 것
-//        }
-
-
         val glLibName = when (renderer.id) {
             "mobileglues" -> "libmobileglues.so"
             "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
@@ -1929,6 +1947,100 @@ class MinecraftActivity : BaseActivity() {
             }
             Log.d("PING_LAUNCHER", "🔵 워치독 종료 (success=$success)")
         }.apply { isDaemon = true; start() }
+    }
+
+    /**
+     * 물리 마우스(외장) 입력 처리.
+     *
+     * 터치(SurfaceView.setOnTouchListener)와 별개로, 마우스의 hover/move/scroll/버튼은
+     * generic motion 으로 들어온다. 이를 마인크래프트로 전달해 커서가 보이고 움직이게 한다.
+     *
+     *  - 인게임(grab): 절대좌표가 아닌 "직전 위치와의 델타 × 감도"로 시점 회전
+     *    (마인크래프트가 자체 십자선을 그리므로 OS 포인터는 숨긴다)
+     *  - 메뉴(비 grab): 절대좌표를 그대로 커서 위치로 (OS 포인터도 자연히 보임)
+     *  - 마우스 버튼: 좌/우/휠클릭 → GLFW 0/1/2
+     *  - 스크롤: 가능하면 네이티브 스크롤로 전달(핫바 변경/줌). 바인딩 없으면 무시.
+     */
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        // 마우스 계열 소스가 아니면 기본 처리.
+        val isMouse = (event.source and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE ||
+                (event.source and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE
+        if (!isMouse || !jvmStarted) return super.onGenericMotionEvent(event)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_HOVER_MOVE, MotionEvent.ACTION_MOVE -> {
+                handleMouseMove(event)
+                return true
+            }
+            MotionEvent.ACTION_BUTTON_PRESS -> {
+                glfwButtonForActionButton(event.actionButton)?.let { sendMouseButton(it, GLFW_PRESS) }
+                return true
+            }
+            MotionEvent.ACTION_BUTTON_RELEASE -> {
+                glfwButtonForActionButton(event.actionButton)?.let { sendMouseButton(it, GLFW_RELEASE) }
+                return true
+            }
+            MotionEvent.ACTION_SCROLL -> {
+                val vScroll = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                if (vScroll != 0f) sendMouseScroll(0f, vScroll)
+                return true
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                // 마우스가 화면 밖으로 — 기준점 리셋(다음 진입 시 델타 튐 방지)
+                lastMouseX = -1f
+                lastMouseY = -1f
+            }
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    /** 마우스 이동 처리: grab 이면 델타 회전, 아니면 절대좌표. */
+    private fun handleMouseMove(event: MotionEvent) {
+        val x = event.x
+        val y = event.y
+        if (isGrabbing) {
+            // 기준점이 없으면(첫 이벤트/재진입) 이번엔 기준만 잡고 델타는 보내지 않는다.
+            if (lastMouseX < 0f) {
+                lastMouseX = x; lastMouseY = y
+                return
+            }
+            val dx = x - lastMouseX
+            val dy = y - lastMouseY
+            currentCursorX += dx * MOUSE_SENSITIVITY
+            currentCursorY += dy * MOUSE_SENSITIVITY
+            sendCursorPos(currentCursorX, currentCursorY)
+        } else {
+            // 메뉴/인벤토리: 절대좌표 그대로
+            currentCursorX = x
+            currentCursorY = y
+            sendCursorPos(currentCursorX, currentCursorY)
+        }
+        lastMouseX = x
+        lastMouseY = y
+    }
+
+    /** Android actionButton → GLFW 마우스 버튼(0=좌,1=우,2=휠). 미지원이면 null. */
+    private fun glfwButtonForActionButton(actionButton: Int): Int? = when (actionButton) {
+        MotionEvent.BUTTON_PRIMARY -> 0
+        MotionEvent.BUTTON_SECONDARY -> 1
+        MotionEvent.BUTTON_TERTIARY -> 2
+        else -> null
+    }
+
+    /**
+     * 마우스 휠 스크롤을 마인크래프트로 전달.
+     * 네이티브 스크롤 바인딩(nativeSendScroll)이 있으면 사용하고, 없으면 조용히 무시.
+     * (런처 빌드마다 JNI 이름이 다를 수 있어 reflection 으로 안전 호출)
+     */
+    private fun sendMouseScroll(xOffset: Float, yOffset: Float) {
+        try {
+            val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
+            // 흔한 시그니처: nativeSendScroll(double, double)
+            val m = cb.getMethod("nativeSendScroll", Double::class.java, Double::class.java)
+            m.invoke(null, xOffset.toDouble(), yOffset.toDouble())
+        } catch (_: Throwable) {
+            // 바인딩 없음 — 스크롤만 미동작(나머지 마우스 기능은 정상).
+        }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
