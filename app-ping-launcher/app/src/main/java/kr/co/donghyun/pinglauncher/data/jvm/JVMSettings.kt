@@ -69,7 +69,16 @@ data class JvmSettings(
 
         val renderer = RendererManager.load(context)
 
-        val glLibName = when (renderer.id) {
+        // pre-1.13(1.12.x 이하) 레거시는 Zink(OSMesa)로 못 돌리므로 GL4ES 로 강제.
+        //   ⚠️ 여기서 RendererManager.load 가 사용자 설정(예: zink)을 그대로 읽으면
+        //   -Dorg.lwjgl.opengl.libname 이 libOSMesa.so 로 박혀 LWJGL 이 OSMesa 를 로드하고,
+        //   GL4ES env(LIBGL_NAME 등)가 무색해져 검은 화면이 된다.
+        //   MinecraftActivity.resolveRendererForVersion() 과 동일 기준으로 여기서도 오버라이드.
+        val legacyForceGl4es = isLegacyVersion(versionId)
+        val effectiveRendererId = if (legacyForceGl4es && renderer.id != "gl4es" && renderer.id != "gl4es_desktop")
+            "gl4es" else renderer.id
+
+        val glLibName = when (effectiveRendererId) {
             "mobileglues" -> "libmobileglues.so"
             "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
@@ -133,7 +142,7 @@ data class JvmSettings(
             args += "-Djava.awt.headless=true"
         }
 
-    // MobileGlues 사용 시 Sodium 자체 검증 우회 (1.21+ 셰이더 호환)
+        // MobileGlues 사용 시 Sodium 자체 검증 우회 (1.21+ 셰이더 호환)
         if (renderer.id == "mobileglues") {
             args += listOf(
                 "-Dnet.caffeinemc.sodium.checks.skip=true",

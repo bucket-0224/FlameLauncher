@@ -470,19 +470,6 @@ private fun SidePlayPanel(
                     Text("▶  Play", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 18.sp)
                 }
             }
-
-            if (!isLoggedIn && !BuildConfig.DEBUG) {
-                // 버튼 간의 간격이 필요하다면 여기에 Spacer나 패딩을 추가할 수 있습니다.
-                Spacer(modifier = Modifier.height(12.dp))
-                Button(
-                    onClick = onLogin,
-                    colors = ButtonDefaults.buttonColors(containerColor = PinkDark),
-                    shape = RoundedCornerShape(10.dp),
-                    modifier = Modifier.fillMaxWidth().height(44.dp)
-                ) {
-                    Text("🔑 로그인 필요", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
-            }
         }
         Spacer(modifier = Modifier.height(20.dp))
     }

@@ -549,7 +549,7 @@ class MinecraftActivity : BaseActivity() {
         }
 
 
-        var renderer = RendererManager.load(this)
+        var renderer = resolveRendererForVersion()
 
         when (renderer.id) {
             "mobileglues" -> {
@@ -1051,7 +1051,7 @@ class MinecraftActivity : BaseActivity() {
     }
 
     internal fun sendCursorPos(x: Float, y: Float) {
-        Log.d("PING_LAUNCHER", "sendCursorPos: x=$x y=$y", Throwable("호출스택"))
+        Log.d("PING_LAUNCHER", "sendCursorPos: x=$x y=$y")
         nativeSendCursorPos(x, y)
     }
 
@@ -1538,6 +1538,48 @@ class MinecraftActivity : BaseActivity() {
             irisConfig.writeText("shaders.enabled=false\n")
         }
 
+        // ── 1.12.x Forge SplashProgress 비활성화 ──
+        //   1.12.x Forge 의 SplashProgress 는 별도 스레드에서 두 번째 OpenGL 컨텍스트
+        //   (org.lwjgl.opengl.SharedDrawable)를 만들어 로딩 스플래시를 그린다. 그러나 모바일
+        //   (PojavLauncher/OSMesa/Zink)은 단일 GL 컨텍스트만 지원하므로 SharedDrawable 생성이
+        //   실패하고, 그 스레드의 Display.update()→glfwPollEvents() 가 StackOverflowError 로
+        //   터지며 게임이 부팅조차 못 한다. (PojavLauncher 계열 공통 이슈; 표준 해결책은 스플래시
+        //   비활성화) config/splash.properties 의 enabled=false 로 이 스레드 자체를 끈다.
+        //   1.13+ Forge 는 SplashProgress 구조가 없어 해당 없음 → 1.12.x 에만 적용.
+        //   ※ 파일이 이미 있어도(이전 실행에서 Forge 가 enabled=true 로 생성했을 수 있음)
+        //     enabled 키만 false 로 강제 보정한다. 나머지 키는 보존.
+        if (isForgeSplashProblematicVersion(versionId)) {
+            try {
+                val splashCfg = File(mcDir, "config/splash.properties")
+                splashCfg.parentFile?.mkdirs()
+
+                // 기존 내용 읽어 키맵 구성(있으면).
+                val props = LinkedHashMap<String, String>()
+                if (splashCfg.exists()) {
+                    splashCfg.readLines().forEach { line ->
+                        val t = line.trim()
+                        if (t.isEmpty() || t.startsWith("#")) return@forEach
+                        val eq = t.indexOf('=')
+                        if (eq > 0) props[t.substring(0, eq).trim()] = t.substring(eq + 1).trim()
+                    }
+                }
+                val before = props["enabled"]
+                // 핵심: enabled 강제 false. 없으면 기본 키도 채워 둠.
+                props["enabled"] = "false"
+                if (!props.containsKey("rotate")) props["rotate"] = "false"
+                if (!props.containsKey("logoOffset")) props["logoOffset"] = "0"
+
+                if (before != "false") {   // 이미 false 면 다시 쓰지 않음
+                    splashCfg.writeText(props.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n")
+                    Log.d("PING_LAUNCHER", "🩹 1.12.x SplashProgress 비활성화 적용(enabled=${before ?: "none"}→false) @ ${splashCfg.absolutePath}")
+                } else {
+                    Log.d("PING_LAUNCHER", "🩹 1.12.x SplashProgress 이미 비활성화됨")
+                }
+            } catch (e: Exception) {
+                Log.w("PING_LAUNCHER", "splash.properties 쓰기 실패", e)
+            }
+        }
+
 
         // ★ versionId 전달
         val libJvmPath = MinecraftJREPreparer.prepareJreAndGetPath(this, versionId)
@@ -1666,7 +1708,20 @@ class MinecraftActivity : BaseActivity() {
         Log.d("PING_LAUNCHER",
             "isModernForge=$isModernLoader metaJvmArgs(resolved)=${metaJvmArgs.toList()}")
 
-        var renderer = RendererManager.load(this)
+        var renderer = resolveRendererForVersion()
+
+//        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
+//            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
+//            runOnUiThread {
+//                Toast.makeText(
+//                    this,
+//                    "이 기기의 GPU는 Zink 미지원 — GL4ES로 전환합니다",
+//                    Toast.LENGTH_LONG
+//                ).show()
+//            }
+//            renderer = Renderer.fromId("gl4es")  // 또는 "gl4es" — 둘 중 가용한 것
+//        }
+
 
         val glLibName = when (renderer.id) {
             "mobileglues" -> "libmobileglues.so"
@@ -2217,6 +2272,55 @@ class MinecraftActivity : BaseActivity() {
         if (name.startsWith("mergetool", ignoreCase = true)
             && name.contains("api", ignoreCase = true)) return false
         return PROCESSOR_ONLY_JAR_PREFIXES.any { name.startsWith(it, ignoreCase = true) }
+    }
+
+    /**
+     * 이 버전이 Forge SplashProgress(SharedDrawable 멀티스레드 GL) 문제를 일으키는지.
+     * 현재까지 확인된 대상은 1.12.x Forge. (1.13+ 는 SplashProgress 구조 자체가 다름)
+     * versionId 예: "1.12.2", "1.12.2-forge-14.23.5.2860", "1.12.2 Forge 14.23.5.2860".
+     */
+    private fun isForgeSplashProblematicVersion(versionId: String): Boolean {
+        // 버전 문자열에서 "1.12" 또는 "1.12.x" 를 추출.
+        val m = Regex("""\b1\.12(?:\.\d+)?\b""").find(versionId)
+        return m != null
+    }
+
+    /**
+     * pre-1.13 (즉 1.12.x 이하) 레거시 버전인지.
+     * 이 버전들은 LWJGL2 시절의 구형 immediate-mode OpenGL 에 의존해서 Zink(OSMesa)로는
+     * libOSMesa 로드 직후 SIGSEGV 로 죽는다(확인됨). PojavLauncher 계열도 pre-1.13 은
+     * GL4ES 로 돌리므로, 이런 버전은 렌더러를 GL4ES 로 강제 폴백한다.
+     *
+     * 판정: "1.<minor>" 의 minor 를 보고 1.12 이하 + 1.x(1.0~1.12) + 베타/알파/구표기를
+     *      모두 레거시로 본다. 1.13 이상이면 false.
+     *   versionId 예: "1.12.2", "1.7.10", "1.5.2", "b1.7.3", "1.16.5"(→false)
+     */
+    private fun isPre113Version(versionId: String): Boolean {
+        // 베타(b1.x)/알파(a1.x)/인퍼니티 등 아주 옛 표기는 무조건 레거시.
+        val low = versionId.lowercase()
+        if (low.startsWith("b1.") || low.startsWith("a1.") ||
+            low.startsWith("c0.") || low.startsWith("inf-") || low.startsWith("rd-")) {
+            return true
+        }
+        // "1.<minor>(.patch)" 패턴에서 minor 추출.
+        val m = Regex("""\b1\.(\d+)(?:\.\d+)?""").find(versionId) ?: return false
+        val minor = m.groupValues[1].toIntOrNull() ?: return false
+        // 1.0 ~ 1.12 = pre-1.13 (레거시). 1.13 이상은 모던.
+        return minor <= 12
+    }
+
+    /**
+     * 이 버전에 사용할 렌더러를 결정. 기본은 사용자가 고른 RendererManager 설정이지만,
+     * pre-1.13 레거시는 Zink 가 불가능하므로 GL4ES 로 강제 오버라이드한다.
+     */
+    private fun resolveRendererForVersion(): Renderer {
+        val base = RendererManager.load(this)
+        if (isPre113Version(versionId) && base.id != "gl4es" && base.id != "gl4es_desktop") {
+            Log.w("PING_LAUNCHER",
+                "🕹️ pre-1.13 레거시($versionId) 감지 → 렌더러 GL4ES 강제 폴백 (기존: ${base.id})")
+            return Renderer.fromId("gl4es")
+        }
+        return base
     }
 
     /**
