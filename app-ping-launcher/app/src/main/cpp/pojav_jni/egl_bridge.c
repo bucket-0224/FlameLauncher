@@ -39,6 +39,17 @@
 // This means that you are forced to have this function/variable for ABI compatibility
 #define ABI_COMPAT __attribute__((unused))
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
+// GPU 감지 결과를 담는 구조체.
+typedef struct {
+    bool     is_adreno;       // Adreno/Qualcomm/Turnip/Freedreno GPU 인지
+    bool     found;           // Vulkan 디바이스를 하나라도 찾았는지
+    uint32_t api_version;     // 디바이스가 보고한 Vulkan API 버전(VK_MAKE_VERSION 인코딩)
+} gpu_probe_t;
+
 
 struct PotatoBridge {
 
@@ -60,6 +71,10 @@ struct PotatoBridge potatoBridge;
 #define RENDERER_GL4ES 1
 #define RENDERER_VK_ZINK 2
 #define RENDERER_VULKAN 4
+
+// load_vulkan 을 bool 반환으로 (Turnip 로드 성공 여부).
+// 기존 void load_vulkan() 호출부가 있으면 같이 수정 필요.
+static bool g_turnip_loaded = false;
 
 EXTERNAL_API void pojavTerminate() {
     printf("EGLBridge: Terminating\n");
@@ -158,19 +173,20 @@ static void set_vulkan_ptr(void* ptr) {
 }
 
 void load_vulkan() {
-    if(android_get_device_api_level() >= 28) { // the loader does not support below that
+    if(android_get_device_api_level() >= 28) {
 #ifdef ADRENO_POSSIBLE
         void* result = load_turnip_vulkan();
         if(result != NULL) {
             printf("AdrenoSupp: Loaded Turnip, loader address: %p\n", result);
             set_vulkan_ptr(result);
+            g_turnip_loaded = true;
             return;
         }
+        g_turnip_loaded = false;   // ★ 실패 기록
 #endif
     }
     printf("OSMDroid: loading vulkan regularly...\n");
     void* vulkan_ptr = dlopen("libvulkan.so", RTLD_LAZY | RTLD_LOCAL);
-    printf("OSMDroid: loaded vulkan, ptr=%p\n", vulkan_ptr);
     set_vulkan_ptr(vulkan_ptr);
 }
 
@@ -222,6 +238,7 @@ static bool probe_vulkan_works() {
     enumPD(inst, &deviceCount, phys);
 
     bool any_compatible = false;
+
     for (uint32_t i = 0; i < deviceCount; i++) {
         VkPhysicalDeviceProperties props = {0};
         VkPhysicalDeviceFeatures   feats = {0};
@@ -244,6 +261,70 @@ static bool probe_vulkan_works() {
     return any_compatible;
 }
 
+// 순정 libvulkan 으로 첫 물리 디바이스의 벤더/버전만 읽고 바로 닫는다(경량).
+// MESA_VK_VERSION_OVERRIDE 를 기기별로 정하기 위한 정보 수집용.
+static gpu_probe_t detect_gpu() {
+    gpu_probe_t r = { false, false, 0 };
+    void* h = dlopen("libvulkan.so", RTLD_NOW);
+    if (!h) return r;
+
+    typedef PFN_vkVoidFunction (*GIPA_t)(VkInstance, const char*);
+    typedef VkResult (*CI_t)(const VkInstanceCreateInfo*, const VkAllocationCallbacks*, VkInstance*);
+    GIPA_t gipa = (GIPA_t)dlsym(h, "vkGetInstanceProcAddr");
+    CI_t   createInst = (CI_t)dlsym(h, "vkCreateInstance");
+    if (!gipa || !createInst) { dlclose(h); return r; }
+
+    VkApplicationInfo app = {0};
+    app.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.apiVersion = VK_API_VERSION_1_1;
+    VkInstanceCreateInfo ci = {0};
+    ci.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ci.pApplicationInfo = &app;
+
+    VkInstance inst = VK_NULL_HANDLE;
+    if (createInst(&ci, NULL, &inst) != VK_SUCCESS) { dlclose(h); return r; }
+
+    PFN_vkEnumeratePhysicalDevices enumPD =
+            (PFN_vkEnumeratePhysicalDevices)gipa(inst, "vkEnumeratePhysicalDevices");
+    PFN_vkGetPhysicalDeviceProperties getProps =
+            (PFN_vkGetPhysicalDeviceProperties)gipa(inst, "vkGetPhysicalDeviceProperties");
+    PFN_vkDestroyInstance destInst =
+            (PFN_vkDestroyInstance)gipa(inst, "vkDestroyInstance");
+
+    uint32_t count = 0;
+    if (enumPD && getProps) {
+        enumPD(inst, &count, NULL);
+        if (count > 8) count = 8;
+        if (count > 0) {
+            VkPhysicalDevice phys[8];
+            enumPD(inst, &count, phys);
+            // 첫 디바이스를 대표로 사용(모바일은 보통 1개).
+            //   여러 개면 Adreno 를 우선 채택.
+            uint32_t chosen = 0;
+            for (uint32_t i = 0; i < count; i++) {
+                VkPhysicalDeviceProperties props = {0};
+                getProps(phys[i], &props);
+                printf("GPU detect: device #%u = %s (api %u.%u.%u)\n",
+                       i, props.deviceName,
+                       VK_VERSION_MAJOR(props.apiVersion),
+                       VK_VERSION_MINOR(props.apiVersion),
+                       VK_VERSION_PATCH(props.apiVersion));
+                bool adreno = strcasestr(props.deviceName, "adreno")    ||
+                              strcasestr(props.deviceName, "qualcomm")  ||
+                              strcasestr(props.deviceName, "turnip")    ||
+                              strcasestr(props.deviceName, "freedreno");
+                if (adreno && !r.is_adreno) { chosen = i; r.is_adreno = true; }
+            }
+            VkPhysicalDeviceProperties cp = {0};
+            getProps(phys[chosen], &cp);
+            r.api_version = cp.apiVersion;
+            r.found = true;
+        }
+    }
+    if (destInst) destInst(inst, NULL);
+    dlclose(h);
+    return r;
+}
 
 int pojavInitOpenGL() {
     // Only affects GL4ES as of now
@@ -256,6 +337,7 @@ int pojavInitOpenGL() {
         printf("POJAV_RENDERER not set! defaulting to vulkan_zink\n");
         renderer = "vulkan_zink";
     }
+
     printf("OpenGL: renderer = %s\n", renderer);
 
     // ── 렌더러별 bridge table 설정 ─────────────────────────────
@@ -264,9 +346,30 @@ int pojavInitOpenGL() {
         set_gl_bridge_tbl();
         printf("OpenGL: set_gl_bridge_tbl() done (GL4ES path)\n");
     } else if (strcmp(renderer, "vulkan_zink") == 0) {
-        if (!probe_vulkan_works()) {
-            printf("OpenGL: Vulkan/Zink unavailable on this device — falling back to GL4ES\n");
-            // ★ 환경변수도 일관되게 — 후속 코드가 POJAV_RENDERER를 다시 읽는 경우 대비
+        // GPU 벤더 + 지원 Vulkan 버전 감지(경량).
+        gpu_probe_t gpu = detect_gpu();
+
+        // Adreno → 순정 Vulkan 으로 Zink 가 못 도므로 번들 Turnip 활성화 + 순정 probe 스킵.
+        //   (probe 가 순정 libvulkan 을 먼저 dlopen 하면 Turnip 로드와 캐싱 충돌)
+        if (gpu.is_adreno) {
+            printf("OpenGL: Adreno GPU 감지 → Turnip 활성화, 순정 probe 스킵\n");
+            setenv("POJAV_LOAD_TURNIP", "1", 1);
+        }
+
+        bool zink_ok = gpu.is_adreno ? true : probe_vulkan_works();
+
+        if (zink_ok) {
+            pojav_environ->config_renderer = RENDERER_VK_ZINK;
+            load_vulkan();
+
+            // ★ Adreno 인데 Turnip 로드 실패 → 순정으로는 Zink 가 죽으므로 GL4ES 로 폴백
+            if (gpu.is_adreno && !g_turnip_loaded) {
+                printf("OpenGL: Adreno Turnip 로드 실패 → GL4ES 폴백\n");
+                zink_ok = false;
+            }
+        }
+
+        if (!zink_ok) {
             printf("OpenGL: Vulkan/Zink unavailable on this device — falling back to GL4ES\n");
             setenv("POJAV_RENDERER", "opengles2", 1);
             setenv("LIBGL_NAME",     "libgl4es_114.so", 1);
@@ -276,34 +379,58 @@ int pojavInitOpenGL() {
             unsetenv("MESA_LOADER_DRIVER_OVERRIDE");
             pojav_environ->config_renderer = RENDERER_GL4ES;
             set_gl_bridge_tbl();
-
             printf("OpenGL: switched to GL4ES bridge table\n");
         } else {
             pojav_environ->config_renderer = RENDERER_VK_ZINK;
-            load_vulkan();
-            setenv("GALLIUM_DRIVER", "zink", 1);
-            // zink가 OpenGL 4.6 보고하게 강제
-            if (!getenv("MESA_GL_VERSION_OVERRIDE"))     setenv("MESA_GL_VERSION_OVERRIDE", "4.6", 1);
-            if (!getenv("MESA_GLSL_VERSION_OVERRIDE"))   setenv("MESA_GLSL_VERSION_OVERRIDE", "460", 1);
-            if (!getenv("force_glsl_extensions_warn"))   setenv("force_glsl_extensions_warn", "true", 1);
-            if (!getenv("allow_higher_compat_version"))  setenv("allow_higher_compat_version", "true", 1);
+            if (!getenv("MESA_GL_VERSION_OVERRIDE")) setenv("MESA_GL_VERSION_OVERRIDE", "4.6", 1);
+            if (!getenv("MESA_GLSL_VERSION_OVERRIDE"))
+                setenv("MESA_GLSL_VERSION_OVERRIDE", "460", 1);
+            if (!getenv("force_glsl_extensions_warn"))
+                setenv("force_glsl_extensions_warn", "true", 1);
+            if (!getenv("allow_higher_compat_version"))
+                setenv("allow_higher_compat_version", "true", 1);
             if (!getenv("allow_glsl_extension_directive_midshader"))
                 setenv("allow_glsl_extension_directive_midshader", "true", 1);
-            if (!getenv("MESA_LOADER_DRIVER_OVERRIDE"))  setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
+            if (!getenv("MESA_LOADER_DRIVER_OVERRIDE"))
+                setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1);
             set_osm_bridge_tbl();
-            setenv("MESA_GL_MAX_TEXTURE_SIZE", "4096", 1);  // 또는 2048
 
-            // ★ Zink 성능 핵심 env (support-forge 와 동일). 이게 빠지면 descriptor 가
-            //   매 프레임 누적 할당되어 glFinish 가 점점 폭증(14ms→수백 ms)하며 fps 가
-            //   시간 지날수록 2~3fps 로 추락한다.
             setenv("ZINK_DESCRIPTORS", "lazy", 1);          // descriptor 지연 할당(누적 방지)
-            setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);   // Mali Vulkan 1.1 고정(안정)
-            setenv("ZINK_DEBUG", "compact", 1);             // descriptor 압축 모드
-            setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);  // present 모드 고정
+            setenv("MESA_GL_MAX_TEXTURE_SIZE", "4096", 1);
+            setenv("ZINK_DESCRIPTORS", "lazy", 1);
+            setenv("ZINK_DEBUG", "compact", 1);
+            setenv("MESA_VK_WSI_PRESENT_MODE", "fifo", 1);
 
+            // ── MESA_VK_VERSION_OVERRIDE: 고정하지 않고 GPU 에 맞춰 유동 결정 ──
+            //   사용자가 이미 명시적으로 지정했으면 존중(건드리지 않음).
+            if (!getenv("MESA_VK_VERSION_OVERRIDE")) {
+                if (gpu.is_adreno) {
+                    // Adreno/Turnip: 강제 override 제거 → Turnip 이 보고하는 네이티브 버전 사용.
+                    //   (Turnip 은 Adreno 세대에 따라 1.0~1.3+ 로 다양하게 보고)
+                    unsetenv("MESA_VK_VERSION_OVERRIDE");
+                    printf("OpenGL: Adreno → MESA_VK_VERSION_OVERRIDE 미설정(네이티브 버전 사용)\n");
+                } else if (gpu.found) {
+                    // 비-Adreno(주로 Mali): 기기 보고 버전과 1.1 중 낮은 쪽으로 상한.
+                    //   Mali 는 1.1 이 검증된 안전선이고 1.3 은 불안정(PojavLauncher 위키).
+                    //   기기가 1.1 미만이면 그 값을 그대로 둠(억지로 올리지 않음).
+                    uint32_t maj = VK_VERSION_MAJOR(gpu.api_version);
+                    uint32_t min = VK_VERSION_MINOR(gpu.api_version);
+                    const char *ver;
+                    if (maj > 1 || (maj == 1 && min >= 1)) {
+                        ver = "1.1";                 // 1.1 이상이면 1.1 로 상한
+                    } else {
+                        ver = "1.0";                 // 1.0 기기면 1.0 유지
+                    }
+                    setenv("MESA_VK_VERSION_OVERRIDE", ver, 1);
+                    printf("OpenGL: non-Adreno → MESA_VK_VERSION_OVERRIDE=%s (기기 보고 %u.%u)\n",
+                           ver, maj, min);
+                } else {
+                    // GPU 감지 실패(드라이버 못 엶 등): 기존 보수값 1.1 유지.
+                    setenv("MESA_VK_VERSION_OVERRIDE", "1.1", 1);
+                    printf("OpenGL: GPU 감지 실패 → MESA_VK_VERSION_OVERRIDE=1.1(보수 기본)\n");
+                }
+            }
             printf("OpenGL: set_osm_bridge_tbl() done (Zink path)\n");
-
-            set_osm_bridge_tbl();
         }
     }  else {
         printf("OpenGL: unknown renderer '%s', defaulting to vulkan_zink\n", renderer);

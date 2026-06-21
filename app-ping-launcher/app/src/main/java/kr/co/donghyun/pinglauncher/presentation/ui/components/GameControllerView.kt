@@ -58,6 +58,38 @@ class GameControllerView(context: Context) : View(context) {
         }
     }
 
+    // ── 화면 컨트롤러 표시 토글(좌상단 🎮 버튼) ──
+    //   controllerVisible == true  → 일반 버튼들 + 🎮 토글 모두 표시
+    //   controllerVisible == false → 🎮 토글만 남기고 나머지 버튼 전부 숨김(입력도 막음)
+    //   토글 자체는 항상 그려지고 항상 눌리므로, 꺼도 다시 켤 수 있다.
+    //   기본 ON, SharedPreferences 에 저장돼 재실행에도 유지.
+    private val controllerPrefs by lazy {
+        context.getSharedPreferences("ping_controller", Context.MODE_PRIVATE)
+    }
+    private var controllerVisible: Boolean =
+        context.getSharedPreferences("ping_controller", Context.MODE_PRIVATE)
+            .getBoolean("force_show", true)
+
+    private val toggleRect = RectF()   // 🎮 토글 버튼 영역(recalcRects 에서 계산)
+
+    private fun setControllerVisible(visible: Boolean) {
+        if (controllerVisible == visible) return
+        controllerVisible = visible
+        controllerPrefs.edit { putBoolean("force_show", visible) }
+        // 켤 때 잔류 입력 정리(꺼져있던 동안 눌림 상태가 남지 않도록)
+        if (!visible) releaseAllPressed()
+        invalidate()
+    }
+
+    /** 현재 눌려있는 모든 버튼을 release 처리(토글 OFF 전환 시 안전 정리). */
+    private fun releaseAllPressed() {
+        if (pressedButtons.isEmpty()) return
+        pressedButtons.forEach { (id, _) ->
+            buttons.find { it.id == id }?.let { handlePress(it.glfwCode, GLFW_RELEASE) }
+        }
+        pressedButtons.clear()
+    }
+
     private val activity = context as MinecraftActivity
     private var buttons: List<KeyButton> = KeyLayoutManager.load(context)
     private val buttonRects = mutableMapOf<String, RectF>()
@@ -206,8 +238,29 @@ class GameControllerView(context: Context) : View(context) {
 
     private fun classifyNewPointer(event: MotionEvent, index: Int) {
         val pid = event.getPointerId(index)
-        val onButton = findButton(event.getX(index), event.getY(index)) != null
-        if (!onButton) forwardedPids.add(pid)
+        val px = event.getX(index)
+        val py = event.getY(index)
+        // 🎮 토글 영역 또는 일반 버튼 위면 우리가 처리(keep), 아니면 surface 로 forward.
+        val onUs = toggleRect.contains(px, py) || findButton(px, py) != null
+        if (!onUs) {
+            forwardedPids.add(pid)
+        } else {
+            // 이 포인터가 버튼/토글을 잡았다.
+            //   단, 이미 surface 로 forward 중인 포인터(카메라 드래그용 손가락)가 있으면
+            //   그건 정당한 멀티터치(이동+시점)이므로 건드리지 않는다.
+            //   forward 중인 게 없을 때만(단일 탭으로 버튼을 누른 상황) surface 의
+            //   잔류 드래그를 CANCEL 해 동시 입력/획 돎을 막는다.
+            if (forwardedPids.isEmpty()) cancelSurfaceTouch()
+        }
+    }
+
+    /** SurfaceView 로 ACTION_CANCEL 1회 전송 — 진행 중 드래그 강제 종료. */
+    private fun cancelSurfaceTouch() {
+        val sv = surfaceView() ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+        try { sv.dispatchTouchEvent(cancel) } catch (_: Exception) {}
+        cancel.recycle()
     }
 
     /**
@@ -314,45 +367,83 @@ class GameControllerView(context: Context) : View(context) {
             val top = centerY - (drawSize / 2f)
             buttonRects[button.id] = RectF(left, top, left + drawSize, top + drawSize)
         }
+
+        // 🎮 토글 버튼 — ESC 버튼과 같은 y(높이), x 는 화면 오른쪽 끝에서 대칭 배치.
+        //   ESC center 는 프리셋상 (0.06w, 0.10h). 좌측 가장자리~ESC 왼쪽 변 거리를
+        //   startMargin 으로 보고, 오른쪽 가장자리에도 동일 여백(endMargin = startMargin)을 둔다.
+        //   → 토글 오른쪽 변이 (w - startMargin) 에 오도록 left 를 역산.
+        val escPreset = PHONE_LAYOUT_PRESETS[256] ?: (0.06f to 0.10f)
+        val escCenterX = escPreset.first * w
+        val escCenterY = escPreset.second * h
+        val startMargin = escCenterX - (drawSize / 2f)      // 좌측 끝 ~ ESC 왼쪽 변
+        val toggleLeft = w - startMargin - drawSize          // endMargin = startMargin
+        val toggleTop = escCenterY - (drawSize / 2f)         // ESC 와 같은 y(중심 높이)
+        toggleRect.set(toggleLeft, toggleTop, toggleLeft + drawSize, toggleTop + drawSize)
     }
 
     override fun onDraw(canvas: Canvas) {
-        buttons.forEach { button ->
-            // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 그린다(나머지 숨김).
-            if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
-            val rect = buttonRects[button.id] ?: return@forEach
-            val isPressed = pressedButtons.containsKey(button.id)
+        // controllerVisible == false 면 일반 버튼은 그리지 않고 🎮 토글만 표시.
+        if (controllerVisible) {
+            buttons.forEach { button ->
+                // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 그린다(나머지 숨김).
+                if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
+                val rect = buttonRects[button.id] ?: return@forEach
+                val isPressed = pressedButtons.containsKey(button.id)
 
-            // ★ 전투 토글 버튼은 모드 상태에 따라 활성/비활성 표시
-            val isCombatToggleActive = (button.glfwCode == -7 && activity.combatMode)
+                // ★ 전투 토글 버튼은 모드 상태에 따라 활성/비활성 표시
+                val isCombatToggleActive = (button.glfwCode == -7 && activity.combatMode)
 
-            val fill = when {
-                isCombatToggleActive -> bgAccentPressedPaint   // 활성 = 진한 핑크
-                isPressed && button.isAccent -> bgAccentPressedPaint
-                isPressed -> bgPressedPaint
-                button.isAccent -> bgAccentPaint
-                else -> bgPaint
+                val fill = when {
+                    isCombatToggleActive -> bgAccentPressedPaint   // 활성 = 진한 핑크
+                    isPressed && button.isAccent -> bgAccentPressedPaint
+                    isPressed -> bgPressedPaint
+                    button.isAccent -> bgAccentPaint
+                    else -> bgPaint
+                }
+                val border = if (button.isAccent || isCombatToggleActive) borderAccentPaint else borderPaint
+
+                canvas.drawRoundRect(rect, cornerRadius, cornerRadius, fill)
+                canvas.drawRoundRect(rect, cornerRadius, cornerRadius, border)
+
+                // 라벨도 모드에 따라 바꾸기
+                val labelText = when {
+                    button.glfwCode == -7 -> if (activity.combatMode) "⚔️" else "🛠️"
+                    else -> button.label
+                }
+
+                val fontSize = minOf(rect.width(), rect.height()) * 0.23f
+                textPaint.textSize = fontSize
+                canvas.drawText(
+                    labelText,
+                    rect.centerX(),
+                    rect.centerY() + fontSize * 0.35f,
+                    textPaint
+                )
             }
-            val border = if (button.isAccent || isCombatToggleActive) borderAccentPaint else borderPaint
-
-            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, fill)
-            canvas.drawRoundRect(rect, cornerRadius, cornerRadius, border)
-
-            // 라벨도 모드에 따라 바꾸기
-            val labelText = when {
-                button.glfwCode == -7 -> if (activity.combatMode) "⚔️" else "🛠️"
-                else -> button.label
-            }
-
-            val fontSize = minOf(rect.width(), rect.height()) * 0.23f
-            textPaint.textSize = fontSize
-            canvas.drawText(
-                labelText,
-                rect.centerX(),
-                rect.centerY() + fontSize * 0.35f,
-                textPaint
-            )
         }
+
+        // ── 🎮 컨트롤러 표시 토글 — 항상 그린다(꺼져 있어도 다시 켤 수 있도록) ──
+        drawToggleButton(canvas)
+    }
+
+    /** 좌상단 🎮 토글 버튼 그리기. ON=핑크 강조, OFF=어두움. */
+    private fun drawToggleButton(canvas: Canvas) {
+        val fill = if (controllerVisible) bgAccentPressedPaint else bgPaint
+        val border = if (controllerVisible) borderAccentPaint else borderPaint
+        canvas.drawRoundRect(toggleRect, cornerRadius, cornerRadius, fill)
+        canvas.drawRoundRect(toggleRect, cornerRadius, cornerRadius, border)
+
+        val fontSize = minOf(toggleRect.width(), toggleRect.height()) * 0.4f
+        val prevAlpha = textPaint.alpha
+        textPaint.textSize = fontSize
+        textPaint.alpha = if (controllerVisible) 255 else 150   // 꺼지면 흐리게
+        canvas.drawText(
+            "🎮",
+            toggleRect.centerX(),
+            toggleRect.centerY() + fontSize * 0.35f,
+            textPaint
+        )
+        textPaint.alpha = prevAlpha
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -363,6 +454,11 @@ class GameControllerView(context: Context) : View(context) {
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                // 🎮 토글 먼저 처리 — 컨트롤러 표시/숨김 전환. 항상 최우선.
+                if (toggleRect.contains(x, y)) {
+                    setControllerVisible(!controllerVisible)
+                    return true
+                }
                 val button = findButton(x, y) ?: return false
                 pressedButtons[button.id] = pointerId
                 handlePress(button.glfwCode, GLFW_PRESS)
@@ -424,6 +520,8 @@ class GameControllerView(context: Context) : View(context) {
         glfwCode >= 0 || glfwCode in -3..-1
 
     private fun findButton(x: Float, y: Float): KeyButton? {
+        // 컨트롤러가 꺼져 있으면 일반 버튼은 입력받지 않는다(🎮 토글만 별도 처리).
+        if (!controllerVisible) return null
         buttons.forEach { button ->
             // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 입력 받는다.
             if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach

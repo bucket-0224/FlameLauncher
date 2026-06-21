@@ -15,7 +15,7 @@ data class JvmSettings(
     val disableClouds: Boolean = true,
     val extraJvmArgs: String = "",   // 줄바꿈 구분 커스텀 인자
     val mouseSensitivity: Float = 1.5f,
-    val renderDistance: Int = 8,
+    val renderDistance: Int = 4,
     val graphicsMode: Int = 0,       // 0=fast, 1=fancy, 2=fabulous
     val cacheDirPath: String = "",
     val unlockFps: Boolean = true,
