@@ -114,10 +114,26 @@ jint JNI_OnLoad(JavaVM* vm, __attribute__((unused)) void* reserved) {
         pojav_environ->dalvikJavaVMPtr = vm;
         JNIEnv *dvEnv;
         (*vm)->GetEnv(vm, (void**) &dvEnv, JNI_VERSION_1_4);
-        pojav_environ->bridgeClazz = (*dvEnv)->NewGlobalRef(dvEnv,(*dvEnv) ->FindClass(dvEnv,"org/lwjgl/glfw/CallbackBridge"));
-        pojav_environ->method_accessAndroidClipboard = (*dvEnv)->GetStaticMethodID(dvEnv, pojav_environ->bridgeClazz, "accessAndroidClipboard", "(ILjava/lang/String;)Ljava/lang/String;");
-        pojav_environ->method_onGrabStateChanged = (*dvEnv)->GetStaticMethodID(dvEnv, pojav_environ->bridgeClazz, "onGrabStateChanged", "(Z)V");
-        pojav_environ->method_onDirectInputEnable = (*dvEnv)->GetStaticMethodID(dvEnv, pojav_environ->bridgeClazz, "onDirectInputEnable", "()V");
+        jclass localBridge = (*dvEnv)->FindClass(dvEnv, "org/lwjgl/glfw/CallbackBridge");
+        if (localBridge == NULL) {
+            if ((*dvEnv)->ExceptionCheck(dvEnv)) (*dvEnv)->ExceptionClear(dvEnv);
+            LOGE("JNI_OnLoad: FindClass(org/lwjgl/glfw/CallbackBridge) FAILED");
+            pojav_environ->bridgeClazz = NULL;
+        } else {
+            pojav_environ->bridgeClazz = (*dvEnv)->NewGlobalRef(dvEnv, localBridge);
+        }
+        if (pojav_environ->bridgeClazz != NULL) {
+            pojav_environ->method_accessAndroidClipboard = (*dvEnv)->GetStaticMethodID(dvEnv, pojav_environ->bridgeClazz, "accessAndroidClipboard", "(ILjava/lang/String;)Ljava/lang/String;");
+            if ((*dvEnv)->ExceptionCheck(dvEnv)) (*dvEnv)->ExceptionClear(dvEnv);
+            pojav_environ->method_onGrabStateChanged = (*dvEnv)->GetStaticMethodID(dvEnv, pojav_environ->bridgeClazz, "onGrabStateChanged", "(Z)V");
+            if ((*dvEnv)->ExceptionCheck(dvEnv)) (*dvEnv)->ExceptionClear(dvEnv);
+            pojav_environ->method_onDirectInputEnable = (*dvEnv)->GetStaticMethodID(dvEnv, pojav_environ->bridgeClazz, "onDirectInputEnable", "()V");
+            if ((*dvEnv)->ExceptionCheck(dvEnv)) (*dvEnv)->ExceptionClear(dvEnv);
+            LOGI("JNI_OnLoad: bridge methods resolved: clip=%p grab=%p dinput=%p",
+                 pojav_environ->method_accessAndroidClipboard,
+                 pojav_environ->method_onGrabStateChanged,
+                 pojav_environ->method_onDirectInputEnable);
+        }
         pojav_environ->isUseStackQueueCall = JNI_FALSE;
     } else if (pojav_environ->dalvikJavaVMPtr != vm) {
         LOGI("Saving JVM environ...");
@@ -288,7 +304,7 @@ static void dispatchWindowSizeDirect(jint w, jint h) {
     (*env)->DeleteLocalRef(env, cb);
 }
 
-static void dispatchCursorEnterDirect(jboolean entered) {
+__attribute__((unused)) static void dispatchCursorEnterDirect(jboolean entered) {
     JNIEnv* env = getRuntimeEnv();
     if (!env) return;
     lazyInitOther(env);
@@ -462,10 +478,7 @@ void pojavPumpEvents(void* window) {
                 if(pojav_environ->GLFW_invoke_Key) pojav_environ->GLFW_invoke_Key(window, event.i1, event.i2, event.i3, event.i4);
                 break;
             case EVENT_TYPE_MOUSE_BUTTON:
-                if (pojav_environ->shouldUpdateMouse) {
-                    pojav_environ->GLFW_invoke_CursorPos(window, floor(pojav_environ->cursorX), floor(pojav_environ->cursorY));
-                    dispatchCursorPosDirect((jdouble)floor(pojav_environ->cursorX), (jdouble)floor(pojav_environ->cursorY));  // ★ 추가
-                }
+                if(pojav_environ->GLFW_invoke_MouseButton) pojav_environ->GLFW_invoke_MouseButton(window, event.i1, event.i2, event.i3);
                 break;
             case EVENT_TYPE_SCROLL:
                 if(pojav_environ->GLFW_invoke_Scroll) pojav_environ->GLFW_invoke_Scroll(window, event.i1, event.i2);
@@ -658,9 +671,40 @@ JNIEXPORT jboolean JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetInputRead
 }
 
 JNIEXPORT void JNICALL Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz, jboolean grabbing) {
-    TRY_ATTACH_ENV(dvm_env, pojav_environ->dalvikJavaVMPtr, "nativeSetGrabbing failed!\n", return;);
-    (*dvm_env)->CallStaticVoidMethod(dvm_env, pojav_environ->bridgeClazz, pojav_environ->method_onGrabStateChanged, grabbing);
+    // grab 상태는 무조건 먼저 반영한다 (알림이 실패하더라도 입력 경로는 올바르게 동작해야 함)
     pojav_environ->isGrabbing = grabbing;
+
+    if (pojav_environ->dalvikJavaVMPtr == NULL) {
+        LOGW("nativeSetGrabbing: dalvik VM not ready, skipping notify (grab=%d)", grabbing);
+        return;
+    }
+    TRY_ATTACH_ENV(dvm_env, pojav_environ->dalvikJavaVMPtr, "nativeSetGrabbing failed!\n", return;);
+
+    if (pojav_environ->bridgeClazz == NULL) {
+        LOGW("nativeSetGrabbing: bridgeClazz null, skipping notify");
+        return;
+    }
+
+    // 메서드 ID lazy 재확보 — JNI_OnLoad 시점 lookup 이 실패/누락됐을 수 있으므로
+    //  여기서 다시 시도한다. 그래도 못 찾으면 abort 하지 말고 조용히 스킵한다.
+    //  (LWJGL2 의 Mouse.create -> Display.create 경로에서 예외가 나면 게임이 멈춘다)
+    if (pojav_environ->method_onGrabStateChanged == NULL) {
+        pojav_environ->method_onGrabStateChanged = (*dvm_env)->GetStaticMethodID(
+                dvm_env, pojav_environ->bridgeClazz, "onGrabStateChanged", "(Z)V");
+        if ((*dvm_env)->ExceptionCheck(dvm_env)) (*dvm_env)->ExceptionClear(dvm_env);
+    }
+    if (pojav_environ->method_onGrabStateChanged == NULL) {
+        LOGW("nativeSetGrabbing: onGrabStateChanged(Z)V not found, skipping notify (grab=%d)", grabbing);
+        return;
+    }
+
+    (*dvm_env)->CallStaticVoidMethod(dvm_env, pojav_environ->bridgeClazz,
+                                     pojav_environ->method_onGrabStateChanged, grabbing);
+    if ((*dvm_env)->ExceptionCheck(dvm_env)) {
+        // 자바 쪽 콜백에서 예외가 나도 게임 부팅을 막지 않는다.
+        (*dvm_env)->ExceptionClear(dvm_env);
+        LOGW("nativeSetGrabbing: onGrabStateChanged threw, cleared (grab=%d)", grabbing);
+    }
 }
 
 JNIEXPORT jboolean JNICALL
@@ -722,26 +766,20 @@ void critical_send_cursor_pos(jfloat x, jfloat y) {
             pojav_environ->isCursorEntered = true;
             if (pojav_environ->GLFW_invoke_CursorEnter)
                 pojav_environ->GLFW_invoke_CursorEnter((void*)pojav_environ->showingWindow, 1);
-            dispatchCursorEnterDirect(JNI_TRUE);   // ★ 추가
         }
 
         if (!pojav_environ->isUseStackQueueCall) {
-            pojav_environ->GLFW_invoke_CursorPos((void*) pojav_environ->showingWindow, (double) (x), (double) (y));
+            // 비-큐 경로: 즉시 한 번만 발화 (+ direct dispatch 도 같은 경로에서만)
+            pojav_environ->GLFW_invoke_CursorPos((void*) pojav_environ->showingWindow, (double) x, (double) y);
+            dispatchCursorPosDirect((jdouble)x, (jdouble)y);
         } else {
+            // 큐 경로: 좌표만 저장. 실제 콜백 발화는 pojavPumpEvents 가 프레임당 1회 수행.
+            //  여기서 직접 invoke / dispatch 하면 한 프레임에 이벤트가 중복 적재되어
+            //  LWJGL2 호환 레이어(1.7.10/1.5.2)의 고정 마우스 버퍼가 오버플로우한다.
             pojav_environ->cursorX = x;
             pojav_environ->cursorY = y;
         }
     }
-
-    if (pojav_environ->GLFW_invoke_CursorPos && pojav_environ->isInputReady) {
-        if (!pojav_environ->isUseStackQueueCall) {
-            pojav_environ->GLFW_invoke_CursorPos((void*)pojav_environ->showingWindow, (double)x, (double)y);
-        } else {
-            pojav_environ->cursorX = x;
-            pojav_environ->cursorY = y;
-        }
-    }
-    dispatchCursorPosDirect((jdouble)x, (jdouble)y);  // ★ 추가
 }
 
 void noncritical_send_cursor_pos(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz,  jfloat x, jfloat y) {
@@ -774,39 +812,16 @@ void critical_send_mouse_button(jint button, jint action, jint mods) {
              pojav_environ->showingWindow,
              pojav_environ->mainWindowBundle);
 
-        if (pojav_environ->GLFW_invoke_MouseButton && pojav_environ->isInputReady) {
-            if (pojav_environ->isUseStackQueueCall) {
-                sendData(EVENT_TYPE_MOUSE_BUTTON, button, action, mods, 0);
-            } else {
-                pojav_environ->GLFW_invoke_MouseButton((void*) pojav_environ->showingWindow, button, action, mods);
-            }
-        }
-
         if (pojav_environ->isUseStackQueueCall) {
+            // 큐 경로: 큐에 1회만 적재. pojavPumpEvents 가 꺼내서 발화한다.
+            //  (direct dispatch 는 호출하지 않는다 — 중복 발화 방지)
             sendData(EVENT_TYPE_MOUSE_BUTTON, button, action, mods, 0);
         } else {
+            // 비-큐 경로: 즉시 1회 발화 + direct dispatch
             pojav_environ->GLFW_invoke_MouseButton((void*) pojav_environ->showingWindow, button, action, mods);
-
-            // ★ Java 예외 체크 추가 — Hotspot JVM env 가져와서
-            JNIEnv* runtimeEnv = NULL;
-            if (pojav_environ->runtimeJavaVMPtr) {
-                (*pojav_environ->runtimeJavaVMPtr)->GetEnv(
-                        pojav_environ->runtimeJavaVMPtr, (void**)&runtimeEnv, JNI_VERSION_1_6);
-            }
-            if (runtimeEnv && (*runtimeEnv)->ExceptionCheck(runtimeEnv)) {
-                jthrowable exc = (*runtimeEnv)->ExceptionOccurred(runtimeEnv);
-                (*runtimeEnv)->ExceptionClear(runtimeEnv);
-                jclass excClass = (*runtimeEnv)->GetObjectClass(runtimeEnv, exc);
-                jmethodID toStr = (*runtimeEnv)->GetMethodID(runtimeEnv, excClass, "toString", "()Ljava/lang/String;");
-                jstring jmsg = (jstring)(*runtimeEnv)->CallObjectMethod(runtimeEnv, exc, toStr);
-                const char* msg = (*runtimeEnv)->GetStringUTFChars(runtimeEnv, jmsg, NULL);
-                LOGI("[MB_EXC] %s", msg);
-                (*runtimeEnv)->ReleaseStringUTFChars(runtimeEnv, jmsg, msg);
-            }
+            dispatchMouseButtonDirect(button, action, mods);
         }
     }
-
-    dispatchMouseButtonDirect(button, action, mods);
 }
 
 void noncritical_send_mouse_button(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz, jint button, jint action, jint mods) {

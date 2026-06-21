@@ -302,7 +302,7 @@ void* stdout_logger_thread_func(void*) {
 // pingjvm.cpp에 추가
 static bool g_isGrabbing = false;
 typedef void (*SetGrabbing_t)(JNIEnv*, jclass, jboolean);
-static SetGrabbing_t g_originalSetGrabbing = nullptr;
+[[maybe_unused]] static SetGrabbing_t g_originalSetGrabbing = nullptr;
 
 static int g_guiScale = 0;
 
@@ -334,46 +334,65 @@ Java_kr_co_donghyun_pinglauncher_presentation_MinecraftActivity_nativeGetGuiScal
 
 
 // 우리가 실제로 실행할 함수
+//
+// 중요: 이 함수는 JVM(런타임/Hotspot) 스레드에서 호출된다
+//  (Mouse.create -> glfwSetInputMode -> nativeSetGrabbing).
+//  JVM 클래스로더의 org.lwjgl.glfw.CallbackBridge 에는 onGrabStateChanged 가
+//  없을 수 있어서, 전달받은 JVM env 로 GetStaticMethodID 하면
+//  NoSuchMethodError 가 발생하고 그게 Mouse.create 로 전파되어 게임이 죽는다.
+//  따라서 JVM env 는 절대 건드리지 않고, Dalvik(안드로이드) VM 에 붙어서
+//  앱 측 CallbackBridge.onGrabStateChanged 를 호출한다.
+//  (input_bridge_v3.c::JNI_OnLoad 가 dalvik bridgeClazz/메서드ID 를 이미 캐시함)
 void hookedSetGrabbing(JNIEnv* env, jclass clazz, jboolean grabbing) {
+    (void)env; (void)clazz;
     g_isGrabbing = grabbing;
     LOGI("🎯 GrabState: %d", grabbing);
 
-    if (!env) return;
-
-    jclass cbClass = env->FindClass("org/lwjgl/glfw/CallbackBridge");
-    if (env->ExceptionCheck()) {
-        LOGE("FindClass(CallbackBridge) threw, clearing");
-        env->ExceptionDescribe();
-        env->ExceptionClear();
+    struct pojav_environ_s* ep = get_pojav_environ();
+    if (!ep || !ep->dalvikJavaVMPtr) {
+        LOGW("hookedSetGrabbing: dalvik VM not ready, state-only (grab=%d)", grabbing);
         return;
     }
-    if (!cbClass) {
-        LOGE("CallbackBridge class not found (no exception?)");
+    if (!ep->bridgeClazz) {
+        LOGW("hookedSetGrabbing: dalvik bridgeClazz null, state-only");
         return;
     }
 
-    jmethodID onGrab = env->GetStaticMethodID(cbClass, "onGrabStateChanged", "(Z)V");
-    if (env->ExceptionCheck()) {
-        LOGE("GetStaticMethodID(onGrabStateChanged) threw, clearing");
-        env->ExceptionDescribe();
-        env->ExceptionClear();
-        env->DeleteLocalRef(cbClass);
+    JavaVM* dvm = ep->dalvikJavaVMPtr;
+    JNIEnv* dEnv = nullptr;
+    bool detach = false;
+    jint st = dvm->GetEnv((void**)&dEnv, JNI_VERSION_1_6);
+    if (st == JNI_EDETACHED) {
+        if (dvm->AttachCurrentThread(&dEnv, nullptr) != JNI_OK || !dEnv) {
+            LOGW("hookedSetGrabbing: AttachCurrentThread failed, state-only");
+            return;
+        }
+        detach = true;
+    } else if (st != JNI_OK || !dEnv) {
+        LOGW("hookedSetGrabbing: GetEnv(dalvik) failed (%d), state-only", st);
         return;
+    }
+
+    // input_bridge_v3.c 가 캐시한 dalvik 메서드ID 재사용. 없으면 여기서 재확보.
+    jmethodID onGrab = ep->method_onGrabStateChanged;
+    if (!onGrab) {
+        onGrab = dEnv->GetStaticMethodID(ep->bridgeClazz, "onGrabStateChanged", "(Z)V");
+        if (dEnv->ExceptionCheck()) dEnv->ExceptionClear();
     }
     if (!onGrab) {
-        LOGE("onGrabStateChanged method not found");
-        env->DeleteLocalRef(cbClass);
+        LOGW("hookedSetGrabbing: onGrabStateChanged not found on dalvik bridge, state-only");
+        if (detach) dvm->DetachCurrentThread();
         return;
     }
 
-    env->CallStaticVoidMethod(cbClass, onGrab, grabbing);
-    if (env->ExceptionCheck()) {
-        LOGE("CallStaticVoidMethod(onGrabStateChanged) threw, clearing");
-        env->ExceptionDescribe();
-        env->ExceptionClear();
+    dEnv->CallStaticVoidMethod(ep->bridgeClazz, onGrab, grabbing);
+    if (dEnv->ExceptionCheck()) {
+        // dalvik 콜백에서 예외가 나도 게임 부팅을 막지 않는다.
+        dEnv->ExceptionClear();
+        LOGW("hookedSetGrabbing: dalvik onGrabStateChanged threw, cleared (grab=%d)", grabbing);
     }
 
-    env->DeleteLocalRef(cbClass);
+    if (detach) dvm->DetachCurrentThread();
 }
 
 
@@ -610,22 +629,14 @@ static void registerGLFWGamepadNative(JNIEnv* customEnv) {
     customEnv->DeleteLocalRef(glfwClass);
 }
 
-// libpojavexec.so가 이 함수를 JNI로 호출함
-// 우리가 먼저 등록하면 intercept 가능
+// libpojavexec.so 의 nativeSetGrabbing 은 installGrabbingHook() 에서 점프 패치로
+// hookedSetGrabbing 으로 리다이렉트된다. JNI 이름 바인딩이 (libpojavexec.so 대신)
+// 이 libpingjvm.so 심볼을 고를 수도 있으므로, 여기서도 동일한 안전 경로
+// (JVM env 미사용, dalvik 측 콜백 호출)로 위임한다.
 extern "C" JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(
         JNIEnv* env, jclass clazz, jboolean grabbing) {
-    g_isGrabbing = grabbing;
-    LOGI("🎯 GrabState 변경: %d", grabbing);
-
-    // 원본 함수도 호출
-    void* handle = dlopen("libpojavexec.so", RTLD_NOLOAD | RTLD_NOW);
-    if (handle) {
-        typedef void (*SetGrabbing_t)(JNIEnv*, jclass, jboolean);
-        SetGrabbing_t fn = (SetGrabbing_t)dlsym(handle,
-                                                "Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing");
-        if (fn) fn(env, clazz, grabbing);
-    }
+    hookedSetGrabbing(env, clazz, grabbing);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

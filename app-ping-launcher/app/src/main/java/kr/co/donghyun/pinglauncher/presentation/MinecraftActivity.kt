@@ -936,6 +936,78 @@ class MinecraftActivity : BaseActivity() {
         }
     }
 
+    /**
+     * pre-1.6 (map_to_resources / virtual) 에셋 펼치기.
+     *
+     * 1.6 이전 마인크래프트(1.2.5, 1.5.2 등)는 assets/objects/<hash> 해시 저장소를 직접
+     * 읽지 못한다. 대신 평문 경로(lang/en_US.lang, sound/... 등)로 리소스를 찾는다.
+     * 에셋 인덱스에 "map_to_resources": true(또는 "virtual": true)가 있으면,
+     * objects/<hash[0:2]>/<hash> 를 원래 파일명으로 펼쳐서 그 디렉터리를 게임에 넘겨야 한다.
+     *
+     * 펼친 위치를 반환한다(= ${game_assets}/${assets_root} 로 넘길 경로).
+     * pre-1.6 이 아니면 null 반환(기존 동작 유지).
+     *
+     * 용량 절약을 위해 하드링크를 우선 시도하고, 실패(EXDEV/EPERM, sdcardfs 등)하면 복사로 폴백한다.
+     */
+    private fun prepareLegacyResources(assetsDir: File, mcDir: File, assetIndexName: String): File? {
+        val indexFile = File(assetsDir, "indexes/$assetIndexName.json")
+        if (!indexFile.exists()) {
+            Log.w("PING_LAUNCHER", "legacy resources: index 없음 ($assetIndexName.json)")
+            return null
+        }
+
+        val root = try {
+            com.google.gson.JsonParser.parseString(indexFile.readText()).asJsonObject
+        } catch (e: Exception) {
+            Log.e("PING_LAUNCHER", "legacy resources: index 파싱 실패: ${e.message}")
+            return null
+        }
+
+        val mapToResources = root.has("map_to_resources") && root["map_to_resources"].asBoolean
+        val isVirtual = root.has("virtual") && root["virtual"].asBoolean
+        if (!mapToResources && !isVirtual) return null   // 1.7+ 표준 에셋 → 펼칠 필요 없음
+
+        // map_to_resources(1.5 이하) → <gameDir>/resources/ , virtual(1.6) → assets/virtual/legacy/
+        val targetRoot = if (mapToResources) File(mcDir, "resources")
+        else File(assetsDir, "virtual/legacy")
+        targetRoot.mkdirs()
+
+        val objectsDir = File(assetsDir, "objects")
+        val objects = root["objects"].asJsonObject
+        var linked = 0; var copied = 0; var missing = 0; var skipped = 0
+
+        for ((path, v) in objects.entrySet()) {
+            val hash = v.asJsonObject["hash"].asString
+            val src = File(objectsDir, "${hash.substring(0, 2)}/$hash")
+            val dst = File(targetRoot, path)
+
+            if (dst.exists() && dst.length() > 0) { skipped++; continue }
+            if (!src.exists()) { missing++; continue }
+            dst.parentFile?.mkdirs()
+
+            // 1) 하드링크 시도 (용량 0, 가장 빠름)
+            try {
+                android.system.Os.link(src.absolutePath, dst.absolutePath)
+                linked++
+                continue
+            } catch (_: Throwable) {
+                // EXDEV(다른 파일시스템)/EPERM(sdcardfs) 등 → 복사로 폴백
+            }
+            // 2) 복사 폴백
+            try {
+                src.copyTo(dst, overwrite = true)
+                copied++
+            } catch (e: Exception) {
+                Log.w("PING_LAUNCHER", "legacy resources: 복사 실패 $path: ${e.message}")
+            }
+        }
+
+        Log.d("PING_LAUNCHER",
+            "✅ legacy resources 펼침 → ${targetRoot.absolutePath} " +
+                    "(link=$linked copy=$copied skip=$skipped missing=$missing, mapToResources=$mapToResources)")
+        return targetRoot
+    }
+
     private fun patchLaunchJar(lwJar: File) {
         val zipIn = ZipFile(lwJar)
         val patchedJar = File(lwJar.parent, lwJar.name + ".tmp")
@@ -1512,9 +1584,30 @@ class MinecraftActivity : BaseActivity() {
             patchLaunchwrapperIfNeeded(searchDirs)
         }
 
-        val versionJar = searchDirs
-            .map { File(it, "versions/$versionId/$versionId.jar") }
-            .firstOrNull { it.exists() }
+        // 게임 client jar 를 classpath 에 반드시 포함한다.
+        //   pre-1.6(1.2.5 등)은 lang/en_US.lang 같은 리소스를 getResourceAsStream 으로
+        //   클래스패스에서 읽는다. 게임 jar 가 classpath 에 없으면 그 스트림이 null 이 되어
+        //   StringTranslate(adn) 초기화에서 NullPointerException 으로 죽는다.
+        //   여러 후보 경로(instanceBase/versions, .minecraft/versions, base/versions)를 모두 본다.
+        val versionJarCandidates = buildList {
+            for (d in searchDirs) {
+                add(File(d, "versions/$versionId/$versionId.jar"))
+                add(File(d, ".minecraft/versions/$versionId/$versionId.jar"))
+            }
+            // mcDir 기준도 추가 (pre-1.6 은 mcDir = .minecraft)
+            add(File(mcDir, "versions/$versionId/$versionId.jar"))
+            add(File(mcDir.parentFile ?: mcDir, "versions/$versionId/$versionId.jar"))
+        }.distinct()
+
+        versionJarCandidates.forEach {
+            Log.d("PING_LAUNCHER", "🔎 client jar 후보: ${it.absolutePath} exists=${it.exists()}")
+        }
+
+        val versionJar = versionJarCandidates.firstOrNull { it.exists() && it.length() > 0 }
+
+        if (versionJar == null) {
+            Log.e("PING_LAUNCHER", "❌ 게임 client jar 를 찾지 못함! ($versionId.jar) — pre-1.6 리소스 로딩 실패 위험")
+        }
 
         versionJar?.let {
             // ZL2 방식: 바닐라 client jar 를 NeoForge 에서도 classpath 에 포함한다.
@@ -1523,7 +1616,9 @@ class MinecraftActivity : BaseActivity() {
             //   난독화돼 net.minecraft.* 가 없으므로 deobf 게임 jar 와 패키지 충돌도 없다.
             if (!jarList.contains(it.absolutePath)) {
                 jarList.add(it.absolutePath)
-                Log.d("PING_LAUNCHER", "✅ 바닐라 client jar classpath 포함 (ZL2 방식): ${it.name}")
+                Log.d("PING_LAUNCHER", "✅ 바닐라 client jar classpath 포함 (ZL2 방식): ${it.absolutePath}")
+            } else {
+                Log.d("PING_LAUNCHER", "ℹ️ client jar 이미 classpath 에 있음: ${it.name}")
             }
         }
 
@@ -1531,6 +1626,13 @@ class MinecraftActivity : BaseActivity() {
             .map { File(it, "assets") }
             .firstOrNull { File(it, "indexes").exists() && File(it, "indexes").listFiles()?.isNotEmpty() == true }
             ?: File(getExternalFilesDir(null) ?: base, "assets")
+
+        // pre-1.6 (map_to_resources/virtual) 에셋이면 objects/<hash> 를 평문 경로로 펼친다.
+        //   1.2.5/1.5.2 등은 이 펼친 디렉터리를 ${game_assets}/${assets_root} 로 받아야
+        //   lang/en_US.lang 같은 리소스를 읽을 수 있다(안 하면 Display.create 직후 NPE 로 멈춤).
+        //   null 이면 1.7+ 표준 에셋이므로 기존 assetsDir 를 그대로 쓴다.
+        val legacyAssetsRoot: File? = prepareLegacyResources(assetsDir, mcDir, assetIndex)
+        val gameAssetsPath = (legacyAssetsRoot ?: assetsDir).absolutePath
 
         val irisConfig = File(mcDir, "config/iris.properties")
         if (!irisConfig.exists()) {                       // ← 이미 존재하면 손대지 않음 (지금도 이 조건은 있음)
@@ -1589,7 +1691,7 @@ class MinecraftActivity : BaseActivity() {
         // disableUnsupportedMods 로 .pingdisabled 처리된 것도 실제 로드되진 않지만,
         // 메모리/로딩 부담은 "설치된 모드 수" 기준으로 보는 게 안전하므로 .jar / .jar.pingdisabled 둘 다 센다.
         val installedModCount = countInstalledMods(File(mcDir, "mods"))
-        syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings, installedModCount)
+        syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings, installedModCount, versionId)
         // Forge/NeoForge early loading window(망치/여우 로딩 화면) 설정.
         // ZL2 와 동일하게 켜는 게 기본. 단, 모드팩(특히 Sinytra Connector 포함)은 early window 의
         //   acceptGameLayer → DisplayWindow.updateModuleReads 단계에서 게임 클래스
@@ -1882,8 +1984,8 @@ class MinecraftActivity : BaseActivity() {
                         "\${auth_access_token}" to accessToken,
                         "\${version_name}"      to versionId,
                         "\${game_directory}"    to mcDir.absolutePath,
-                        "\${game_assets}"       to assetsDir.absolutePath,    // pre-1.6 legacy assets
-                        "\${assets_root}"       to assetsDir.absolutePath,
+                        "\${game_assets}"       to gameAssetsPath,           // pre-1.6: 펼친 resources 경로
+                        "\${assets_root}"       to gameAssetsPath,
                         "\${assets_index_name}" to assetIndex,
                         "\${user_type}"         to userType,
                         "\${version_type}"      to if (isFabric) "Fabric" else "release",
@@ -2482,7 +2584,20 @@ class MinecraftActivity : BaseActivity() {
         }
     }
 
-    private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings, modCount: Int = 0) {
+    /**
+     * pre-1.6 판정: 1.5.x 이하( = pre-1.6 legacy assets/언어 시스템 ).
+     * 이 버전들은 options.txt lang 주입 시 StringTranslate(adn) NPE 가 나므로 언어를 건드리지 않는다.
+     * 1.6+ 는 현대식 lang 로딩이라 시스템 언어 주입이 정상 동작한다.
+     * 형식: "1.5.2" → major=5 → true, "1.6.4" → major=6 → false, "1.2.5" → true.
+     * 스냅샷/비표준 버전명은 안전하게 false(주입 허용; 1.6+ 가정).
+     */
+    private fun isPre16Version(versionId: String): Boolean {
+        val m = Regex("""^1\.(\d+)""").find(versionId) ?: return false
+        val major = m.groupValues[1].toIntOrNull() ?: return false
+        return major <= 5
+    }
+
+    private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings, modCount: Int = 0, versionId: String = "") {
         val targetMaxFps   = if (settings.unlockFps) 260 else 120
         val targetVsync    = if (settings.unlockFps) "false" else "true"
         val targetRenderD  = settings.renderDistance
@@ -2522,10 +2637,29 @@ class MinecraftActivity : BaseActivity() {
         // ── 최초 실행 시 시스템 언어를 마인크래프트 언어로 설정 ──
         //   options.txt 가 없던 경우(brandNewInstance)에만 1회 적용.
         //   이미 lang 키가 있으면(이전 실행/사용자 설정) 절대 덮어쓰지 않는다.
-        if (brandNewInstance && existing.none { it.startsWith("lang:") }) {
+        //
+        //   ⚠️ pre-1.6(1.5.x 이하)은 제외한다. 그 시절 StringTranslate(난독화명 adn)는
+        //   options.txt 의 lang 코드로 jar 내 /lang/<code>.lang 을 getResourceAsStream 으로 읽는데,
+        //     1) 1.5 이하 lang 파일명은 대문자 국가(ko_KR.lang, en_US.lang)인데 우리는 소문자(ko_kr)를 심고,
+        //     2) 1.5 이하는 제공 언어가 적어 미지원 코드면 스트림이 null → InputStreamReader(null) → NPE 로
+        //   타이틀 진입 직전 죽는다(Minecraft.a → adn.a). 그래서 pre-1.6 은 lang 을 건드리지 않고
+        //   게임 기본값(en_US)으로 두는 게 안전하다. 사용자는 게임 내 언어 메뉴에서 바꿀 수 있다.
+        val isPre16 = isPre16Version(versionId)
+        if (brandNewInstance && existing.none { it.startsWith("lang:") } && !isPre16) {
             val mcLang = systemMinecraftLang()
             upsert("lang", mcLang)
             Log.d("PING_LAUNCHER", "🌐 최초 실행 — 시스템 언어로 lang=$mcLang 설정")
+        } else if (isPre16) {
+            // pre-1.6 은 lang 을 주입하지 않을 뿐 아니라, 이전 (버그 있던) 실행에서 이미 박힌
+            //   소문자/미지원 lang 줄이 있으면 제거한다. 그래야 StringTranslate 가 내장 기본값으로
+            //   폴백해 NPE 없이 타이틀까지 진입한다. (사용자는 게임 내 메뉴에서 언어 변경 가능)
+            val before = existing.size
+            existing.removeAll { it.startsWith("lang:") }
+            if (existing.size != before) {
+                Log.d("PING_LAUNCHER", "🌐 pre-1.6($versionId) — 기존 lang 줄 제거(StringTranslate NPE 회피)")
+            } else {
+                Log.d("PING_LAUNCHER", "🌐 pre-1.6($versionId) — 시스템 언어 주입 건너뜀 (기본 언어 사용)")
+            }
         }
 
         // ── 첫 실행 + 무거운 모드팩 → 렌더 설정 강제 하향 ──
