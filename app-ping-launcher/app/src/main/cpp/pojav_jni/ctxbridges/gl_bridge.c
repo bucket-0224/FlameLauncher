@@ -172,6 +172,8 @@ void gl_make_current(gl_render_window_t* bundle) {
         return;
     }
 
+    currentBundle = bundle;
+
     bool hasSetMainWindow = false;
     if(pojav_environ->mainWindowBundle == NULL) {
         pojav_environ->mainWindowBundle = (basic_render_window_t*)bundle;
@@ -203,6 +205,7 @@ void gl_make_current(gl_render_window_t* bundle) {
 }
 
 void gl_swap_buffers() {
+    if (currentBundle == NULL) return;
     if(currentBundle->state == STATE_RENDERER_NEW_WINDOW) {
         LOGI("gl_swap_buffers: STATE_RENDERER_NEW_WINDOW detected, "
              "old surface=%p newNativeSurface=%p",
