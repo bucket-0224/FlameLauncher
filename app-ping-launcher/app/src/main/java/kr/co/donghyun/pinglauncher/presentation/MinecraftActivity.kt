@@ -96,7 +96,8 @@ class MinecraftActivity : BaseActivity() {
     private var currentSurface: Surface? = null
     @Volatile var combatMode: Boolean = false
 
-    private var forceShowController: Boolean? = null
+    // 화면 컨트롤러 표시 토글은 GameControllerView 가 자체적으로(좌상단 🎮 버튼) 관리한다.
+    //   여기서는 별도 상태/플러밍을 두지 않는다.
 
     private val PROCESSOR_ONLY_JAR_PREFIXES = listOf(
         "ForgeAutoRenamingTool",
@@ -290,6 +291,7 @@ class MinecraftActivity : BaseActivity() {
                             onClose = { dismissBootOverlay("user-close") },
                         )
                     }
+                    // 🎮 컨트롤러 표시 토글은 GameControllerView 내부(좌상단 버튼)에서 자체 처리.
                 }
             }
         }
@@ -322,6 +324,7 @@ class MinecraftActivity : BaseActivity() {
         // 가시성 갱신만 호출한다. (리스너·폴링은 onCreate 에서 이미 살아있음)
         try { updateGameControllerVisibility() } catch (_: Throwable) {}
     }
+
 
     /**
      * 부팅 로딩 오버레이 준비:
@@ -425,26 +428,57 @@ class MinecraftActivity : BaseActivity() {
         }
     }
 
-    /** 현재 물리 키보드 또는 마우스가 연결되어 있는지 */
+    /**
+     * 진짜 외장 물리 키보드 또는 마우스/터치패드가 연결돼 있는지.
+     *
+     * 휴대폰은 내장 입력장치(gpio-keys, 헤드셋 버튼, PMIC 키, 가상 네비게이션 키 등)를
+     * SOURCE_KEYBOARD + KEYBOARD_TYPE_ALPHABETIC 로 잘못 보고하는 경우가 많아,
+     * 단순 비트 검사만으로는 오탐이 잦다. 그래서 다음을 모두 만족할 때만 true:
+     *   1) 가상 디바이스가 아님(isVirtual == false)
+     *   2) 외장 디바이스(isExternal == true) — 내장 컨트롤은 대부분 false 라 걸러짐
+     *   3) 알려진 내장 디바이스 이름 패턴이 아님(gpio-keys, headset, pmic, mtk-kpd 등)
+     *   4) 실제 알파벳 키보드(전체 SOURCE_KEYBOARD 비트) 또는 마우스/터치패드 포인터
+     *
+     * isExternal 이 일부 기기에서 신뢰되지 않을 수 있으나, 이 함수는 더 이상 컨트롤러
+     * 가시성을 좌우하지 않고(우측 상단 토글이 그 역할) 소프트키보드 표시 판단에만 쓰이므로
+     * 보수적으로 "확실한 외장만" 인정해도 안전하다.
+     */
     private fun hasHardwareKeyboardOrMouse(): Boolean {
         val im = getSystemService(INPUT_SERVICE)
                 as android.hardware.input.InputManager
+
+        // 내장/가짜 입력장치로 흔히 보고되는 이름 패턴(소문자 비교)
+        val internalNameHints = listOf(
+            "gpio", "headset", "headphone", "pmic", "kpd", "keypad",
+            "mtk-kpd", "qpnp", "pm8", "lid", "hall", "accelerometer",
+            "gsensor", "virtual", "uinput", "input device", "back phone"
+        )
 
         for (id in im.inputDeviceIds) {
             val dev = im.getInputDevice(id) ?: continue
             if (dev.isVirtual) continue
 
+            // 외장 디바이스만 인정(API 16+ 의 isExternal; 일부 기기 미신뢰 가능 → try)
+            val external = try { dev.isExternal } catch (_: Throwable) { false }
+            if (!external) continue
+
+            val name = (dev.name ?: "").lowercase()
+            if (internalNameHints.any { name.contains(it) }) continue
+
             val src = dev.sources
 
-            // 알파벳 키보드 (소프트 IME 제외)
-            if ((src and InputDevice.SOURCE_KEYBOARD) != 0
-                && dev.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC) {
-                return true
-            }
+            // 진짜 알파벳 키보드: 전체 SOURCE_KEYBOARD 비트가 켜져 있어야 함
+            val isRealKeyboard = (src and InputDevice.SOURCE_KEYBOARD) == InputDevice.SOURCE_KEYBOARD
+                    && dev.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
 
-            // 마우스 / 터치패드
-            if ((src and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE
-                || (src and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD) {
+            // 진짜 포인터: 마우스 / 상대좌표 마우스 / 터치패드
+            val isPointer = (src and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE
+                    || (src and InputDevice.SOURCE_MOUSE_RELATIVE) == InputDevice.SOURCE_MOUSE_RELATIVE
+                    || (src and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD
+
+            if (isRealKeyboard || isPointer) {
+                Log.d("PING_LAUNCHER",
+                    "🎮 외장 입력 감지: name=${dev.name} src=0x${src.toString(16)} kbType=${dev.keyboardType}")
                 return true
             }
         }
@@ -453,32 +487,26 @@ class MinecraftActivity : BaseActivity() {
 
 
     /**
-     * GameControllerView 가시성 갱신.
-     * 표시 조건: 월드에서 플레이 중(마우스 grab) AND 물리 키보드/마우스 미연결.
+     * GameControllerView 상태 갱신.
      *
-     * 판정 기준:
-     *  - grab: nativeIsGrabbing() — 마인크래프트가 마우스를 잡은 상태(=월드 플레이 중)
-     *  - 키보드: SOURCE_KEYBOARD 비트 + KEYBOARD_TYPE_ALPHABETIC (소프트 IME 제외)
-     *  - 마우스: SOURCE_MOUSE 비트 (또는 SOURCE_MOUSE_RELATIVE)
-     *  - 물리 입력이 하나라도 있으면 숨김 (물리로 조작)
-     *  - grab 이 풀리면(메뉴/인벤토리/채팅) 숨김 (커서로 조작)
+     * 컨트롤러 표시 ON/OFF 는 이제 GameControllerView 안의 좌상단 🎮 토글이 자체적으로
+     * 관리하므로, 여기서는 뷰를 항상 VISIBLE 로 두고(토글 버튼이 늘 보여야 하므로)
+     * escOnly(버튼 종류) 판정만 전달한다.
+     *  - grab + IME 닫힘 → 전체 버튼 (WASD 등 플레이 조작)
+     *  - 그 외(타이틀/인벤토리/ESC메뉴/채팅) → ESC + 키보드 버튼만
+     *
+     * (이전엔 물리 키보드/마우스 자동 감지로 뷰 전체를 숨겼으나, 일부 휴대폰이 내장
+     *  입력장치를 물리 키보드로 오탐해 컨트롤러가 안 뜨는 문제가 있어 명시적 토글로 전환.
+     *  감지 함수 hasHardwareKeyboardOrMouse 는 소프트키보드 표시 판단 등 다른 용도로만 사용.)
      */
     internal fun updateGameControllerVisibility() {
-        val hasExternalInput = hasHardwareKeyboardOrMouse()
-        // 전체 버튼은 "실제 플레이 중(grab) 이면서 IME(채팅)가 닫혀있을 때"만.
-        //   - grab + IME 닫힘 → 전체 버튼 (WASD 등 플레이 조작)
-        //   - grab + IME 열림(채팅) → ESC + 키보드 버튼만 (다른 버튼이 채팅을 가리지 않도록)
-        //   - 그 외(타이틀/인벤토리/ESC메뉴) → ESC + 키보드 버튼만
-        //   - 물리 키보드/마우스 → 전체 숨김
-        //   ※ 최초 타이틀 화면부터 ESC/키보드가 보이도록 hasEnteredWorld 게이트는 쓰지 않는다.
         val fullControl = isGrabbing && !imeVisible
-        val shouldShow = jvmStarted && !hasExternalInput
-        val target = if (shouldShow) View.VISIBLE else View.INVISIBLE
         runOnUiThread {
             val view = gameControllerView ?: return@runOnUiThread
             view.setEscOnlyMode(!fullControl)   // grab/IME 아니면 ESC + 키보드만
-            if (view.visibility != target) {
-                view.visibility = target
+            // 뷰 자체는 항상 표시 — 내부 🎮 토글이 실제 버튼 노출을 제어.
+            if (view.visibility != View.VISIBLE) {
+                view.visibility = View.VISIBLE
             }
         }
     }
@@ -2179,11 +2207,74 @@ class MinecraftActivity : BaseActivity() {
      *       상한보다 낮다면 그 낮은 값을 존중한다(= min 으로 합침). 절대 사용자보다 높이지 않음.
      *  3) 그 외(키 바인딩/볼륨 등)는 사용자 변경을 보존.
      */
+    /**
+     * 기기의 현재 시스템 언어를 마인크래프트 options.txt 의 lang 코드("ll_cc", 소문자)로 변환.
+     *
+     * 마인크래프트 언어 파일명은 소문자 "언어_국가" (예: ko_kr, en_us, ja_jp, zh_cn).
+     * Android Locale 의 language/country 를 합쳐 만들되, 국가 코드가 없거나 모호한 주요
+     * 언어는 마인크래프트에서 실제 제공하는 대표 변형으로 매핑한다.
+     * 매칭 실패 시 en_us 로 폴백(마인크래프트가 모르는 코드를 만나도 기본 영어로 동작).
+     */
+    private fun systemMinecraftLang(): String {
+        val locale = resources.configuration.locales.takeIf { it.size() > 0 }?.get(0)
+            ?: java.util.Locale.getDefault()
+        val lang = locale.language.lowercase()        // e.g. "ko", "en", "pt", "zh"
+        val country = locale.country.lowercase()       // e.g. "kr", "us", "br", "cn" (없을 수 있음)
+
+        // 국가 코드까지 있으면 우선 그대로 시도할 수 있게 구성해두고,
+        // 마인크래프트가 실제 제공하는 대표 코드로 보정.
+        return when (lang) {
+            "ko" -> "ko_kr"
+            "ja" -> "ja_jp"
+            "en" -> if (country == "gb") "en_gb" else "en_us"
+            "zh" -> when (country) {
+                "tw", "hk", "mo" -> "zh_tw"   // 번체
+                else             -> "zh_cn"   // 간체(기본)
+            }
+            "pt" -> if (country == "pt") "pt_pt" else "pt_br"  // 브라질이 더 일반적
+            "es" -> when (country) {
+                "es" -> "es_es"
+                "mx" -> "es_mx"
+                "ar" -> "es_ar"
+                else -> "es_es"
+            }
+            "de" -> "de_de"
+            "fr" -> if (country == "ca") "fr_ca" else "fr_fr"
+            "ru" -> "ru_ru"
+            "it" -> "it_it"
+            "nl" -> "nl_nl"
+            "pl" -> "pl_pl"
+            "tr" -> "tr_tr"
+            "uk" -> "uk_ua"
+            "vi" -> "vi_vn"
+            "th" -> "th_th"
+            "id" -> "id_id"
+            "cs" -> "cs_cz"
+            "sv" -> "sv_se"
+            "fi" -> "fi_fi"
+            "da" -> "da_dk"
+            "nb", "no" -> "nb_no"
+            "hu" -> "hu_hu"
+            "el" -> "el_gr"
+            "ar" -> "ar_sa"
+            "he", "iw" -> "he_il"
+            "ro" -> "ro_ro"
+            else -> {
+                // 알 수 없는 언어: "lang_country" 형태로라도 시도하되, 국가 없으면 en_us.
+                if (country.isNotEmpty()) "${lang}_$country" else "en_us"
+            }
+        }
+    }
+
     private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings, modCount: Int = 0) {
         val targetMaxFps   = if (settings.unlockFps) 260 else 120
         val targetVsync    = if (settings.unlockFps) "false" else "true"
         val targetRenderD  = settings.renderDistance
         val targetGfxMode  = settings.graphicsMode
+
+        // options.txt 가 아예 없으면 = 이 인스턴스 최초 실행.
+        //   이때만 시스템 언어를 초기 lang 으로 심는다(이후 사용자가 게임 내에서 바꾼 값 보존).
+        val brandNewInstance = !optionsFile.exists()
 
         val existing: MutableList<String> = if (optionsFile.exists())
             optionsFile.readLines().toMutableList()
@@ -2211,6 +2302,15 @@ class MinecraftActivity : BaseActivity() {
         //   힙을 손상시켜 Scudo "corrupted chunk header" 로 강제 종료됨(렌더 스레드).
         //   밉맵 0 이면 아틀라스가 ...x0 으로 생성되어 크래시가 사라짐.
         upsert("mipmapLevels",   "0")
+
+        // ── 최초 실행 시 시스템 언어를 마인크래프트 언어로 설정 ──
+        //   options.txt 가 없던 경우(brandNewInstance)에만 1회 적용.
+        //   이미 lang 키가 있으면(이전 실행/사용자 설정) 절대 덮어쓰지 않는다.
+        if (brandNewInstance && existing.none { it.startsWith("lang:") }) {
+            val mcLang = systemMinecraftLang()
+            upsert("lang", mcLang)
+            Log.d("PING_LAUNCHER", "🌐 최초 실행 — 시스템 언어로 lang=$mcLang 설정")
+        }
 
         // ── 첫 실행 + 무거운 모드팩 → 렌더 설정 강제 하향 ──
         val tier = computePerfTier(modCount)
