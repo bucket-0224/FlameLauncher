@@ -116,12 +116,14 @@ class ContentPackBrowserActivity : BaseActivity() {
                 val targetLoader = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_LOADER)
                     ?.let { runCatching { ModLoader.valueOf(it) }.getOrNull() }
                 val targetWorld = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_WORLD)
+                val targetFileId = data.getIntExtra(ContentPackDetailActivity.EXTRA_TARGET_FILE_ID, -1)
+                    .takeIf { it > 0 }
 
                 val contentType = _selectedContentType.value
                 Log.d("PING_LAUNCHER",
                     "install request: mod=${mod.name} type=$contentType " +
                             "targetInstance=$targetInstanceId targetVersion=$targetVersion " +
-                            "targetLoader=$targetLoader targetWorld=$targetWorld")
+                            "targetLoader=$targetLoader targetWorld=$targetWorld targetFileId=$targetFileId")
 
                 when {
                     // 기존 인스턴스 선택 (데이터팩이면 targetWorld 도 함께 전달)
@@ -132,9 +134,9 @@ class ContentPackBrowserActivity : BaseActivity() {
                     targetVersion != null ->
                         installToNewInstance(mod, targetVersion, targetLoader, contentType)
 
-                    // 그 외 (모드팩 등 — 타겟 선택 없이 바로 설치)
+                    // 그 외 (모드팩 등 — 타겟 선택 없이 바로 설치). 모드팩은 고른 파일(버전) id 전달.
                     else ->
-                        installDirect(mod, contentType)
+                        installDirect(mod, contentType, targetFileId)
                 }
             }
             "launch" -> {
@@ -503,12 +505,12 @@ class ContentPackBrowserActivity : BaseActivity() {
     }
 
     /** 추가 정보 없이 바로 설치 (모드팩/텍스처팩/쉐이더팩 케이스) */
-    private fun installDirect(mod: CurseForgeMod, contentType: ContentType) {
+    private fun installDirect(mod: CurseForgeMod, contentType: ContentType, fileId: Int? = null) {
         lifecycleScope.launch {
             if (!beginInstall(mod, "${contentType.label} 설치 중...")) return@launch
             try {
                 when (contentType) {
-                    ContentType.MODPACK -> installModpack(mod)
+                    ContentType.MODPACK -> installModpack(mod, fileId)
                     else -> {
                         // ★ 여기 도달했다는 건 detailLauncher 분기에 버그가 있다는 뜻
                         Log.e("PING_LAUNCHER",
@@ -1159,19 +1161,23 @@ class ContentPackBrowserActivity : BaseActivity() {
      * 이미 ModPackInstaller 가 한 번 저장하므로, 사용자가 같은 모드팩을 다시 누르면
      * `loaderType != null` 캐시 체크로 zip 재다운로드는 스킵된다.
      */
-    private suspend fun installModpack(mod: CurseForgeMod) {
+    private suspend fun installModpack(mod: CurseForgeMod, fileId: Int? = null) {
         val instanceId = InstanceManager.modpackId(mod.name)
         val instanceDir = InstanceManager.instanceDir(this, instanceId).also { it.mkdirs() }
 
         // ── 0) 어떤 파일(=어떤 모드팩 버전) 받을지 결정 ─────────────
+        //   사용자가 버전 선택 다이얼로그에서 고른 fileId 가 있으면 그 파일을, 없으면 최신 파일.
         val file = withContext(Dispatchers.IO) {
-            fetchLatestFileForVersion(mod.id, gameVersion = null, loaderType = null)
+            if (fileId != null) fetchFileById(mod.id, fileId)
+                ?: fetchLatestFileForVersion(mod.id, gameVersion = null, loaderType = null)
+            else fetchLatestFileForVersion(mod.id, gameVersion = null, loaderType = null)
         } ?: run {
-            Log.e("PING_LAUNCHER", "❌ 모드팩 파일 정보 못 가져옴: mod=${mod.id}")
+            Log.e("PING_LAUNCHER", "❌ 모드팩 파일 정보 못 가져옴: mod=${mod.id} fileId=$fileId")
             _statusMessage.value = "❌ ${mod.name} 파일 정보를 가져올 수 없음"
             _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = "파일 정보 없음")
             return
         }
+        Log.d("PING_LAUNCHER", "📦 모드팩 설치 파일 확정: ${file.displayName} (id=${file.id}, rt=${file.releaseType})")
 
         // ── 1) 모드팩 zip 다운로드 + manifest 파싱 + overrides + 필수 모드들 ──
         _statusMessage.value = "${mod.name} 모드팩 추출 중..."
@@ -1334,6 +1340,28 @@ class ContentPackBrowserActivity : BaseActivity() {
      * 정렬 우선순위: release > beta > alpha, 그 다음 id desc (최신).
      * gameVersion이 주어지면 그 버전 문자열이 gameVersions에 정확히 포함된 것만.
      */
+    /**
+     * 특정 fileId 의 파일 단건 조회. 모드팩 버전 선택에서 고른 파일을 정확히 받기 위함.
+     * 엔드포인트: GET /v1/mods/{modId}/files/{fileId}  (CurseForgeResponse<CurseForgeFile>)
+     * 실패 시 null → 호출부가 최신 파일로 폴백.
+     */
+    private fun fetchFileById(modId: Int, fileId: Int): CurseForgeFile? {
+        val request = Request.Builder()
+            .url("https://api.curseforge.com/v1/mods/$modId/files/$fileId")
+            .header("x-api-key", BuildConfig.CURSEFORGE_API_KEY)
+            .header("Accept", "application/json")
+            .build()
+        return runCatching {
+            httpClient.newCall(request).execute().use { resp ->
+                val body = resp.body?.string() ?: return@runCatching null
+                val type = object : TypeToken<CurseForgeResponse<CurseForgeFile>>() {}.type
+                gson.fromJson<CurseForgeResponse<CurseForgeFile>>(body, type).data
+            }
+        }.onFailure {
+            Log.w("PING_LAUNCHER", "파일 단건 조회 실패: mod=$modId file=$fileId — ${it.message}")
+        }.getOrNull()
+    }
+
     private fun fetchLatestFileForVersion(
         modId: Int,
         gameVersion: String?,

@@ -148,6 +148,12 @@ class ContentPackDetailActivity : BaseActivity() {
     private val _worldCandidates = MutableStateFlow<List<String>>(emptyList())
     private var _pendingDatapackInstance: InstanceSummary? = null
 
+    // ── 모드팩 전용: 설치 전 "어떤 모드팩 버전(파일)을 받을지" 선택 단계 ──
+    //   InstallTargetDialog 와 동일한 안 잘리는 레이아웃(헤더/버튼 고정 + 리스트만 스크롤).
+    private val _showVersionDialog = MutableStateFlow(false)
+    private val _versionFiles = MutableStateFlow<List<CurseForgeFile>>(emptyList())
+    private val _versionLoading = MutableStateFlow(false)
+
     companion object {
         // "1.x" / "1.x.y" 형태만 매칭 (gameVersions 의 로더 태그와 MC 버전 구분)
         private val MC_VERSION_REGEX = Regex("""^\d+\.\d+(\.\d+)?$""")
@@ -164,6 +170,7 @@ class ContentPackDetailActivity : BaseActivity() {
         const val EXTRA_TARGET_VERSION = "target_version"           // 새 인스턴스 생성 시
         const val EXTRA_TARGET_LOADER = "target_loader"             // 새 인스턴스 생성 시 (ModLoader.name)
         const val EXTRA_TARGET_WORLD = "target_world"               // 데이터팩 설치 대상 월드명
+        const val EXTRA_TARGET_FILE_ID = "target_file_id"           // 모드팩: 사용자가 고른 파일(버전) id
 
         fun start(
             context: Context,
@@ -375,6 +382,27 @@ class ContentPackDetailActivity : BaseActivity() {
                             }
                         )
                     }
+
+                    // 모드팩 버전(파일) 선택 다이얼로그
+                    val showVersionDialog by _showVersionDialog.asStateFlow().collectAsState()
+                    val versionFiles by _versionFiles.asStateFlow().collectAsState()
+                    val versionLoading by _versionLoading.asStateFlow().collectAsState()
+                    if (showVersionDialog) {
+                        ModpackVersionDialog(
+                            modName = modName,
+                            files = versionFiles,
+                            isLoading = versionLoading,
+                            onDismiss = { _showVersionDialog.value = false },
+                            onSelect = { file ->
+                                _showVersionDialog.value = false
+                                setResult(RESULT_OK, Intent()
+                                    .putExtra(EXTRA_MOD_ID, modId)
+                                    .putExtra("action", "install")
+                                    .putExtra(EXTRA_TARGET_FILE_ID, file.id))
+                                finish()
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -411,6 +439,23 @@ class ContentPackDetailActivity : BaseActivity() {
     }
 
     private fun handleInstallRequest(modId: Int, contentType: ContentType) {
+        // 모드팩: 자체 인스턴스를 만들므로 타겟 인스턴스 선택은 없지만,
+        //   "어떤 모드팩 버전(파일)을 받을지"는 사용자가 고르게 한다.
+        //   파일 목록을 받아 버전 선택 다이얼로그를 띄우고, 고른 파일 id 를 결과로 전달.
+        if (contentType == ContentType.MODPACK) {
+            _versionLoading.value = true
+            _versionFiles.value = emptyList()
+            _showVersionDialog.value = true
+            lifecycleScope.launch(Dispatchers.IO) {
+                val files = fetchFilesForDetect(modId)
+                    .sortedWith(compareByDescending<CurseForgeFile> { it.fileDate ?: "" }
+                        .thenByDescending { it.id })   // 최신 업로드 우선, 날짜 없으면 id 큰 순
+                _versionFiles.value = files
+                _versionLoading.value = false
+            }
+            return
+        }
+
         if (!contentType.needsTargetInstance) {
             setResult(RESULT_OK, Intent()
                 .putExtra(EXTRA_MOD_ID, modId)
@@ -1126,4 +1171,211 @@ private fun WorldSelectDialog(
             }
         },
     )
+}
+/**
+ * 모드팩 "버전(파일) 선택" 다이얼로그.
+ *
+ * InstallTargetDialog 와 동일한 안 잘리는 레이아웃:
+ *   - 바깥 Column 은 heightIn(max = 화면 90%) 으로 상한만 두고 내용은 wrap
+ *   - 헤더(제목/안내) 고정, 하단 버튼(취소) 고정
+ *   - 가운데 파일 리스트만 LazyColumn weight(1f) 로 스크롤 → 항목이 많아도 다이얼로그가 안 잘림
+ *
+ * 각 파일에 표시하는 정보:
+ *   - displayName (모드팩 릴리스 이름)
+ *   - releaseType 배지 (Release / Beta / Alpha)
+ *   - 타겟 MC 버전(gameVersions 중 "1.x[.y]")
+ *   - 모드로더(gameVersions 중 Forge/Fabric/NeoForge/Quilt)
+ *   - 업로드 날짜(fileDate, ISO8601 → yyyy-MM-dd)
+ */
+@Composable
+private fun ModpackVersionDialog(
+    modName: String,
+    files: List<CurseForgeFile>,
+    isLoading: Boolean,
+    onDismiss: () -> Unit,
+    onSelect: (CurseForgeFile) -> Unit,
+) {
+    val tablet = isTablet()
+    val maxDialogHeight = (LocalConfiguration.current.screenHeightDp * 0.9f).dp
+
+    val Pink = Color(0xFFE91E8C)
+    val BgSurface = Color(0xFF1E0E1A)
+    val BgBorder = Color(0xFF3D1A32)
+    val BgItem = Color(0xFF160A13)
+    val TextMain = Color(0xFFFCE4EC)
+    val TextSub = Color(0xFFBB86A0)
+
+    val titleSize    = if (tablet) 18.sp else 14.sp
+    val descSize     = if (tablet) 13.sp else 11.sp
+    val itemTitle    = if (tablet) 14.sp else 12.sp
+    val itemSub      = if (tablet) 12.sp else 10.sp
+    val chipSize     = if (tablet) 11.sp else 9.sp
+    val buttonSize   = if (tablet) 13.sp else 11.sp
+
+    val dialogWidthRatio = if (tablet) 0.7f else 0.95f
+    val outerPad   = if (tablet) 22.dp else 16.dp
+    val verticalGap = if (tablet) 16.dp else 12.dp
+    val itemPadH   = if (tablet) 14.dp else 11.dp
+    val itemPadV   = if (tablet) 12.dp else 10.dp
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.7f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(dialogWidthRatio)
+                    .heightIn(max = maxDialogHeight)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(BgSurface)
+                    .border(1.dp, BgBorder, RoundedCornerShape(14.dp))
+                    .clickable(enabled = false) {}
+                    .imePadding()
+                    .padding(outerPad),
+                verticalArrangement = Arrangement.spacedBy(verticalGap)
+            ) {
+                // ── 헤더 (고정) ──
+                Text(
+                    "설치할 버전 선택",
+                    color = TextMain, fontSize = titleSize, fontWeight = FontWeight.Bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "$modName · 원하는 모드팩 버전을 고르세요. 각 버전의 타겟 마인크래프트 버전과 모드로더가 다를 수 있습니다.",
+                    color = TextSub, fontSize = descSize
+                )
+
+                // ── 가운데 리스트 (스크롤; weight 로 남는 공간 전부 차지) ──
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when {
+                        isLoading -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(color = Pink, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Text("버전 목록 불러오는 중...", color = TextSub, fontSize = descSize)
+                            }
+                        }
+                        files.isEmpty() -> {
+                            Text(
+                                "표시할 버전이 없습니다. 네트워크 상태를 확인하거나 잠시 후 다시 시도해 주세요.",
+                                color = TextSub, fontSize = descSize,
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
+                        }
+                        else -> {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(files) { file ->
+                                    val mcVer = file.gameVersions
+                                        .firstOrNull { Regex("""^\d+\.\d+(\.\d+)?$""").matches(it.trim()) }
+                                    val loader = file.gameVersions.firstOrNull {
+                                        it.equals("Forge", true) || it.equals("Fabric", true) ||
+                                                it.equals("NeoForge", true) || it.equals("Quilt", true)
+                                    }
+                                    val date = formatFileDate(file.fileDate)
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(BgItem)
+                                            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+                                            .clickable { onSelect(file) }
+                                            .padding(horizontal = itemPadH, vertical = itemPadV),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        // 1줄: 릴리스 이름 + releaseType 배지
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(
+                                                text = file.displayName,
+                                                color = TextMain, fontSize = itemTitle, fontWeight = FontWeight.Bold,
+                                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            ReleaseTypeBadge(file.releaseType, chipSize)
+                                        }
+                                        // 2줄: MC 버전 · 로더 · 날짜 칩
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            InfoChip(text = mcVer?.let { "MC $it" } ?: "MC 미상", fg = Pink, fontSize = chipSize)
+                                            InfoChip(text = loader ?: "로더 미상", fg = TextSub, fontSize = chipSize)
+                                            if (date != null) {
+                                                Text("· $date", color = TextSub, fontSize = itemSub, maxLines = 1)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── 하단 버튼 (고정) ──
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("취소", color = TextSub, fontSize = buttonSize)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** releaseType(1/2/3) → 색 배지 */
+@Composable
+private fun ReleaseTypeBadge(releaseType: Int, fontSize: androidx.compose.ui.unit.TextUnit) {
+    val (label, color) = when (releaseType) {
+        1 -> "Release" to Color(0xFF4CAF50)
+        2 -> "Beta" to Color(0xFFFFB300)
+        else -> "Alpha" to Color(0xFFE53935)
+    }
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(color.copy(alpha = 0.18f))
+            .border(1.dp, color.copy(alpha = 0.6f), RoundedCornerShape(6.dp))
+            .padding(horizontal = 7.dp, vertical = 3.dp)
+    ) {
+        Text(label, color = color, fontSize = fontSize, fontWeight = FontWeight.Bold)
+    }
+}
+
+/** 정보 칩 (MC 버전 / 로더) */
+@Composable
+private fun InfoChip(text: String, fg: Color, fontSize: androidx.compose.ui.unit.TextUnit) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(fg.copy(alpha = 0.12f))
+            .padding(horizontal = 7.dp, vertical = 3.dp)
+    ) {
+        Text(text, color = fg, fontSize = fontSize, fontWeight = FontWeight.Medium, maxLines = 1)
+    }
+}
+
+/** ISO8601("2024-03-01T12:34:56.789Z") → "2024-03-01". 파싱 실패/없으면 null. */
+private fun formatFileDate(iso: String?): String? {
+    if (iso.isNullOrBlank()) return null
+    // 가장 흔한 형식: 앞 10자(yyyy-MM-dd)만 떼면 충분. 'T' 앞부분 사용.
+    val datePart = iso.substringBefore('T').trim()
+    return datePart.takeIf { Regex("""^\d{4}-\d{2}-\d{2}$""").matches(it) }
 }

@@ -28,6 +28,10 @@ import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeLoaderEntry
 import kr.co.donghyun.pinglauncher.presentation.util.forge.ForgeMetaAPI
 import kr.co.donghyun.pinglauncher.presentation.util.forge.NeoForgeMetaAPI
 import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
+import androidx.compose.foundation.Image
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import kr.co.donghyun.pinglauncher.R
 
 private val Pink     = Color(0xFFE91E8C)
 private val TextMain = Color(0xFFFCE4EC)
@@ -140,23 +144,27 @@ fun LoaderSelectDialog(
 
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 LoaderTab(
-                    label = "🌿 바닐라",
+                    label = "바닐라",
+                    iconRes = R.drawable.img_minecraft,
                     selected = choice == "vanilla",
                     modifier = Modifier.weight(1f)
                 ) { choice = "vanilla"; error = null }
                 LoaderTab(
-                    label = "🧵 Fabric",
+                    label = "Fabric",
+                    iconRes = R.drawable.img_loader_fabric,
                     selected = choice == "fabric",
                     modifier = Modifier.weight(1f)
                 ) { choice = "fabric"; error = null; loadFabric() }
                 LoaderTab(
-                    label = "🔥 Forge",
+                    label = "Forge",
+                    iconRes = R.drawable.img_anvil,
                     selected = choice == "forge",
                     modifier = Modifier.weight(1f),
                     accent = Orange
                 ) { choice = "forge"; error = null; loadForge() }
                 LoaderTab(
-                    label = "🟢 NeoForge",
+                    label = "NeoForge",
+                    iconRes = R.drawable.img_loader_neoforge,
                     selected = choice == "neoforge",
                     modifier = Modifier.weight(1f),
                     accent = Color(0xFF4CAF50)
@@ -212,18 +220,6 @@ fun LoaderSelectDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("로더 버전", color = TextSub, fontSize = if(tablet) 12.sp else 8.sp)
-//                        Row(verticalAlignment = Alignment.CenterVertically) {
-//                            Text("스냅샷 포함", color = TextSub, fontSize = if(tablet) 14.sp else 10.sp)
-//                            Spacer(modifier = Modifier.padding(start = 12.dp))
-//                            Switch(
-//                                checked = showSnapshots,
-//                                onCheckedChange = { showSnapshots = it },
-//                                colors = SwitchDefaults.colors(
-//                                    checkedTrackColor = Pink,
-//                                    uncheckedTrackColor = BgBorder
-//                                )
-//                            )
-//                        }
                     }
                     when {
                         loading -> CenterSpinner(Pink)
@@ -259,18 +255,6 @@ fun LoaderSelectDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("Forge 빌드", color = TextSub, fontSize = if(tablet) 14.sp else 10.sp)
-//                        Row(verticalAlignment = Alignment.CenterVertically) {
-//                            Text("전체 표시", color = TextSub, fontSize = if(tablet) 12.sp else 8.sp)
-//                            Spacer(modifier = Modifier.padding(start = 12.dp))
-//                            Switch(
-//                                checked = showAllForge,
-//                                onCheckedChange = { showAllForge = it },
-//                                colors = SwitchDefaults.colors(
-//                                    checkedTrackColor = Orange,
-//                                    uncheckedTrackColor = BgBorder
-//                                )
-//                            )
-//                        }
                     }
                     when {
                         loading -> CenterSpinner(Orange)
@@ -351,6 +335,7 @@ fun LoaderSelectDialog(
 @Composable
 private fun LoaderTab(
     label: String,
+    iconRes: Int,
     selected: Boolean,
     modifier: Modifier,
     accent: Color = Pink,
@@ -371,12 +356,23 @@ private fun LoaderTab(
             .padding(vertical = if(tablet) 12.dp else 8.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            label,
-            color = if (selected) Color.White else TextSub,
-            fontSize = if(tablet) 13.sp else 9.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(if (tablet) 8.dp else 4.dp)
+        ) {
+            Image(
+                painter = painterResource(iconRes),
+                contentDescription = label,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(if (tablet) 24.dp else 18.dp)
+            )
+            Text(
+                label,
+                color = if (selected) Color.White else TextSub,
+                fontSize = if(tablet) 13.sp else 9.sp,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+            )
+        }
     }
 }
 

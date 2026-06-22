@@ -46,7 +46,8 @@ data class CurseForgeFile(
     val gameVersions: List<String>,
     val fileLength: Long,
     val dependencies: List<CurseForgeDependency>,
-    val releaseType: Int = 1   // 1=Release, 2=Beta, 3=Alpha
+    val releaseType: Int = 1,  // 1=Release, 2=Beta, 3=Alpha
+    val fileDate: String? = null  // ISO8601 업로드 시각 (예: "2024-03-01T12:34:56.789Z")
 )
 data class CurseForgeFileIndex(
     val gameVersion: String,

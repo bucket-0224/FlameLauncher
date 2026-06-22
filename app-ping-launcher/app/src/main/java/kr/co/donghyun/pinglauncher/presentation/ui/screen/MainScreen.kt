@@ -24,6 +24,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -32,6 +33,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kr.co.donghyun.pinglauncher.BuildConfig
+import kr.co.donghyun.pinglauncher.R
 import kr.co.donghyun.pinglauncher.data.instance.InstanceMeta
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadPhase
 import kr.co.donghyun.pinglauncher.data.mojang.DownloadProgress
@@ -43,9 +45,9 @@ import kr.co.donghyun.pinglauncher.presentation.util.window.isTablet
 import java.net.URL
 
 enum class MainTab(val label: String) {
-    INSTALLED("📦 설치됨"),
-    RELEASE("🌿 정식 출시"),
-    ALL("📜 전체"),
+    INSTALLED("설치됨"),
+    RELEASE("정식 출시"),
+    ALL("전체"),
 }
 
 @Composable
@@ -295,7 +297,21 @@ private fun InstanceItem(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text(meta.iconEmoji, fontSize = if (tablet) 28.sp else 22.sp)
+        // 인스턴스 아이콘 — 로더 종류로 결정(저장된 iconEmoji 가 아니라 loaderType 기준이라
+        //   기존에 만들어 둔 인스턴스도 자동으로 올바른 로고가 표시됨).
+        //   해당 PNG 를 res/drawable-*/ 에 같은 이름으로 넣으면 됨.
+        val loaderIconRes = when (meta.loaderType?.lowercase()) {
+            "fabric"   -> R.drawable.img_loader_fabric
+            "forge"    -> R.drawable.img_anvil
+            "neoforge" -> R.drawable.img_loader_neoforge
+            else       -> R.drawable.img_minecraft   // 바닐라(로더 없음)
+        }
+        Image(
+            painter = painterResource(loaderIconRes),
+            contentDescription = meta.loaderType ?: "Vanilla",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.size(if (tablet) 28.dp else 22.dp),
+        )
 
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
