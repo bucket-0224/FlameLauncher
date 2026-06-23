@@ -7,7 +7,7 @@ plugins {
 }
 
 android {
-    namespace = "kr.co.donghyun.pinglauncher"
+    namespace = "kr.co.donghyun.flamelauncher"
     compileSdk = 36
     ndkVersion = "27.0.12077973"   // NDK r27 LTS (CMake 3.22.1 호환)
 
@@ -16,7 +16,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "kr.co.donghyun.pinglauncher"
+        applicationId = "kr.co.donghyun.flamelauncher"
         minSdk = 26
         targetSdk = 34
         versionCode = 1
@@ -137,7 +137,7 @@ android {
 // 위치: app/build.gradle.kts 의 android { ... } 블록 "바깥", 파일 하단에 추가.
 // ========================================================================
 
-val processorLauncherSrc = file("src/main/java/kr/co/donghyun/pinglauncher/forge/ProcessorLauncher.java")
+val processorLauncherSrc = file("src/main/java/kr/co/donghyun/flamelauncher/forge/ProcessorLauncher.java")
 val processorLauncherJar = file("src/main/assets/forge-runtime/processor-launcher.jar")
 val processorLauncherWork = layout.buildDirectory.dir("processor-launcher").get().asFile
 

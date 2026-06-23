@@ -1,0 +1,594 @@
+package kr.co.donghyun.flamelauncher.presentation.ui.components
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.util.Log
+import android.view.MotionEvent
+import android.view.View
+import kr.co.donghyun.flamelauncher.data.key.KeyButton
+import kr.co.donghyun.flamelauncher.data.key.KeyLayoutManager
+import kr.co.donghyun.flamelauncher.presentation.MinecraftActivity
+import androidx.core.content.edit
+import kr.co.donghyun.flamelauncher.presentation.util.MinecraftActivityBridge
+
+private const val GLFW_PRESS = 1
+private const val GLFW_RELEASE = 0
+
+// ────────────────────────────────────────────────────────────────────────
+// KeyboardLayoutEditorScreen 의 상수/공식과 반드시 동일하게 유지.
+// ────────────────────────────────────────────────────────────────────────
+private const val BASE_BUTTON_UNIT = 52f
+private const val TARGET_DP_PHONE = 48f
+private const val TARGET_DP_TABLET = 76f
+
+
+// 폰/가로화면용 게임패드 프리셋 (GLFW 코드 → x, y 비율)
+private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
+    87  to (0.14f to 0.7f),  // W
+    65  to (0.06f to 0.88f),  // A
+    83  to (0.14f to 0.88f),  // S
+    68  to (0.22f to 0.88f),  // D
+    256 to (0.06f to 0.10f),  // ESC
+    -6  to (0.14f to 0.10f),  // keyboard toggle
+    292 to (0.22f to 0.10f),  // F3
+    294 to (0.3f to 0.10f),  // F5
+    84  to (0.06f to 0.28f),  // T
+    47  to (0.14f to 0.28f),  // /
+    81  to (0.22f to 0.28f),  // Q
+    69  to (0.92f to 0.7f),  // E (inventory)
+    340 to (0.76f to 0.88f),  // shift = sneak
+    341 to (0.84f to 0.88f),  // ctrl  = sprint
+    32  to (0.92f to 0.88f),  // space = jump
+    -7 to (0.84f to 0.7f),
+)
+
+class GameControllerView(context: Context) : View(context) {
+    private var imeVisible: Boolean = false
+
+    // ESC 전용 모드: grab/IME 가 아닐 때(인벤토리/메뉴/타이틀) ESC 버튼만 표시·입력.
+    private var escOnlyMode: Boolean = false
+
+    fun setEscOnlyMode(enabled: Boolean) {
+        if (escOnlyMode != enabled) {
+            escOnlyMode = enabled
+            invalidate()
+        }
+    }
+
+    // ── 화면 컨트롤러 표시 토글(좌상단 🎮 버튼) ──
+    //   controllerVisible == true  → 일반 버튼들 + 🎮 토글 모두 표시
+    //   controllerVisible == false → 🎮 토글만 남기고 나머지 버튼 전부 숨김(입력도 막음)
+    //   토글 자체는 항상 그려지고 항상 눌리므로, 꺼도 다시 켤 수 있다.
+    //   기본 ON, SharedPreferences 에 저장돼 재실행에도 유지.
+    private val controllerPrefs by lazy {
+        context.getSharedPreferences("ping_controller", Context.MODE_PRIVATE)
+    }
+    private var controllerVisible: Boolean =
+        context.getSharedPreferences("ping_controller", Context.MODE_PRIVATE)
+            .getBoolean("force_show", true)
+
+    private val toggleRect = RectF()   // 🎮 토글 버튼 영역(recalcRects 에서 계산)
+
+    /** ☰ 메뉴 버튼을 탭했을 때 호출 — Activity 가 인게임 메뉴(Compose 오버레이)를 띄운다. */
+    var onMenuClick: (() -> Unit)? = null
+
+    /** 현재 컨트롤러(화면 버튼) 표시 여부 — 인게임 메뉴의 GUI 토글이 읽고 쓴다. */
+    val isControllerVisible: Boolean get() = controllerVisible
+
+    /** 인게임 메뉴에서 GUI(화면 버튼) 표시/숨김을 전환할 때 호출. */
+    fun toggleControllerVisible() {
+        setControllerVisible(!controllerVisible)
+    }
+
+    private fun setControllerVisible(visible: Boolean) {
+        if (controllerVisible == visible) return
+        controllerVisible = visible
+        controllerPrefs.edit { putBoolean("force_show", visible) }
+        // 켤 때 잔류 입력 정리(꺼져있던 동안 눌림 상태가 남지 않도록)
+        if (!visible) releaseAllPressed()
+        invalidate()
+    }
+
+    /** 현재 눌려있는 모든 버튼을 release 처리(토글 OFF 전환 시 안전 정리). */
+    private fun releaseAllPressed() {
+        if (pressedButtons.isEmpty()) return
+        pressedButtons.forEach { (id, _) ->
+            buttons.find { it.id == id }?.let { handlePress(it.glfwCode, GLFW_RELEASE) }
+        }
+        pressedButtons.clear()
+    }
+
+    private val activity = context as MinecraftActivity
+    private var buttons: List<KeyButton> = KeyLayoutManager.load(context)
+    private val buttonRects = mutableMapOf<String, RectF>()
+    private val pressedButtons = mutableMapOf<String, Int>()
+    private val forwardedPids = mutableSetOf<Int>()  // 우리가 SurfaceView 로 떠넘긴 pointer
+    private var surfaceViewCached: View? = null
+
+
+    private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(217, 26, 10, 20); style = Paint.Style.FILL
+    }
+    private val bgAccentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(217, 107, 0, 64); style = Paint.Style.FILL
+    }
+    private val bgPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(255, 156, 16, 96); style = Paint.Style.FILL
+    }
+    private val bgAccentPressedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(255, 233, 30, 140); style = Paint.Style.FILL
+    }
+    private val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(178, 122, 40, 85); style = Paint.Style.STROKE; strokeWidth = 3f
+    }
+    private val borderAccentPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(178, 255, 107, 181); style = Paint.Style.STROKE; strokeWidth = 3f
+    }
+    private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textAlign = Paint.Align.CENTER; isFakeBoldText = true
+    }
+    private val cornerRadius = 20f
+
+    private fun isTabletDevice(): Boolean =
+        resources.configuration.smallestScreenWidthDp >= 600
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        Log.d("PING_LAUNCHER", "GameControllerView 크기: ${w}x${h}")
+        recalcRects(w, h)
+    }
+
+    private fun rectsOverlap(buttons: List<KeyButton>, w: Int, h: Int, drawSize: Float): Boolean {
+        if (buttons.size < 2) return false
+        val half = drawSize / 2f
+        val rs = Array(buttons.size) { i ->
+            val cx = buttons[i].x * w
+            val cy = buttons[i].y * h
+            floatArrayOf(cx - half, cy - half, cx + half, cy + half)
+        }
+        for (i in rs.indices) {
+            for (j in i + 1 until rs.size) {
+                val a = rs[i]; val b = rs[j]
+                if (a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1]) return true
+            }
+        }
+        return false
+    }
+
+    /**
+     * GLFW 코드별 프리셋으로 매핑하여 정리. 미인식 키는 화면 중앙쪽에 가로로 배치.
+     */
+    private fun applyPresetLayout(
+        buttons: List<KeyButton>, w: Int, h: Int, drawSize: Float
+    ): List<KeyButton> {
+        if (buttons.isEmpty()) return buttons
+
+        val recognized = mutableListOf<KeyButton>()
+        val unrecognized = mutableListOf<KeyButton>()
+
+        buttons.forEach { btn ->
+            val preset = PHONE_LAYOUT_PRESETS[btn.glfwCode]
+            if (preset != null) {
+                recognized.add(btn.copy(
+                    x = preset.first, y = preset.second,
+                    width = BASE_BUTTON_UNIT, height = BASE_BUTTON_UNIT
+                ))
+            } else {
+                unrecognized.add(btn)
+            }
+        }
+
+        if (unrecognized.isEmpty() || w == 0) return recognized
+
+        val gap = drawSize * 0.3f
+        val totalW = unrecognized.size * drawSize + (unrecognized.size - 1) * gap
+        val startX = (w - totalW) / 2f
+        val extras = unrecognized.mapIndexed { i, btn ->
+            val cx = startX + i * (drawSize + gap) + drawSize / 2f
+            btn.copy(
+                x = (cx / w).coerceIn(0.05f, 0.95f),
+                y = 0.42f,
+                width = BASE_BUTTON_UNIT, height = BASE_BUTTON_UNIT
+            )
+        }
+
+        return recognized + extras
+    }
+
+    private fun surfaceView(): View? {
+        val cur = surfaceViewCached
+        if (cur != null && cur.isAttachedToWindow) return cur
+        val sv = activity.window.decorView.findViewWithTag<View>("minecraft_surface")
+        surfaceViewCached = sv
+        return sv
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        val action = event.actionMasked
+
+        // 1) 새 pointer 분류 (버튼 위인지 vs 빈 영역인지)
+        when (action) {
+            MotionEvent.ACTION_DOWN -> {
+                forwardedPids.clear()
+                classifyNewPointer(event, event.actionIndex)
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                classifyNewPointer(event, event.actionIndex)
+            }
+        }
+
+        // 2) 이번 이벤트의 pointer 들을 ours/theirs 로 나눠서 각각 다른 view 로 보냄
+        val theirEvent = filterEvent(event, keep = forwardedPids)
+        val ourPids = (0 until event.pointerCount)
+            .map { event.getPointerId(it) }
+            .filter { it !in forwardedPids }
+            .toSet()
+        val ourEvent = filterEvent(event, keep = ourPids)
+
+        if (ourEvent != null) {
+            super.dispatchTouchEvent(ourEvent)   // → 우리 onTouchEvent
+            ourEvent.recycle()
+        }
+        if (theirEvent != null) {
+            surfaceView()?.dispatchTouchEvent(theirEvent)  // → SurfaceView 의 setOnTouchListener
+            theirEvent.recycle()
+        }
+
+        // 3) pointer 끝나면 cleanup
+        when (action) {
+            MotionEvent.ACTION_POINTER_UP ->
+                forwardedPids.remove(event.getPointerId(event.actionIndex))
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL ->
+                forwardedPids.clear()
+        }
+        return true
+    }
+
+    private fun classifyNewPointer(event: MotionEvent, index: Int) {
+        val pid = event.getPointerId(index)
+        val px = event.getX(index)
+        val py = event.getY(index)
+        // 🎮 토글 영역 또는 일반 버튼 위면 우리가 처리(keep), 아니면 surface 로 forward.
+        val onUs = toggleRect.contains(px, py) || findButton(px, py) != null
+        if (!onUs) {
+            forwardedPids.add(pid)
+        } else {
+            // 이 포인터가 버튼/토글을 잡았다.
+            //   단, 이미 surface 로 forward 중인 포인터(카메라 드래그용 손가락)가 있으면
+            //   그건 정당한 멀티터치(이동+시점)이므로 건드리지 않는다.
+            //   forward 중인 게 없을 때만(단일 탭으로 버튼을 누른 상황) surface 의
+            //   잔류 드래그를 CANCEL 해 동시 입력/획 돎을 막는다.
+            if (forwardedPids.isEmpty()) cancelSurfaceTouch()
+        }
+    }
+
+    /** SurfaceView 로 ACTION_CANCEL 1회 전송 — 진행 중 드래그 강제 종료. */
+    private fun cancelSurfaceTouch() {
+        val sv = surfaceView() ?: return
+        val now = android.os.SystemClock.uptimeMillis()
+        val cancel = MotionEvent.obtain(now, now, MotionEvent.ACTION_CANCEL, 0f, 0f, 0)
+        try { sv.dispatchTouchEvent(cancel) } catch (_: Exception) {}
+        cancel.recycle()
+    }
+
+    /**
+     * source 에서 keep 에 들어있는 pointer 만 남긴 새 MotionEvent 생성.
+     * action 도 적절히 변환:
+     *  - 액션 대상 pointer 가 keep 에 없으면 ACTION_MOVE 로 다운그레이드
+     *  - keep 에 1개만 남으면 ACTION_POINTER_DOWN/UP → ACTION_DOWN/UP 으로 정규화
+     */
+    private fun filterEvent(source: MotionEvent, keep: Set<Int>): MotionEvent? {
+        if (keep.isEmpty()) return null
+        val keepIndices = (0 until source.pointerCount)
+            .filter { source.getPointerId(it) in keep }
+        if (keepIndices.isEmpty()) return null
+
+        val sourceAction = source.actionMasked
+        val sourceActionIdx = source.actionIndex
+        val sourceActionPid = source.getPointerId(sourceActionIdx)
+
+        val isDown = sourceAction == MotionEvent.ACTION_DOWN
+                || sourceAction == MotionEvent.ACTION_POINTER_DOWN
+        val isUp = sourceAction == MotionEvent.ACTION_UP
+                || sourceAction == MotionEvent.ACTION_POINTER_UP
+
+        val newAction: Int
+        val newActionIdx: Int
+
+        when {
+            (isDown || isUp) && sourceActionPid !in keep -> {
+                // 이번 액션의 주인공이 우리가 keep 하는 pointer 가 아님 → 그냥 MOVE
+                newAction = MotionEvent.ACTION_MOVE
+                newActionIdx = 0
+            }
+            isDown -> {
+                val mapped = keepIndices.indexOf(sourceActionIdx)
+                newAction =
+                    if (keepIndices.size == 1) MotionEvent.ACTION_DOWN
+                    else MotionEvent.ACTION_POINTER_DOWN
+                newActionIdx = mapped
+            }
+            isUp -> {
+                val mapped = keepIndices.indexOf(sourceActionIdx)
+                newAction =
+                    if (keepIndices.size == 1) MotionEvent.ACTION_UP
+                    else MotionEvent.ACTION_POINTER_UP
+                newActionIdx = mapped
+            }
+            else -> {
+                newAction = sourceAction
+                newActionIdx = 0
+            }
+        }
+
+        val combinedAction = newAction or
+                (newActionIdx shl MotionEvent.ACTION_POINTER_INDEX_SHIFT)
+
+        val props = Array(keepIndices.size) { MotionEvent.PointerProperties() }
+        val coords = Array(keepIndices.size) { MotionEvent.PointerCoords() }
+        keepIndices.forEachIndexed { newI, origI ->
+            source.getPointerProperties(origI, props[newI])
+            source.getPointerCoords(origI, coords[newI])
+        }
+
+        return MotionEvent.obtain(
+            source.downTime,
+            source.eventTime,
+            combinedAction,
+            keepIndices.size,
+            props,
+            coords,
+            source.metaState,
+            source.buttonState,
+            source.xPrecision,
+            source.yPrecision,
+            source.deviceId,
+            source.edgeFlags,
+            source.source,
+            source.flags
+        )
+    }
+
+    /**
+     * density 기반 통합 스케일링 + 겹침 시 프리셋 레이아웃으로 자동 정리.
+     */
+    private fun recalcRects(w: Int, h: Int) {
+        buttonRects.clear()
+
+        val density = resources.displayMetrics.density
+        val tablet = isTabletDevice()
+        val targetDp = if (tablet) TARGET_DP_TABLET else TARGET_DP_PHONE
+        val baseScale = (targetDp * density) / BASE_BUTTON_UNIT
+        val drawSize = BASE_BUTTON_UNIT * baseScale
+
+        // 겹침 발견 시 프리셋 적용 + 저장
+        if (rectsOverlap(buttons, w, h, drawSize)) {
+            Log.d("PING_LAUNCHER", "버튼 겹침 감지 — 프리셋 레이아웃으로 자동 정리")
+            buttons = applyPresetLayout(buttons, w, h, drawSize)
+            try { KeyLayoutManager.save(context, buttons) } catch (_: Exception) {}
+        }
+
+        buttons.forEach { button ->
+            val centerX = button.x * w
+            val centerY = button.y * h
+            val left = centerX - (drawSize / 2f)
+            val top = centerY - (drawSize / 2f)
+            buttonRects[button.id] = RectF(left, top, left + drawSize, top + drawSize)
+        }
+
+        // ☰ 인게임 메뉴 버튼 — 화면 왼쪽 가장자리에 배치(기존엔 오른쪽이었음).
+        //   ESC center 는 프리셋상 (0.06w, 0.10h). 왼쪽 가장자리 여백(startMargin)은 ESC 와 동일하게,
+        //   세로는 ESC 바로 아래(겹치지 않도록 한 칸 + 약간의 간격)에 둔다.
+        val escPreset = PHONE_LAYOUT_PRESETS[256] ?: (0.06f to 0.10f)
+        val escCenterX = escPreset.first * w
+        val escCenterY = escPreset.second * h
+        val startMargin = escCenterX - (drawSize / 2f)      // 좌측 끝 ~ ESC 왼쪽 변
+        val toggleLeft = w - startMargin - drawSize          // endMargin = startMargin
+        val toggleTop = escCenterY - (drawSize / 2f)         // ESC 와 같은 y(중심 높이)       // ESC 아래로 한 칸 + 간격
+        toggleRect.set(toggleLeft, toggleTop, toggleLeft + drawSize, toggleTop + drawSize)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        // controllerVisible == false 면 일반 버튼은 그리지 않고 🎮 토글만 표시.
+        if (controllerVisible) {
+            buttons.forEach { button ->
+                // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 그린다(나머지 숨김).
+                if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
+                val rect = buttonRects[button.id] ?: return@forEach
+                val isPressed = pressedButtons.containsKey(button.id)
+
+                // ★ 전투 토글 버튼은 모드 상태에 따라 활성/비활성 표시
+                val isCombatToggleActive = (button.glfwCode == -7 && activity.combatMode)
+
+                val fill = when {
+                    isCombatToggleActive -> bgAccentPressedPaint   // 활성 = 진한 핑크
+                    isPressed && button.isAccent -> bgAccentPressedPaint
+                    isPressed -> bgPressedPaint
+                    button.isAccent -> bgAccentPaint
+                    else -> bgPaint
+                }
+                val border = if (button.isAccent || isCombatToggleActive) borderAccentPaint else borderPaint
+
+                canvas.drawRoundRect(rect, cornerRadius, cornerRadius, fill)
+                canvas.drawRoundRect(rect, cornerRadius, cornerRadius, border)
+
+                // 라벨도 모드에 따라 바꾸기
+                val labelText = when {
+                    button.glfwCode == -7 -> if (activity.combatMode) "⚔️" else "🛠️"
+                    else -> button.label
+                }
+
+                val fontSize = minOf(rect.width(), rect.height()) * 0.23f
+                textPaint.textSize = fontSize
+                canvas.drawText(
+                    labelText,
+                    rect.centerX(),
+                    rect.centerY() + fontSize * 0.35f,
+                    textPaint
+                )
+            }
+        }
+
+        // ── 🎮 컨트롤러 표시 토글 — 항상 그린다(꺼져 있어도 다시 켤 수 있도록) ──
+        drawToggleButton(canvas)
+    }
+
+    /** 좌측 ☰ 인게임 메뉴 버튼 그리기. */
+    private fun drawToggleButton(canvas: Canvas) {
+        canvas.drawRoundRect(toggleRect, cornerRadius, cornerRadius, bgPaint)
+        canvas.drawRoundRect(toggleRect, cornerRadius, cornerRadius, borderPaint)
+
+        val fontSize = minOf(toggleRect.width(), toggleRect.height()) * 0.4f
+        textPaint.textSize = fontSize
+        canvas.drawText(
+            "⚙️",
+            toggleRect.centerX(),
+            toggleRect.centerY() + fontSize * 0.35f,
+            textPaint
+        )
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val pointerIndex = event.actionIndex
+        val pointerId = event.getPointerId(pointerIndex)
+        val x = event.getX(pointerIndex)
+        val y = event.getY(pointerIndex)
+
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
+                // ☰ 메뉴 버튼 먼저 처리 — 인게임 메뉴(Compose 오버레이)를 띄운다. 항상 최우선.
+                if (toggleRect.contains(x, y)) {
+                    onMenuClick?.invoke()
+                    return true
+                }
+                val button = findButton(x, y) ?: return false
+                pressedButtons[button.id] = pointerId
+                handlePress(button.glfwCode, GLFW_PRESS)
+                invalidate()
+                return true
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                val buttonId = pressedButtons.entries.find { it.value == pointerId }?.key
+                if (buttonId != null) {
+                    val button = buttons.find { it.id == buttonId }
+                    pressedButtons.remove(buttonId)
+                    if (button != null) handlePress(button.glfwCode, GLFW_RELEASE)
+                    invalidate()
+                    return true
+                }
+                return false
+            }
+            MotionEvent.ACTION_MOVE -> {
+                var changed = false
+                for (i in 0 until event.pointerCount) {
+                    val pid = event.getPointerId(i)
+                    val px = event.getX(i)
+                    val py = event.getY(i)
+
+                    // 이 포인터가 지금 잡고 있는 버튼 (없을 수도)
+                    val currentButtonId = pressedButtons.entries.find { it.value == pid }?.key
+                    val newButton = findButton(px, py)
+                    val newButtonId = newButton?.id
+
+                    // 같은 버튼이면 변화 없음
+                    if (currentButtonId == newButtonId) continue
+
+                    // 1) 기존 버튼이 있었다면 release
+                    if (currentButtonId != null) {
+                        val oldButton = buttons.find { it.id == currentButtonId }
+                        pressedButtons.remove(currentButtonId)
+                        if (oldButton != null) handlePress(oldButton.glfwCode, GLFW_RELEASE)
+                        changed = true
+                    }
+
+                    // 2) 새 버튼이 swipe 대상이고, 다른 손가락이 이미 잡고 있지 않다면 press
+                    if (newButton != null
+                        && newButton.isSwipeable()
+                        && !pressedButtons.containsKey(newButton.id)
+                    ) {
+                        pressedButtons[newButton.id] = pid
+                        handlePress(newButton.glfwCode, GLFW_PRESS)
+                        changed = true
+                    }
+                }
+                if (changed) invalidate()
+                return pressedButtons.isNotEmpty()
+            }
+        }
+        return false
+    }
+
+    private fun KeyButton.isSwipeable(): Boolean =
+        glfwCode >= 0 || glfwCode in -3..-1
+
+    private fun findButton(x: Float, y: Float): KeyButton? {
+        // 컨트롤러가 꺼져 있으면 일반 버튼은 입력받지 않는다(🎮 토글만 별도 처리).
+        if (!controllerVisible) return null
+        buttons.forEach { button ->
+            // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 입력 받는다.
+            if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
+            val rect = buttonRects[button.id] ?: return@forEach
+            if (rect.contains(x, y)) return button
+        }
+        return null
+    }
+
+    private fun handlePress(glfwCode: Int, action: Int) {
+        when {
+            glfwCode >= 0 -> activity.sendKey(glfwCode, action)
+            glfwCode == -1 -> activity.sendMouseButton(0, action)
+            glfwCode == -2 -> activity.sendMouseButton(1, action)
+            glfwCode == -3 -> activity.sendMouseButton(2, action)
+            // glfwCode == -6 분기 전체 교체
+            glfwCode == -6 && action == GLFW_PRESS -> {
+                val imm = context.getSystemService(Context.INPUT_METHOD_SERVICE)
+                        as android.view.inputmethod.InputMethodManager
+                val surfaceView = activity.window.decorView
+                    .findViewWithTag<android.view.View>("minecraft_surface") ?: return
+
+                // 매번 포커스 다시 잡기 — 한 번 잃으면 showSoftInput 이 무시됨
+                surfaceView.isFocusable = true
+                surfaceView.isFocusableInTouchMode = true
+                surfaceView.requestFocus()
+
+                if (imeVisible) {
+                    imm.hideSoftInputFromWindow(surfaceView.windowToken, 0)
+                    imeVisible = false
+                } else {
+                    // SHOW_IMPLICIT 말고 0 — 사용자가 명시적으로 누른 거니까 강제로
+                    surfaceView.post {
+                        imm.showSoftInput(surfaceView, 0)
+                    }
+                    imeVisible = true
+                }
+            }
+            glfwCode == -7 && action == GLFW_PRESS -> {
+                activity.combatMode = !activity.combatMode
+                Log.d("PING_LAUNCHER", "전투 모드: ${if (activity.combatMode) "ON" else "OFF"}")
+                invalidate()  // 버튼 색상 갱신용
+            }
+        }
+    }
+
+    fun setImeVisibleExternal(visible: Boolean) {
+        if (imeVisible != visible) {
+            imeVisible = visible
+        }
+    }
+
+    override fun setVisibility(visibility: Int) {
+        super.setVisibility(visibility)
+    }
+
+    private val hotbarKey: String
+        get() = "hotbar_slot_${MinecraftActivityBridge.currentWorldName}"
+
+    private var currentHotbarSlot: Int
+        get() = activity.getSharedPreferences("ping_launcher", Context.MODE_PRIVATE).getInt(hotbarKey, 0)
+        set(value) {
+            activity.getSharedPreferences("ping_launcher", Context.MODE_PRIVATE).edit { putInt(hotbarKey, value) }
+        }
+}
