@@ -2,3 +2,4 @@ app-ping-launcher/app/release/output-metadata.json
 app-ping-launcher/app/release/baselineProfiles/0/app-release.dm
 app-ping-launcher/app/release/baselineProfiles/1/app-release.dm
 keystore/key.keystore
+.DS_Store
