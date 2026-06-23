@@ -139,7 +139,7 @@ class ForgeInstaller(
                 )
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "installer 파싱 실패", e)
+            Log.e("FLAME_LAUNCHER", "installer 파싱 실패", e)
             return ForgeInstallResult(success = false, error = "installer 파싱: ${e.message}")
         }
 
@@ -170,7 +170,7 @@ class ForgeInstaller(
             downloadLibrary(lib, librariesDir)   // 반환값 무시 = jarList 에 안 더함
         }
 
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "📦 Forge classpath = ${jarList.size}개 (processor-only=${profile.processorLibs.size}개는 디스크만)")
 
         // ── 5) legacy forge 면 universal jar 직접 다운로드 후 classpath 앞쪽에 ──
@@ -196,10 +196,10 @@ class ForgeInstaller(
                 )
                 val launcherJar = copyProcessorLauncherJar(context = context, librariesDir = librariesDir)
                 jarList.add(0, launcherJar.absolutePath)   // classpath 맨 앞
-                effectiveMainClass = "kr.co.donghyun.pinglauncher.forge.ProcessorLauncher"
-                Log.i("PING_LAUNCHER", "✅ Forge processors 메타 준비 완료")
+                effectiveMainClass = "kr.co.donghyun.flamelauncher.forge.ProcessorLauncher"
+                Log.i("FLAME_LAUNCHER", "✅ Forge processors 메타 준비 완료")
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "Processor 메타 준비 실패", e)
+                Log.e("FLAME_LAUNCHER", "Processor 메타 준비 실패", e)
                 return ForgeInstallResult(success = false,
                     error = "Processor 메타 준비 실패: ${e.message}")
             }
@@ -263,7 +263,7 @@ class ForgeInstaller(
                     }
             }
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "bundled maven 추출 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "bundled maven 추출 실패: ${e.message}")
         }
     }
 
@@ -286,13 +286,13 @@ class ForgeInstaller(
                     .asJsonObject
             }
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "🗺 install_profile.json 재파싱 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "🗺 install_profile.json 재파싱 실패: ${e.message}")
             return
         }
 
         val data = ipObj["data"]?.asJsonObject ?: return
         val mojmapsRaw = data["MOJMAPS"]?.asJsonObject?.get("client")?.asString ?: run {
-            Log.d("PING_LAUNCHER", "🗺 MOJMAPS data 항목 없음")
+            Log.d("FLAME_LAUNCHER", "🗺 MOJMAPS data 항목 없음")
             return
         }
         // ★ install_profile 의 expected SHA — 작은따옴표/큰따옴표 둘 다 제거
@@ -301,7 +301,7 @@ class ForgeInstaller(
             ?.trim('\'', '"')
 
         if (!mojmapsRaw.startsWith("[") || !mojmapsRaw.endsWith("]")) {
-            Log.w("PING_LAUNCHER", "🗺 MOJMAPS 좌표 형식 이상: $mojmapsRaw")
+            Log.w("FLAME_LAUNCHER", "🗺 MOJMAPS 좌표 형식 이상: $mojmapsRaw")
             return
         }
         val coord = mojmapsRaw.substring(1, mojmapsRaw.length - 1)
@@ -313,14 +313,14 @@ class ForgeInstaller(
                 .fetchVersionList()
                 .firstOrNull { it.id == mcVersion }
         } catch (_: Exception) { null } ?: run {
-            Log.w("PING_LAUNCHER", "🗺 version manifest 에서 $mcVersion 못 찾음"); return
+            Log.w("FLAME_LAUNCHER", "🗺 version manifest 에서 $mcVersion 못 찾음"); return
         }
 
         val versionJson = try {
             client.newCall(Request.Builder().url(versionEntry.url).build())
                 .execute().use { it.body?.string() }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "🗺 version.json 실패: ${e.message}"); return
+            Log.e("FLAME_LAUNCHER", "🗺 version.json 실패: ${e.message}"); return
         } ?: return
 
         val cm = try {
@@ -329,20 +329,20 @@ class ForgeInstaller(
         } catch (_: Exception) { null }
 
         if (cm == null) {
-            Log.w("PING_LAUNCHER", "🗺 client_mappings 없음 (구버전?)")
+            Log.w("FLAME_LAUNCHER", "🗺 client_mappings 없음 (구버전?)")
             return
         }
         val url = cm["url"]?.asString ?: return
         val mojangSha = cm["sha1"]?.asString
         val mojangSize = cm["size"]?.asLong ?: -1L
 
-        Log.i("PING_LAUNCHER",
+        Log.i("FLAME_LAUNCHER",
             "🗺 MOJMAPS expected SHA — install_profile=$installProfileExpectedSha  " +
                     "mojang_version_json=$mojangSha")
 
         if (installProfileExpectedSha != null && mojangSha != null
             && !installProfileExpectedSha.equals(mojangSha, ignoreCase = true)) {
-            Log.w("PING_LAUNCHER",
+            Log.w("FLAME_LAUNCHER",
                 "🗺 ⚠️ install_profile 의 MOJMAPS_SHA 가 Mojang 현재 client_mappings 와 다름. " +
                         "Forge installer 가 stale 한 SHA 를 박아둔 상황 — Mojang 측이 mappings 재배포한 듯.")
             // 이 경우 Mojang 의 현재 SHA 를 우선 신뢰. ProcessorLauncher 의 outputsValid 는
@@ -352,23 +352,23 @@ class ForgeInstaller(
         // 이미 받아져 있으면 SHA 비교
         if (target.exists() && target.length() > 0) {
             val current = sha1Hex(target)
-            Log.i("PING_LAUNCHER",
+            Log.i("FLAME_LAUNCHER",
                 "🗺 현재 디스크 mojmaps: size=${target.length()} (expected=$mojangSize) sha=$current")
             val matchesInstallProfile = installProfileExpectedSha?.equals(current, ignoreCase = true) == true
             val matchesMojang = mojangSha?.equals(current, ignoreCase = true) == true
             if (matchesInstallProfile || matchesMojang) {
-                Log.i("PING_LAUNCHER", "🗺 ✅ mojmaps OK — pre-download skip")
+                Log.i("FLAME_LAUNCHER", "🗺 ✅ mojmaps OK — pre-download skip")
                 return
             }
-            Log.w("PING_LAUNCHER", "🗺 mojmaps SHA 양쪽 모두 불일치 → 재다운로드")
+            Log.w("FLAME_LAUNCHER", "🗺 mojmaps SHA 양쪽 모두 불일치 → 재다운로드")
         }
 
-        Log.i("PING_LAUNCHER", "🗺 mojmaps pre-download: $url → ${target.absolutePath}")
+        Log.i("FLAME_LAUNCHER", "🗺 mojmaps pre-download: $url → ${target.absolutePath}")
         target.parentFile?.mkdirs()
         try {
             client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    Log.e("PING_LAUNCHER", "🗺 HTTP ${resp.code}"); return
+                    Log.e("FLAME_LAUNCHER", "🗺 HTTP ${resp.code}"); return
                 }
                 resp.body?.byteStream()?.use { input ->
                     FileOutputStream(target).use { input.copyTo(it) }
@@ -376,15 +376,15 @@ class ForgeInstaller(
             }
             val actual = sha1Hex(target)
             val actualSize = target.length()
-            Log.i("PING_LAUNCHER",
+            Log.i("FLAME_LAUNCHER",
                 "🗺 다운로드 완료: size=$actualSize sha=$actual")
 
             when {
                 mojangSha?.equals(actual, ignoreCase = true) == true -> {
-                    Log.i("PING_LAUNCHER", "🗺 ✅ Mojang version.json SHA 와 일치")
+                    Log.i("FLAME_LAUNCHER", "🗺 ✅ Mojang version.json SHA 와 일치")
                     if (installProfileExpectedSha != null
                         && !installProfileExpectedSha.equals(actual, ignoreCase = true)) {
-                        Log.w("PING_LAUNCHER",
+                        Log.w("FLAME_LAUNCHER",
                             "🗺 ⚠️ 하지만 install_profile.json 의 MOJMAPS_SHA 와는 불일치. " +
                                     "ProcessorLauncher.outputsValid() 가 fail 처리할 것 — " +
                                     "이건 Forge installer 의 stale SHA 문제로, " +
@@ -392,15 +392,15 @@ class ForgeInstaller(
                     }
                 }
                 installProfileExpectedSha?.equals(actual, ignoreCase = true) == true -> {
-                    Log.i("PING_LAUNCHER", "🗺 ✅ install_profile SHA 일치")
+                    Log.i("FLAME_LAUNCHER", "🗺 ✅ install_profile SHA 일치")
                 }
                 else -> {
-                    Log.e("PING_LAUNCHER",
+                    Log.e("FLAME_LAUNCHER",
                         "🗺 ❌ 양쪽 SHA 모두 불일치 — 네트워크 손상 또는 redirect 문제")
                 }
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "🗺 OkHttp 다운로드 예외: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "🗺 OkHttp 다운로드 예외: ${e.message}", e)
         }
     }
 
@@ -447,7 +447,7 @@ class ForgeInstaller(
                 }
             } catch (_: Exception) {}
         }
-        Log.w("PING_LAUNCHER", "라이브러리 다운로드 실패: ${lib.name}")
+        Log.w("FLAME_LAUNCHER", "라이브러리 다운로드 실패: ${lib.name}")
         return null
     }
 
@@ -483,7 +483,7 @@ class ForgeInstaller(
                 }
             } catch (_: Exception) {}
         }
-        Log.w("PING_LAUNCHER", "Forge universal jar 다운로드 실패: $fullVersion")
+        Log.w("FLAME_LAUNCHER", "Forge universal jar 다운로드 실패: $fullVersion")
         return null
     }
 
@@ -521,7 +521,7 @@ class ForgeInstaller(
 
     /** assets/forge-runtime/processor-launcher.jar → instance/libraries/...  복사 */
     private fun copyProcessorLauncherJar(context : Context, librariesDir: File): File {
-        val dest = File(librariesDir, "kr/co/donghyun/pinglauncher/processor-launcher/1.0/processor-launcher-1.0.jar")
+        val dest = File(librariesDir, "kr/co/donghyun/flamelauncher/processor-launcher/1.0/processor-launcher-1.0.jar")
         dest.parentFile?.mkdirs()
         if (!dest.exists() || dest.length() == 0L) {
             context.assets.open("forge-runtime/processor-launcher.jar").use { input ->

@@ -45,7 +45,7 @@ class MrpackInstaller(
         // 캐시 — 기존 인스턴스 메타 있으면 재사용 (CurseForge 쪽과 동일 동작)
         val existingMeta = InstanceManager.loadMeta(gameDir)
         if (existingMeta != null && existingMeta.loaderType != null) {
-            Log.d("PING_LAUNCHER", "✅ 메타 캐시 발견(.mrpack): $displayName")
+            Log.d("FLAME_LAUNCHER", "✅ 메타 캐시 발견(.mrpack): $displayName")
             return ModPackInstallResult(
                 success = true,
                 mcVersion = existingMeta.mcVersion,
@@ -76,7 +76,7 @@ class MrpackInstaller(
 
         val (loaderType, loaderVersion) = resolveLoader(index.dependencies)
 
-        Log.d("PING_LAUNCHER", "📦 .mrpack ${index.name} v${index.versionId}, MC=$mcVersion, loader=$loaderType $loaderVersion")
+        Log.d("FLAME_LAUNCHER", "📦 .mrpack ${index.name} v${index.versionId}, MC=$mcVersion, loader=$loaderType $loaderVersion")
 
         // 3) overrides 추출 (overrides/, client-overrides/ 둘 다)
         onProgress(DownloadProgress(phase = DownloadPhase.DOWNLOADING_LIBRARIES, fileName = "파일 추출 중..."))
@@ -100,12 +100,12 @@ class MrpackInstaller(
             try {
                 if (!dest.exists() || dest.length() == 0L) downloadFile(url, dest)
             } catch (e: Exception) {
-                Log.w("PING_LAUNCHER", "mrpack 파일 다운로드 실패: ${f.path} (${e.message})")
+                Log.w("FLAME_LAUNCHER", "mrpack 파일 다운로드 실패: ${f.path} (${e.message})")
             }
         }
 
         mrpackZip.delete()
-        Log.d("PING_LAUNCHER", "✅ .mrpack 설치 완료: $displayName, MC $mcVersion, $loaderType $loaderVersion")
+        Log.d("FLAME_LAUNCHER", "✅ .mrpack 설치 완료: $displayName, MC $mcVersion, $loaderType $loaderVersion")
 
         return ModPackInstallResult(
             success = true,
@@ -125,7 +125,7 @@ class MrpackInstaller(
     /**
      * .mrpack dependencies 맵 → (loaderType, loaderVersion)
      *   키: minecraft / forge / neoforge / fabric-loader / quilt-loader
-     *   PingLauncher 의 loaderType 표기(fabric/forge/neoforge)에 맞춘다. quilt 는 미지원→null.
+     *   FlameLauncher 의 loaderType 표기(fabric/forge/neoforge)에 맞춘다. quilt 는 미지원→null.
      */
     private fun resolveLoader(deps: Map<String, String>): Pair<String?, String?> {
         deps["fabric-loader"]?.let { return "fabric" to it }
@@ -139,14 +139,14 @@ class MrpackInstaller(
         return try {
             ZipFile(zipFile).use { zip ->
                 val entry = zip.getEntry("modrinth.index.json") ?: run {
-                    Log.e("PING_LAUNCHER", "modrinth.index.json 없음")
+                    Log.e("FLAME_LAUNCHER", "modrinth.index.json 없음")
                     return null
                 }
                 val json = zip.getInputStream(entry).bufferedReader().readText()
                 gson.fromJson(json, MrpackIndex::class.java)
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "modrinth.index.json 파싱 실패: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "modrinth.index.json 파싱 실패: ${e.message}")
             null
         }
     }
@@ -167,7 +167,7 @@ class MrpackInstaller(
                     }
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "overrides 추출 실패($overridesFolder): ${e.message}")
+            Log.e("FLAME_LAUNCHER", "overrides 추출 실패($overridesFolder): ${e.message}")
         }
     }
 
@@ -176,7 +176,7 @@ class MrpackInstaller(
         destFile.parentFile?.mkdirs()
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "donghyun/PingLauncher/1.0 (kr.co.donghyun.pinglauncher)")
+            .header("User-Agent", "donghyun/FlameLauncher/1.0 (kr.co.donghyun.pinglauncher)")
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw Exception("다운로드 실패: $url (${response.code})")

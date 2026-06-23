@@ -12,13 +12,13 @@ class PrepareNatives {
             val nativesDir = File(applicationContext.filesDir, "natives")
             if (nativesDir.exists()) nativesDir.deleteRecursively()
             val mkdirResult = nativesDir.mkdirs()
-            Log.d("PING_LAUNCHER", "natives mkdirs: $mkdirResult, exists=${nativesDir.exists()}")
+            Log.d("FLAME_LAUNCHER", "natives mkdirs: $mkdirResult, exists=${nativesDir.exists()}")
 
 
             val apkLibDir = File(applicationInfo.nativeLibraryDir)
-            Log.d("PING_LAUNCHER", "apkLibDir: ${apkLibDir.absolutePath}, exists=${apkLibDir.exists()}")
+            Log.d("FLAME_LAUNCHER", "apkLibDir: ${apkLibDir.absolutePath}, exists=${apkLibDir.exists()}")
             val files = apkLibDir.listFiles()
-            Log.d("PING_LAUNCHER", "apkLibDir files: ${files?.size}")
+            Log.d("FLAME_LAUNCHER", "apkLibDir files: ${files?.size}")
             files?.forEach { soFile ->
                 soFile.copyTo(File(nativesDir, soFile.name), overwrite = true)
                 File(nativesDir, soFile.name).setExecutable(true, false)

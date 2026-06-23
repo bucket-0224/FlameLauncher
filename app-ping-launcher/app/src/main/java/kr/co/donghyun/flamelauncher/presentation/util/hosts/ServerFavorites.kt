@@ -41,7 +41,7 @@ object ServerFavorites {
             val type = object : TypeToken<List<Favorite>>() {}.type
             gson.fromJson<List<Favorite>>(f.readText(), type) ?: emptyList()
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "즐겨찾기 로드 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "즐겨찾기 로드 실패: ${e.message}")
             emptyList()
         }
     }
@@ -50,7 +50,7 @@ object ServerFavorites {
         try {
             favFile(context, instanceId).writeText(gson.toJson(favs))
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "즐겨찾기 저장 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "즐겨찾기 저장 실패: ${e.message}")
         }
     }
 
@@ -76,7 +76,7 @@ object ServerFavorites {
             ServersDat.upsert(datFile, ServersDat.ServerEntry(name = cleanName, ip = cleanAddr))
             true
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "servers.dat 주입 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "servers.dat 주입 실패: ${e.message}")
             false
         }
     }
@@ -92,7 +92,7 @@ object ServerFavorites {
             val datFile = ServersDat.serversDatFile(instanceDir, isLegacyVersion(mcVersion))
             ServersDat.removeByIp(datFile, address)
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "servers.dat 제거 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "servers.dat 제거 실패: ${e.message}")
         }
     }
 
@@ -109,9 +109,9 @@ object ServerFavorites {
             favs.forEach { fav ->
                 ServersDat.upsert(datFile, ServersDat.ServerEntry(name = fav.name, ip = fav.address))
             }
-            Log.d("PING_LAUNCHER", "즐겨찾기 ${favs.size}개를 servers.dat 에 동기화")
+            Log.d("FLAME_LAUNCHER", "즐겨찾기 ${favs.size}개를 servers.dat 에 동기화")
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "servers.dat 동기화 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "servers.dat 동기화 실패: ${e.message}")
         }
     }
 }

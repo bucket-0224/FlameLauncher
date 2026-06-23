@@ -1,11 +1,11 @@
 /*
- * Terracotta VpnService — ported for PingLauncher.
+ * Terracotta VpnService — ported for FlameLauncher.
  *
  * Original: ZalithLauncher2 (GPL-3.0), modified from FoldCraftLauncher.
  *   https://github.com/FCL-Team/FoldCraftLauncher/blob/5926006/FCL/src/main/java/com/tungsten/fcl/terracotta/TerracottaVPNService.java
  *
- * 수정(PingLauncher 이식):
- *  - 패키지: kr.co.donghyun.pinglauncher.presentation.util.terracota (실제 디렉터리 기준)
+ * 수정(FlameLauncher 이식):
+ *  - 패키지: kr.co.donghyun.flamelauncher.presentation.util.terracota (실제 디렉터리 기준)
  *  - TerracottaAndroidAPI 는 kr.co.donghyun.terracota 에 있어 import
  *  - Terracotta / TerracottaState 는 같은 패키지라 import 불필요
  *  - Terracotta.setWaiting() 인자 제거 (이식본 시그니처)

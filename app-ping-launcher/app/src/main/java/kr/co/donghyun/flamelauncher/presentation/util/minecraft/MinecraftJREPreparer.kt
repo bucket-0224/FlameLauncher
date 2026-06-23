@@ -8,7 +8,7 @@ import java.util.zip.ZipInputStream
 
 class MinecraftJREPreparer {
     companion object {
-        private const val TAG = "PING_LAUNCHER"
+        private const val TAG = "FLAME_LAUNCHER"
 
         /**
          * MC 버전 → 필요한 Java major

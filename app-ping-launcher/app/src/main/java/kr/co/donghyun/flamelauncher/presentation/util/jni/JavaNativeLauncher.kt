@@ -3,7 +3,7 @@ package kr.co.donghyun.flamelauncher.presentation.util.jni
 class JavaNativeLauncher {
     companion object {
         init {
-            System.loadLibrary("pingjvm")
+            System.loadLibrary("flamejvm")
         }
         @JvmStatic external fun preloadAwtStubs(nativeLibDir: String)
     }

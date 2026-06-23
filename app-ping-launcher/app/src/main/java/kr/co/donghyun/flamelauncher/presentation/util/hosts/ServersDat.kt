@@ -59,7 +59,7 @@ object ServersDat {
                 parseServersFromCompound(input)
             }
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "servers.dat 읽기 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "servers.dat 읽기 실패: ${e.message}")
             emptyList()
         }
     }
@@ -228,7 +228,7 @@ object ServersDat {
             current.add(entry)
         }
         write(file, current)
-        Log.d("PING_LAUNCHER", "servers.dat 갱신: ${entry.name} (${entry.ip}) → 총 ${current.size}개")
+        Log.d("FLAME_LAUNCHER", "servers.dat 갱신: ${entry.name} (${entry.ip}) → 총 ${current.size}개")
     }
 
     /** ip 로 서버 항목 제거. */
@@ -237,7 +237,7 @@ object ServersDat {
         val removed = current.removeAll { it.ip.equals(ip, ignoreCase = true) }
         if (removed) {
             write(file, current)
-            Log.d("PING_LAUNCHER", "servers.dat 에서 제거: $ip")
+            Log.d("FLAME_LAUNCHER", "servers.dat 에서 제거: $ip")
         }
     }
 }

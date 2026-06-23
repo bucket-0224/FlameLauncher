@@ -80,7 +80,7 @@ fun MinecraftSurface(
                 }
 
                 setOnTouchListener { _, event ->
-                    Log.d("PING_LAUNCHER", "Surface 터치: ${event.action}, isGrabbing=${activity.isGrabbing}, combat=${activity.combatMode}")
+                    Log.d("FLAME_LAUNCHER", "Surface 터치: ${event.action}, isGrabbing=${activity.isGrabbing}, combat=${activity.combatMode}")
                     try {
                         when (event.action and MotionEvent.ACTION_MASK) {
                             MotionEvent.ACTION_DOWN -> {

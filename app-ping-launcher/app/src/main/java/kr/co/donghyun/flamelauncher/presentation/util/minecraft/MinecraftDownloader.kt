@@ -62,7 +62,7 @@ class MinecraftDownloader(
         // 에셋 오브젝트
         downloadAssets(assetIndexFile, File(instanceDir, "assets/objects"))
 
-        Log.d("PING_LAUNCHER", "✅ MC ${manifest.id} 준비 완료 → ${instanceDir.absolutePath}")
+        Log.d("FLAME_LAUNCHER", "✅ MC ${manifest.id} 준비 완료 → ${instanceDir.absolutePath}")
         return MCPrepareResult(
             assetIndexId = manifest.assetIndex.id,
             mainClass = manifest.mainClass,
@@ -84,7 +84,7 @@ class MinecraftDownloader(
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) {
-                Log.w("PING_LAUNCHER", "다운로드 실패 (${response.code}): $url")
+                Log.w("FLAME_LAUNCHER", "다운로드 실패 (${response.code}): $url")
                 return
             }
             response.body?.byteStream()?.use { input ->

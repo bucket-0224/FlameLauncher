@@ -64,10 +64,10 @@ class GameControllerView(context: Context) : View(context) {
     //   토글 자체는 항상 그려지고 항상 눌리므로, 꺼도 다시 켤 수 있다.
     //   기본 ON, SharedPreferences 에 저장돼 재실행에도 유지.
     private val controllerPrefs by lazy {
-        context.getSharedPreferences("ping_controller", Context.MODE_PRIVATE)
+        context.getSharedPreferences("flame_controller", Context.MODE_PRIVATE)
     }
     private var controllerVisible: Boolean =
-        context.getSharedPreferences("ping_controller", Context.MODE_PRIVATE)
+        context.getSharedPreferences("flame_controller", Context.MODE_PRIVATE)
             .getBoolean("force_show", true)
 
     private val toggleRect = RectF()   // 🎮 토글 버튼 영역(recalcRects 에서 계산)
@@ -137,7 +137,7 @@ class GameControllerView(context: Context) : View(context) {
 
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
-        Log.d("PING_LAUNCHER", "GameControllerView 크기: ${w}x${h}")
+        Log.d("FLAME_LAUNCHER", "GameControllerView 크기: ${w}x${h}")
         recalcRects(w, h)
     }
 
@@ -366,7 +366,7 @@ class GameControllerView(context: Context) : View(context) {
 
         // 겹침 발견 시 프리셋 적용 + 저장
         if (rectsOverlap(buttons, w, h, drawSize)) {
-            Log.d("PING_LAUNCHER", "버튼 겹침 감지 — 프리셋 레이아웃으로 자동 정리")
+            Log.d("FLAME_LAUNCHER", "버튼 겹침 감지 — 프리셋 레이아웃으로 자동 정리")
             buttons = applyPresetLayout(buttons, w, h, drawSize)
             try { KeyLayoutManager.save(context, buttons) } catch (_: Exception) {}
         }
@@ -567,7 +567,7 @@ class GameControllerView(context: Context) : View(context) {
             }
             glfwCode == -7 && action == GLFW_PRESS -> {
                 activity.combatMode = !activity.combatMode
-                Log.d("PING_LAUNCHER", "전투 모드: ${if (activity.combatMode) "ON" else "OFF"}")
+                Log.d("FLAME_LAUNCHER", "전투 모드: ${if (activity.combatMode) "ON" else "OFF"}")
                 invalidate()  // 버튼 색상 갱신용
             }
         }
@@ -587,8 +587,8 @@ class GameControllerView(context: Context) : View(context) {
         get() = "hotbar_slot_${MinecraftActivityBridge.currentWorldName}"
 
     private var currentHotbarSlot: Int
-        get() = activity.getSharedPreferences("ping_launcher", Context.MODE_PRIVATE).getInt(hotbarKey, 0)
+        get() = activity.getSharedPreferences("FLAME_LAUNCHER", Context.MODE_PRIVATE).getInt(hotbarKey, 0)
         set(value) {
-            activity.getSharedPreferences("ping_launcher", Context.MODE_PRIVATE).edit { putInt(hotbarKey, value) }
+            activity.getSharedPreferences("FLAME_LAUNCHER", Context.MODE_PRIVATE).edit { putInt(hotbarKey, value) }
         }
 }

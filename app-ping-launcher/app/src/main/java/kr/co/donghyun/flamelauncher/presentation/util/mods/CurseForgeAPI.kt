@@ -67,8 +67,8 @@ class CurseForgeAPI {
         client.newCall(request).execute().use { response ->
             val json = response.body?.string() ?: return emptyList()
             val type = object : TypeToken<CurseForgeListResponse<CurseForgeFile>>() {}.type
-            Log.d("PING_LAUNCHER", "download-url 응답 코드: ${response.code}")
-            Log.d("PING_LAUNCHER", "download-url 응답 body: $json")
+            Log.d("FLAME_LAUNCHER", "download-url 응답 코드: ${response.code}")
+            Log.d("FLAME_LAUNCHER", "download-url 응답 body: $json")
 
             return gson.fromJson<CurseForgeListResponse<CurseForgeFile>>(json, type).data
         }
@@ -109,7 +109,7 @@ class CurseForgeAPI {
                 "https://edge.forgecdn.net/files/$part1/$part2/$fileName"
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "CDN URL 구성 실패: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "CDN URL 구성 실패: ${e.message}")
             null
         }
     }

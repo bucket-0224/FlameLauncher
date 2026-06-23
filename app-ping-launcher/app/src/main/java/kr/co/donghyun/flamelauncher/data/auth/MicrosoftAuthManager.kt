@@ -92,18 +92,18 @@ object MicrosoftAuthManager {
 
     // 인증 코드로 전체 로그인 수행
     fun loginWithCode(code: String): AuthSession {
-        Log.d("PING_LAUNCHER", "1. MS 토큰 요청")
+        Log.d("FLAME_LAUNCHER", "1. MS 토큰 요청")
         val msToken = getMsToken(code)
-        Log.d("PING_LAUNCHER", "2. XBL 토큰 요청")
+        Log.d("FLAME_LAUNCHER", "2. XBL 토큰 요청")
         val (xblToken, xblUhs) = getXblToken(msToken.accessToken)
-        Log.d("PING_LAUNCHER", "3. XSTS 토큰 요청, uhs=$xblUhs")
+        Log.d("FLAME_LAUNCHER", "3. XSTS 토큰 요청, uhs=$xblUhs")
         val xstsToken = getXstsToken(xblToken)
-        Log.d("PING_LAUNCHER", "4. MC 토큰 요청")
+        Log.d("FLAME_LAUNCHER", "4. MC 토큰 요청")
         val mcToken = getMcToken(xblUhs, xstsToken)
-        Log.d("PING_LAUNCHER", "MC 토큰: ${mcToken.accessToken.take(20)}...")
-        Log.d("PING_LAUNCHER", "5. 프로필 요청")
+        Log.d("FLAME_LAUNCHER", "MC 토큰: ${mcToken.accessToken.take(20)}...")
+        Log.d("FLAME_LAUNCHER", "5. 프로필 요청")
         val profile = getMcProfile(mcToken.accessToken)
-        Log.d("PING_LAUNCHER", "6. 완료: ${profile.name}")
+        Log.d("FLAME_LAUNCHER", "6. 완료: ${profile.name}")
 
         return AuthSession(
             username = profile.name ?: throw Exception("프로필 이름 없음"),
@@ -138,7 +138,7 @@ object MicrosoftAuthManager {
         val xstsToken = getXstsToken(xblToken)
         val mcToken = getMcToken(xblUhs, xstsToken)
 
-        Log.d("PING_LAUNCHER", "MC 토큰: ${mcToken.accessToken.take(20)}...")
+        Log.d("FLAME_LAUNCHER", "MC 토큰: ${mcToken.accessToken.take(20)}...")
 
         val profile = getMcProfile(mcToken.accessToken)
 
@@ -167,7 +167,7 @@ object MicrosoftAuthManager {
 
         return client.newCall(request).execute().use { response ->
             val json = response.body?.string() ?: throw Exception("MS token 실패")
-            Log.d("PING_LAUNCHER", "MS 토큰 응답: $json")
+            Log.d("FLAME_LAUNCHER", "MS 토큰 응답: $json")
             gson.fromJson(json, MsTokenResponse::class.java)
         }
     }
@@ -204,9 +204,9 @@ object MicrosoftAuthManager {
 
         return client.newCall(request).execute().use { response ->
             val json = response.body?.string() ?: throw Exception("XBL 실패")
-            Log.d("PING_LAUNCHER", "XBL 응답: $json")
+            Log.d("FLAME_LAUNCHER", "XBL 응답: $json")
             val xbl = gson.fromJson(json, XblResponseFull::class.java)
-            Log.d("PING_LAUNCHER", "XBL 파싱: token=${xbl?.token}, uhs=${xbl?.getUhs()}")
+            Log.d("FLAME_LAUNCHER", "XBL 파싱: token=${xbl?.token}, uhs=${xbl?.getUhs()}")
             Pair(xbl.token, xbl.getUhs())
         }
     }
@@ -238,7 +238,7 @@ object MicrosoftAuthManager {
 
     private fun getMcToken(xblUhs: String, xstsToken: String): McLoginResponse {
         val bodyJson = """{"identityToken": "XBL3.0 x=$xblUhs;$xstsToken"}"""
-        Log.d("PING_LAUNCHER", "MC 토큰 요청 body: $bodyJson")
+        Log.d("FLAME_LAUNCHER", "MC 토큰 요청 body: $bodyJson")
 
         val request = Request.Builder()
             .url("https://api.minecraftservices.com/authentication/login_with_xbox")
@@ -249,7 +249,7 @@ object MicrosoftAuthManager {
 
         return client.newCall(request).execute().use { response ->
             val json = response.body?.string() ?: throw Exception("MC 로그인 실패")
-            Log.d("PING_LAUNCHER", "MC 토큰 응답: $json")
+            Log.d("FLAME_LAUNCHER", "MC 토큰 응답: $json")
             gson.fromJson(json, McLoginResponse::class.java)
         }
     }
@@ -262,7 +262,7 @@ object MicrosoftAuthManager {
 
         return client.newCall(request).execute().use { response ->
             val json = response.body?.string() ?: throw Exception("프로필 조회 실패")
-            Log.d("PING_LAUNCHER", "프로필 응답: $json")
+            Log.d("FLAME_LAUNCHER", "프로필 응답: $json")
             val profile = gson.fromJson(json, McProfileResponse::class.java)
             if (profile.name == null) {
                 throw Exception("Minecraft 프로필 없음 - 게임을 구매하지 않은 계정일 수 있습니다")

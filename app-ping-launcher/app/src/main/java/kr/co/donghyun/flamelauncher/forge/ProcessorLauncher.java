@@ -24,7 +24,7 @@ import java.util.jar.Manifest;
  *  2) processor 순차 실행. 각 단계마다 입력 파일 존재 / 출력 결과 / 예외를 모두 stdout 으로 dump.
  *  3) 마지막에 realMainClass.main(args) 호출.
  *
- * stdout 은 pingjvm.cpp 의 stdout_logger_thread 가 logcat "MinecraftJVM_IO" 태그로 중계함.
+ * stdout 은 flamejvm.cpp 의 stdout_logger_thread 가 logcat "MinecraftJVM_IO" 태그로 중계함.
  */
 public final class ProcessorLauncher {
 

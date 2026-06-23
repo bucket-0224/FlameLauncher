@@ -39,7 +39,7 @@ class ModPackInstaller(
         // 캐시 — InstanceMeta 그대로 사용
         val existingMeta = InstanceManager.loadMeta(gameDir)
         if (existingMeta != null && existingMeta.loaderType != null) {
-            Log.d("PING_LAUNCHER", "✅ 메타 캐시 발견: ${mod.name}")
+            Log.d("FLAME_LAUNCHER", "✅ 메타 캐시 발견: ${mod.name}")
             return ModPackInstallResult(
                 success = true,
                 mcVersion = existingMeta.mcVersion,
@@ -71,7 +71,7 @@ class ModPackInstaller(
         val mcVersion = when {
             isManifestMcValid -> manifestMc
             mcVersionOverride != null -> {
-                Log.w("PING_LAUNCHER", "manifest의 mcVersion='$manifestMc' 비정상 → CurseForge 메타의 '$mcVersionOverride' 사용")
+                Log.w("FLAME_LAUNCHER", "manifest의 mcVersion='$manifestMc' 비정상 → CurseForge 메타의 '$mcVersionOverride' 사용")
                 mcVersionOverride
             }
             else -> return ModPackInstallResult(
@@ -80,7 +80,7 @@ class ModPackInstaller(
             )
         }
 
-        Log.d("PING_LAUNCHER", "📦 ${manifest.name} v${manifest.version}, MC=$mcVersion, loader=${manifest.minecraft.modLoaders.firstOrNull { it.primary }?.id}")
+        Log.d("FLAME_LAUNCHER", "📦 ${manifest.name} v${manifest.version}, MC=$mcVersion, loader=${manifest.minecraft.modLoaders.firstOrNull { it.primary }?.id}")
 
         val loaderEntry = manifest.minecraft.modLoaders.firstOrNull { it.primary }
         val (loaderType, loaderVersion) = parseLoaderId(loaderEntry?.id ?: "")
@@ -116,14 +116,14 @@ class ModPackInstaller(
                 val destFile = File(modsDir, fileName)
                 if (!destFile.exists() || destFile.length() == 0L) downloadFile(modUrl, destFile)
             } catch (e: Exception) {
-                Log.w("PING_LAUNCHER", "모드 다운로드 실패: ${manifestFile.fileID}")
+                Log.w("FLAME_LAUNCHER", "모드 다운로드 실패: ${manifestFile.fileID}")
             }
         }
 
         modpackZip.delete()
         disableIncompatibleMods(modsDir)
 
-        Log.d("PING_LAUNCHER", "✅ 모드팩 설치: ${mod.name}, MC $mcVersion, $loaderType $loaderVersion")
+        Log.d("FLAME_LAUNCHER", "✅ 모드팩 설치: ${mod.name}, MC $mcVersion, $loaderType $loaderVersion")
 
         return ModPackInstallResult(
             success = true,
@@ -152,7 +152,7 @@ class ModPackInstaller(
                 if (isIncompatible) {
                     val disabled = File(file.parent, "${file.name}.disabled")
                     file.renameTo(disabled)
-                    Log.d("PING_LAUNCHER", "⚠ 비호환 모드 비활성화: ${file.name}")
+                    Log.d("FLAME_LAUNCHER", "⚠ 비호환 모드 비활성화: ${file.name}")
                 }
             }
         }
@@ -166,24 +166,24 @@ class ModPackInstaller(
                     // .mrpack (Modrinth) 형식인지 확인
                     val mrpackEntry = zip.getEntry("modrinth.index.json")
                     if (mrpackEntry != null) {
-                        Log.e("PING_LAUNCHER", "이 모드팩은 Modrinth(.mrpack) 형식 — 현재 미지원")
+                        Log.e("FLAME_LAUNCHER", "이 모드팩은 Modrinth(.mrpack) 형식 — 현재 미지원")
                         val mrJson = zip.getInputStream(mrpackEntry).bufferedReader().readText()
-                        Log.d("PING_LAUNCHER", "mrpack 내용:\n$mrJson")
+                        Log.d("FLAME_LAUNCHER", "mrpack 내용:\n$mrJson")
                         return null
                     }
-                    Log.e("PING_LAUNCHER", "manifest.json도 modrinth.index.json도 없음")
-                    Log.d("PING_LAUNCHER", "zip 내부 파일들:")
-                    zip.entries().asSequence().take(20).forEach { Log.d("PING_LAUNCHER", "  ${it.name}") }
+                    Log.e("FLAME_LAUNCHER", "manifest.json도 modrinth.index.json도 없음")
+                    Log.d("FLAME_LAUNCHER", "zip 내부 파일들:")
+                    zip.entries().asSequence().take(20).forEach { Log.d("FLAME_LAUNCHER", "  ${it.name}") }
                     return null
                 }
                 val json = zip.getInputStream(entry).bufferedReader().readText()
-                Log.d("PING_LAUNCHER", "═══ manifest.json 원본 ═══")
-                json.lineSequence().take(40).forEach { Log.d("PING_LAUNCHER", it) }
-                Log.d("PING_LAUNCHER", "═══════════════════════════")
+                Log.d("FLAME_LAUNCHER", "═══ manifest.json 원본 ═══")
+                json.lineSequence().take(40).forEach { Log.d("FLAME_LAUNCHER", it) }
+                Log.d("FLAME_LAUNCHER", "═══════════════════════════")
                 gson.fromJson(json, CurseForgeManifest::class.java)
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "manifest.json 파싱 실패: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "manifest.json 파싱 실패: ${e.message}")
             null
         }
     }
@@ -203,7 +203,7 @@ class ModPackInstaller(
                     }
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "overrides 추출 실패: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "overrides 추출 실패: ${e.message}")
         }
     }
 

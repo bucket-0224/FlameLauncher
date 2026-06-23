@@ -119,7 +119,7 @@ class MainActivity : BaseActivity() {
                 val list = versionRepo.fetchVersionList()
                 _versions.value = list
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "버전 목록 로드 실패: ${e.message}")
+                Log.e("FLAME_LAUNCHER", "버전 목록 로드 실패: ${e.message}")
             } finally {
                 _isLoading.value = false
             }
@@ -179,7 +179,7 @@ class MainActivity : BaseActivity() {
                     )
                 }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "❌ 오류: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "❌ 오류: ${e.message}", e)
                 _progress.value = DownloadProgress(
                     phase = DownloadPhase.ERROR,
                     error = e.message
@@ -275,7 +275,7 @@ class MainActivity : BaseActivity() {
                     }.install(this@MainActivity, mcVersion, forgeVersion, isNeoForge = isNeoForge)
 
                 if (!forgeResult.success) {
-                    Log.e("PING_LAUNCHER", "Forge 설치 실패: ${forgeResult.error}")
+                    Log.e("FLAME_LAUNCHER", "Forge 설치 실패: ${forgeResult.error}")
                     _progress.value = DownloadProgress(
                         phase = DownloadPhase.ERROR,
                         error = "Forge 설치 실패: ${forgeResult.error}"
@@ -285,7 +285,7 @@ class MainActivity : BaseActivity() {
 
                 if (forgeResult.requiresProcessors) {
                     Log.i(
-                        "PING_LAUNCHER",
+                        "FLAME_LAUNCHER",
                         "Modern Forge — 첫 실행 시 ProcessorLauncher 가 client jar 패칭"
                     )
                 }
@@ -330,7 +330,7 @@ class MainActivity : BaseActivity() {
                     )
                 }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "Forge 흐름 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "Forge 흐름 실패: ${e.message}", e)
                 _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = e.message)
             }
         }
@@ -414,7 +414,7 @@ class MainActivity : BaseActivity() {
                     )
                 }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "Fabric 흐름 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "Fabric 흐름 실패: ${e.message}", e)
                 _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = e.message)
             }
         }
@@ -451,7 +451,7 @@ class MainActivity : BaseActivity() {
                     )
                 }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "인스턴스 실행 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "인스턴스 실행 실패: ${e.message}", e)
             }
         }
     }

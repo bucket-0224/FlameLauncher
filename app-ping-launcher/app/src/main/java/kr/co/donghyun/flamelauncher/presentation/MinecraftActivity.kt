@@ -157,9 +157,9 @@ class MinecraftActivity : BaseActivity() {
             customGameDir: String? = null,
             instanceDir: String? = null
         ) {
-            Log.d("PING_LAUNCHER", "MC 시작: mainClass=$mainClass, extraJars=${extraJars.size}개")
-            Log.d("PING_LAUNCHER", "instanceDir 전달: $instanceDir")  // ← 추가
-            Log.d("PING_LAUNCHER", "customGameDir 전달: $customGameDir")  // ← 추가
+            Log.d("FLAME_LAUNCHER", "MC 시작: mainClass=$mainClass, extraJars=${extraJars.size}개")
+            Log.d("FLAME_LAUNCHER", "instanceDir 전달: $instanceDir")  // ← 추가
+            Log.d("FLAME_LAUNCHER", "customGameDir 전달: $customGameDir")  // ← 추가
 
             context.startActivity(
                 Intent(context, MinecraftActivity::class.java).apply {
@@ -221,7 +221,7 @@ class MinecraftActivity : BaseActivity() {
             resourcePackPickerLauncher.launch(mimeTypes)
             Toast.makeText(this, "추가할 리소스팩 .zip 을 선택하세요", Toast.LENGTH_SHORT).show()
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "리소스팩 피커 실행 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "리소스팩 피커 실행 실패: ${e.message}", e)
             pendingResourcePacksDir = null
         }
     }
@@ -235,9 +235,9 @@ class MinecraftActivity : BaseActivity() {
         extraJars = intent.getStringArrayListExtra(EXTRA_EXTRA_JARS) ?: emptyList()
         mainClass = intent.getStringExtra(EXTRA_MAIN_CLASS) ?: "net.minecraft.client.main.Main"
         instanceDir = intent.getStringExtra(EXTRA_INSTANCE_DIR)
-        Log.d("PING_LAUNCHER", "instanceDir 수신: $instanceDir")  // ← 추가
+        Log.d("FLAME_LAUNCHER", "instanceDir 수신: $instanceDir")  // ← 추가
         customGameDir = intent.getStringExtra(EXTRA_GAME_DIR)
-        Log.d("PING_LAUNCHER", "customGameDir 수신: $customGameDir")  // ← 추가
+        Log.d("FLAME_LAUNCHER", "customGameDir 수신: $customGameDir")  // ← 추가
 
         // 엣지투엣지로 직접 제어 — 시스템이 IME 에 맞춰 윈도우를 리사이즈/팬 하지 않게 한다.
         // (adjustNothing 만으로는 Compose/surface 로 IME insets 가 전파되어 화면이 밀리고
@@ -274,17 +274,17 @@ class MinecraftActivity : BaseActivity() {
                                 setupAndLaunch(surface)
                             } else {
                                 try {
-                                    System.loadLibrary("pingjvm")
+                                    System.loadLibrary("flamejvm")
                                     nativeSetupBridgeWindow(surface)
-                                    Log.d("PING_LAUNCHER", "✅ Surface 재바인딩 완료 (resume 후)")
+                                    Log.d("FLAME_LAUNCHER", "✅ Surface 재바인딩 완료 (resume 후)")
                                 } catch (e: Exception) {
-                                    Log.e("PING_LAUNCHER", "Surface 재바인딩 실패: ${e.message}", e)
+                                    Log.e("FLAME_LAUNCHER", "Surface 재바인딩 실패: ${e.message}", e)
                                 }
                             }
                         },
                         onSurfaceChanged = { w, h -> sendScreenSize(w, h) },
                         onSurfaceDestroyed = {
-                            Log.d("PING_LAUNCHER", "Surface destroyed — JVM 유지")
+                            Log.d("FLAME_LAUNCHER", "Surface destroyed — JVM 유지")
                             currentSurface = null
                         },
                     )
@@ -380,7 +380,7 @@ class MinecraftActivity : BaseActivity() {
         val timeoutMs = (bootMaxDelayMin.toLong() * 60_000L).coerceAtLeast(30_000L)
         window.decorView.postDelayed({
             if (!bootOverlayDismissed) {
-                Log.w("PING_LAUNCHER", "부팅 오버레이 타임아웃(${timeoutMs}ms) — 강제 닫기")
+                Log.w("FLAME_LAUNCHER", "부팅 오버레이 타임아웃(${timeoutMs}ms) — 강제 닫기")
                 dismissBootOverlay("timeout")
             }
         }, timeoutMs)
@@ -390,7 +390,7 @@ class MinecraftActivity : BaseActivity() {
         if (bootOverlayDismissed) return
         bootOverlayDismissed = true
         showBootOverlay = false
-        Log.d("PING_LAUNCHER", "부팅 오버레이 닫음 ($reason)")
+        Log.d("FLAME_LAUNCHER", "부팅 오버레이 닫음 ($reason)")
         // 오버레이가 사라진 뒤에야 게임 컨트롤러를 화면에 올린다.
         attachGameControllerView()
     }
@@ -405,11 +405,11 @@ class MinecraftActivity : BaseActivity() {
         // 디바이스 add/remove/change 감지
         inputDeviceListener = object : InputDeviceListener {
             override fun onInputDeviceAdded(deviceId: Int) {
-                Log.d("PING_LAUNCHER", "🎮 입력 디바이스 추가: id=$deviceId")
+                Log.d("FLAME_LAUNCHER", "🎮 입력 디바이스 추가: id=$deviceId")
                 updateGameControllerVisibility()
             }
             override fun onInputDeviceRemoved(deviceId: Int) {
-                Log.d("PING_LAUNCHER", "🎮 입력 디바이스 제거: id=$deviceId")
+                Log.d("FLAME_LAUNCHER", "🎮 입력 디바이스 제거: id=$deviceId")
                 updateGameControllerVisibility()
             }
             override fun onInputDeviceChanged(deviceId: Int) {
@@ -501,7 +501,7 @@ class MinecraftActivity : BaseActivity() {
                     || (src and InputDevice.SOURCE_TOUCHPAD) == InputDevice.SOURCE_TOUCHPAD
 
             if (isRealKeyboard || isPointer) {
-                Log.d("PING_LAUNCHER",
+                Log.d("FLAME_LAUNCHER",
                     "🎮 외장 입력 감지: name=${dev.name} src=0x${src.toString(16)} kbType=${dev.keyboardType}")
                 return true
             }
@@ -561,13 +561,13 @@ class MinecraftActivity : BaseActivity() {
 
         // ★ mcVersion 기반으로 Java major 결정
         javaMajor = MinecraftJREPreparer.pickJavaMajor(versionId)
-        Log.d("PING_LAUNCHER", "선택된 Java major: $javaMajor (mc=$versionId)")
+        Log.d("FLAME_LAUNCHER", "선택된 Java major: $javaMajor (mc=$versionId)")
 
-        // pingjvm 은 반드시 떠야 하므로 별도 처리
+        // flamejvm 은 반드시 떠야 하므로 별도 처리
         try {
-            System.loadLibrary("pingjvm")
+            System.loadLibrary("flamejvm")
         } catch (e: UnsatisfiedLinkError) {
-            Log.e("PING_LAUNCHER", "❌ libpingjvm.so 로드 실패 — 진행 불가: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "❌ libflamejvm.so 로드 실패 — 진행 불가: ${e.message}", e)
             return
         }
 
@@ -579,21 +579,21 @@ class MinecraftActivity : BaseActivity() {
                 // info_getter 가 먼저! libmobileglues.so 의 의존성임
                 loadSoSafely(File(nativesDir, "libmobileglues_info_getter.so"), required = false)
                 if (loadSoSafely(File(nativesDir, "libmobileglues.so"), required = false)) {
-                    Log.d("PING_LAUNCHER", "✅ 렌더러: MobileGlues")
+                    Log.d("FLAME_LAUNCHER", "✅ 렌더러: MobileGlues")
                 } else {
-                    Log.w("PING_LAUNCHER", "⚠️ libmobileglues.so 없음 — RendererManager 선택만 됐고 .so 미배포")
+                    Log.w("FLAME_LAUNCHER", "⚠️ libmobileglues.so 없음 — RendererManager 선택만 됐고 .so 미배포")
                 }
             }
             "zink" -> {
                 try { System.loadLibrary("vulkan") } catch (_: Throwable) {}
                 if (loadSoSafely(File(nativesDir, "libOSMesa.so"), required = true)) {
-                    Log.d("PING_LAUNCHER", "✅ 렌더러: Zink")
+                    Log.d("FLAME_LAUNCHER", "✅ 렌더러: Zink")
                 }
             }
             else -> {
                 // gl4es / gl4es_desktop / holy_gl4es
                 if (loadSoSafely(File(nativesDir, "libgl4es_114.so"), required = true)) {
-                    Log.d("PING_LAUNCHER", "✅ 렌더러: GL4ES")
+                    Log.d("FLAME_LAUNCHER", "✅ 렌더러: GL4ES")
                 }
             }
         }
@@ -611,16 +611,16 @@ class MinecraftActivity : BaseActivity() {
         try {
             JavaNativeLauncher.preloadAwtStubs(applicationInfo.nativeLibraryDir)
         } catch (e: UnsatisfiedLinkError) {
-            Log.w("PING_LAUNCHER", "⚠️ preloadAwtStubs 바인딩 실패 (무시 가능): ${e.message}")
+            Log.w("FLAME_LAUNCHER", "⚠️ preloadAwtStubs 바인딩 실패 (무시 가능): ${e.message}")
         } catch (e: Throwable) {
-            Log.w("PING_LAUNCHER", "⚠️ preloadAwtStubs 예외 (무시 가능): ${e.message}")
+            Log.w("FLAME_LAUNCHER", "⚠️ preloadAwtStubs 예외 (무시 가능): ${e.message}")
         }
 
         try {
             nativeSetupBridgeWindow(surface)
-            Log.d("PING_LAUNCHER", "✅ setupBridgeWindow 완료")
+            Log.d("FLAME_LAUNCHER", "✅ setupBridgeWindow 완료")
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "setupBridgeWindow 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "setupBridgeWindow 실패: ${e.message}", e)
         }
 
         startCrashWatcher()
@@ -633,23 +633,23 @@ class MinecraftActivity : BaseActivity() {
      */
     private fun loadSoSafely(soFile: File, required: Boolean): Boolean {
         if (!soFile.exists()) {
-            if (required) Log.e("PING_LAUNCHER", "❌ 필수 .so 파일 없음: ${soFile.name}")
-            else Log.w("PING_LAUNCHER", "⚠️ .so 파일 없음 (스킵): ${soFile.name}")
+            if (required) Log.e("FLAME_LAUNCHER", "❌ 필수 .so 파일 없음: ${soFile.name}")
+            else Log.w("FLAME_LAUNCHER", "⚠️ .so 파일 없음 (스킵): ${soFile.name}")
             return false
         }
         return try {
             System.load(soFile.absolutePath)
-            Log.d("PING_LAUNCHER", "📦 .so 로드: ${soFile.name}")
+            Log.d("FLAME_LAUNCHER", "📦 .so 로드: ${soFile.name}")
             true
         } catch (e: UnsatisfiedLinkError) {
             // 이미 로드된 경우도 여기로 옴 — 무해
             val msg = e.message ?: ""
             if (msg.contains("already loaded", ignoreCase = true)) {
-                Log.d("PING_LAUNCHER", "ℹ️ 이미 로드됨: ${soFile.name}")
+                Log.d("FLAME_LAUNCHER", "ℹ️ 이미 로드됨: ${soFile.name}")
                 true
             } else {
-                if (required) Log.e("PING_LAUNCHER", "❌ ${soFile.name} 로드 실패: $msg", e)
-                else Log.w("PING_LAUNCHER", "⚠️ ${soFile.name} 로드 실패 (무시): $msg")
+                if (required) Log.e("FLAME_LAUNCHER", "❌ ${soFile.name} 로드 실패: $msg", e)
+                else Log.w("FLAME_LAUNCHER", "⚠️ ${soFile.name} 로드 실패 (무시): $msg")
                 false
             }
         }
@@ -671,7 +671,7 @@ class MinecraftActivity : BaseActivity() {
                 val newCrash = crashDir.listFiles()
                     ?.any { it.extension == "txt" && !existingFiles.contains(it.name) } == true
                 if (newCrash) {
-                    Log.d("PING_LAUNCHER", "새 크래시 감지!")
+                    Log.d("FLAME_LAUNCHER", "새 크래시 감지!")
                     val intent = Intent(this, CrashReportActivity::class.java).apply {
                         putExtra("instance_dir", instanceBase.absolutePath)
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -779,22 +779,22 @@ class MinecraftActivity : BaseActivity() {
         for (jar in candidates) {
             val missing = findMissingMethods(jar, required)
             if (missing.isEmpty()) {
-                Log.d("PING_LAUNCHER", "✅ GLFW 3.4 stubs 이미 있음: ${jar.name}")
+                Log.d("FLAME_LAUNCHER", "✅ GLFW 3.4 stubs 이미 있음: ${jar.name}")
                 // 옛 마커 파일 청소 (있을 수도 없을 수도)
                 File(jar.parent, "${jar.name}.patched_glfw34").delete()
                 continue
             }
-            Log.w("PING_LAUNCHER", "🩹 GLFW 패치 필요: ${jar.name} — 누락 메서드 $missing")
+            Log.w("FLAME_LAUNCHER", "🩹 GLFW 패치 필요: ${jar.name} — 누락 메서드 $missing")
             try {
                 patchGlfwJar(jar)
-                Log.d("PING_LAUNCHER", "✅ 패치 완료: ${jar.name}")
+                Log.d("FLAME_LAUNCHER", "✅ 패치 완료: ${jar.name}")
                 // 검증
                 val stillMissing = findMissingMethods(jar, required)
                 if (stillMissing.isNotEmpty()) {
-                    Log.e("PING_LAUNCHER", "❌ 패치 후에도 여전히 누락: $stillMissing — patcher 버그 의심")
+                    Log.e("FLAME_LAUNCHER", "❌ 패치 후에도 여전히 누락: $stillMissing — patcher 버그 의심")
                 }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "❌ GLFW 패치 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "❌ GLFW 패치 실패: ${e.message}", e)
             }
         }
     }
@@ -822,7 +822,7 @@ class MinecraftActivity : BaseActivity() {
                 required - found
             }
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "jar 메서드 스캔 실패 (${jar.name}): ${e.message}")
+            Log.w("FLAME_LAUNCHER", "jar 메서드 스캔 실패 (${jar.name}): ${e.message}")
             required
         }
     }
@@ -875,10 +875,10 @@ class MinecraftActivity : BaseActivity() {
             override fun visitEnd() {
                 // GLFW_PLATFORM_X11 = 0x60004
                 if ("glfwPlatformSupported(I)Z" !in existing) {
-                    emitPlatformSupported(); Log.d("PING_LAUNCHER", "  + glfwPlatformSupported(I)Z")
+                    emitPlatformSupported(); Log.d("FLAME_LAUNCHER", "  + glfwPlatformSupported(I)Z")
                 }
                 if ("glfwGetPlatform()I" !in existing) {
-                    emitGetPlatform(); Log.d("PING_LAUNCHER", "  + glfwGetPlatform()I")
+                    emitGetPlatform(); Log.d("FLAME_LAUNCHER", "  + glfwGetPlatform()I")
                 }
                 listOf(
                     "glfwFocusWindow", "glfwHideWindow",
@@ -886,7 +886,7 @@ class MinecraftActivity : BaseActivity() {
                     "glfwRequestWindowAttention"
                 ).forEach { n ->
                     if ("$n(J)V" !in existing) {
-                        emitNoopJV(n); Log.d("PING_LAUNCHER", "  + $n(J)V")
+                        emitNoopJV(n); Log.d("FLAME_LAUNCHER", "  + $n(J)V")
                     }
                 }
                 super.visitEnd()
@@ -947,13 +947,13 @@ class MinecraftActivity : BaseActivity() {
                     val markerFile = File(lwJar.parent, "${lwJar.name}.patched")
                     if (markerFile.exists()) return@forEach
 
-                    Log.d("PING_LAUNCHER", "launchwrapper 패치 중: ${lwJar.absolutePath}")
+                    Log.d("FLAME_LAUNCHER", "launchwrapper 패치 중: ${lwJar.absolutePath}")
                     try {
                         patchLaunchJar(lwJar)
                         markerFile.createNewFile() // 패치 완료 마커
-                        Log.d("PING_LAUNCHER", "✅ launchwrapper 패치 완료")
+                        Log.d("FLAME_LAUNCHER", "✅ launchwrapper 패치 완료")
                     } catch (e: Exception) {
-                        Log.e("PING_LAUNCHER", "launchwrapper 패치 실패: ${e.message}")
+                        Log.e("FLAME_LAUNCHER", "launchwrapper 패치 실패: ${e.message}")
                     }
                 }
         }
@@ -975,14 +975,14 @@ class MinecraftActivity : BaseActivity() {
     private fun prepareLegacyResources(assetsDir: File, mcDir: File, assetIndexName: String): File? {
         val indexFile = File(assetsDir, "indexes/$assetIndexName.json")
         if (!indexFile.exists()) {
-            Log.w("PING_LAUNCHER", "legacy resources: index 없음 ($assetIndexName.json)")
+            Log.w("FLAME_LAUNCHER", "legacy resources: index 없음 ($assetIndexName.json)")
             return null
         }
 
         val root = try {
             com.google.gson.JsonParser.parseString(indexFile.readText()).asJsonObject
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "legacy resources: index 파싱 실패: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "legacy resources: index 파싱 실패: ${e.message}")
             return null
         }
 
@@ -1021,11 +1021,11 @@ class MinecraftActivity : BaseActivity() {
                 src.copyTo(dst, overwrite = true)
                 copied++
             } catch (e: Exception) {
-                Log.w("PING_LAUNCHER", "legacy resources: 복사 실패 $path: ${e.message}")
+                Log.w("FLAME_LAUNCHER", "legacy resources: 복사 실패 $path: ${e.message}")
             }
         }
 
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "✅ legacy resources 펼침 → ${targetRoot.absolutePath} " +
                     "(link=$linked copy=$copied skip=$skipped missing=$missing, mapToResources=$mapToResources)")
         return targetRoot
@@ -1141,18 +1141,18 @@ class MinecraftActivity : BaseActivity() {
         return writer.toByteArray()
     }
     internal fun sendMouseButton(button: Int, action: Int) {
-        Log.d("PING_LAUNCHER", "sendMouseButton: btn=$button action=$action")
+        Log.d("FLAME_LAUNCHER", "sendMouseButton: btn=$button action=$action")
         nativeSendMouseButton(button, action, 0)
     }
 
     internal fun sendCursorPos(x: Float, y: Float) {
-        Log.d("PING_LAUNCHER", "sendCursorPos: x=$x y=$y")
+        Log.d("FLAME_LAUNCHER", "sendCursorPos: x=$x y=$y")
         nativeSendCursorPos(x, y)
     }
 
     internal fun sendKey(glfwKeyCode: Int, action: Int) {
 
-        Log.d("PING_LAUNCHER", "sendKey: $glfwKeyCode action=$action")
+        Log.d("FLAME_LAUNCHER", "sendKey: $glfwKeyCode action=$action")
 
         val scancode = getScancode(glfwKeyCode)
 
@@ -1330,12 +1330,12 @@ class MinecraftActivity : BaseActivity() {
                 try {
                     if (disabled.exists()) disabled.delete()
                     if (f.renameTo(disabled)) {
-                        Log.d("PING_LAUNCHER", "🚫 모드 로드 제외 (Android 미지원): $name")
+                        Log.d("FLAME_LAUNCHER", "🚫 모드 로드 제외 (Android 미지원): $name")
                     } else {
-                        Log.w("PING_LAUNCHER", "⚠️ 모드 제외 실패 (rename): $name")
+                        Log.w("FLAME_LAUNCHER", "⚠️ 모드 제외 실패 (rename): $name")
                     }
                 } catch (e: Exception) {
-                    Log.w("PING_LAUNCHER", "⚠️ 모드 제외 중 오류: $name — ${e.message}")
+                    Log.w("FLAME_LAUNCHER", "⚠️ 모드 제외 중 오류: $name — ${e.message}")
                 }
             }
         }
@@ -1443,14 +1443,14 @@ class MinecraftActivity : BaseActivity() {
         }
 
 
-        Log.d("PING_LAUNCHER", "instanceBase: ${instanceBase.absolutePath}")
+        Log.d("FLAME_LAUNCHER", "instanceBase: ${instanceBase.absolutePath}")
 
         // 인스턴스 메타 로드 — Fabric의 gameJvmArgs/gameArgs 가져오기
         val instanceMeta = InstanceManager.loadMeta(instanceBase)
         val isFabric = mainClass.contains("knot", ignoreCase = true)
                 || mainClass.contains("fabric", ignoreCase = true)
                 || instanceMeta?.loaderType == "fabric"
-        Log.d("PING_LAUNCHER", "isFabric=$isFabric, loaderType=${instanceMeta?.loaderType}, mainClass=$mainClass")
+        Log.d("FLAME_LAUNCHER", "isFabric=$isFabric, loaderType=${instanceMeta?.loaderType}, mainClass=$mainClass")
 
         // ★ 추가 — Forge/NeoForge 의 BootstrapLauncher 경유 부팅 감지
         //   libraries 워커 / versionJar 분기에서 동시에 쓰기 위해 여기서 한 번만 계산
@@ -1476,18 +1476,18 @@ class MinecraftActivity : BaseActivity() {
 
         if (patchedGlfw != null) {
             jarList.add(patchedGlfw.absolutePath)  // 0번 인덱스
-            Log.d("PING_LAUNCHER", "🔧 patched GLFW 우선 주입: ${patchedGlfw.name}")
+            Log.d("FLAME_LAUNCHER", "🔧 patched GLFW 우선 주입: ${patchedGlfw.name}")
         }
 
         lwjglJars.forEach { jar ->
             jarList.add(jar.absolutePath)
-            Log.d("PING_LAUNCHER", "🔧 LWJGL jar 주입: ${jar.name}")
+            Log.d("FLAME_LAUNCHER", "🔧 LWJGL jar 주입: ${jar.name}")
         }
         val cleanedExtraJars = extraJars.filter { p ->
             val f = File(p)
             when {
-                isProcessorOnlyJar(f) -> { Log.d("PING_LAUNCHER", "🚫 extraJars processor-only 제거: ${f.name}"); false }
-                isRedundantLwjglJar(f) -> { Log.d("PING_LAUNCHER", "🚫 extraJars vanilla lwjgl 제거: ${f.name}"); false }
+                isProcessorOnlyJar(f) -> { Log.d("FLAME_LAUNCHER", "🚫 extraJars processor-only 제거: ${f.name}"); false }
+                isRedundantLwjglJar(f) -> { Log.d("FLAME_LAUNCHER", "🚫 extraJars vanilla lwjgl 제거: ${f.name}"); false }
                 else -> true
             }
         }
@@ -1535,23 +1535,23 @@ class MinecraftActivity : BaseActivity() {
                                     || (ap.contains("/net/neoforged/neoforge/")
                                     && (n.endsWith("-client.jar") || n.endsWith("-universal.jar")))
                         if (isGameJar) {
-                            Log.d("PING_LAUNCHER", "🚫 NeoForge 게임 jar classpath 제외 (좌표로 자동 로드, ZL2 방식): ${f.name}")
+                            Log.d("FLAME_LAUNCHER", "🚫 NeoForge 게임 jar classpath 제외 (좌표로 자동 로드, ZL2 방식): ${f.name}")
                             return@forEach
                         }
                     }
 
                     if (isProcessorOnlyJar(f)) {
-                        Log.d("PING_LAUNCHER", "🚫 processor-only jar 제외: ${f.name}")
+                        Log.d("FLAME_LAUNCHER", "🚫 processor-only jar 제외: ${f.name}")
                         return@forEach
                     }
 
                     if (jarList.contains(f.absolutePath)) return@forEach
                     if (isProcessorOnlyJar(f)) {
-                        Log.d("PING_LAUNCHER", "🚫 processor-only jar 제외: ${f.name}")
+                        Log.d("FLAME_LAUNCHER", "🚫 processor-only jar 제외: ${f.name}")
                         return@forEach
                     }
                     if (isRedundantLwjglJar(f)) {                                  // ★ 추가
-                        Log.d("PING_LAUNCHER", "🚫 vanilla lwjgl jar 제외 (patched fat 만 keep): ${f.name}")
+                        Log.d("FLAME_LAUNCHER", "🚫 vanilla lwjgl jar 제외 (patched fat 만 keep): ${f.name}")
                         return@forEach
                     }
 
@@ -1563,13 +1563,13 @@ class MinecraftActivity : BaseActivity() {
                     // 변경 → glfw-classes 동명 클래스 충돌 방지를 위해 lwjgl-glfw-*만 제외
                     val lwjglGlfwPattern = Regex("^lwjgl-glfw-\\d.*\\.jar$")
                     if (lwjglGlfwPattern.matches(lowerName)) {
-                        Log.d("PING_LAUNCHER", "번들 lwjgl-glfw 제외 (PojavLauncher patched 사용): ${f.name}")
+                        Log.d("FLAME_LAUNCHER", "번들 lwjgl-glfw 제외 (PojavLauncher patched 사용): ${f.name}")
                         return@forEach
                     }
 
                     val ga = gaKey(f.absolutePath, librariesDir.absolutePath)
                     if (ga != null && seenGA.contains(ga)) {
-                        Log.d("PING_LAUNCHER", "중복 라이브러리 스킵: $ga (${f.name})")
+                        Log.d("FLAME_LAUNCHER", "중복 라이브러리 스킵: $ga (${f.name})")
                         return@forEach
                     }
                     if (ga != null) seenGA.add(ga)
@@ -1588,13 +1588,13 @@ class MinecraftActivity : BaseActivity() {
                     // 변경
                     val lwjglGlfwPattern = Regex("^lwjgl-glfw-\\d.*\\.jar$")
                     if (lwjglGlfwPattern.matches(lowerName)) {
-                        Log.d("PING_LAUNCHER", "번들 lwjgl-glfw 제외 (PojavLauncher patched 사용): ${f.name}")
+                        Log.d("FLAME_LAUNCHER", "번들 lwjgl-glfw 제외 (PojavLauncher patched 사용): ${f.name}")
                         return@forEach
                     }
 
                     val ga = gaKey(f.absolutePath, legacyDir.absolutePath)
                     if (ga != null && seenGA.contains(ga)) {
-                        Log.d("PING_LAUNCHER", "중복 라이브러리 스킵: $ga (${f.name})")
+                        Log.d("FLAME_LAUNCHER", "중복 라이브러리 스킵: $ga (${f.name})")
                         return@forEach
                     }
                     if (ga != null) seenGA.add(ga)
@@ -1623,13 +1623,13 @@ class MinecraftActivity : BaseActivity() {
         }.distinct()
 
         versionJarCandidates.forEach {
-            Log.d("PING_LAUNCHER", "🔎 client jar 후보: ${it.absolutePath} exists=${it.exists()}")
+            Log.d("FLAME_LAUNCHER", "🔎 client jar 후보: ${it.absolutePath} exists=${it.exists()}")
         }
 
         val versionJar = versionJarCandidates.firstOrNull { it.exists() && it.length() > 0 }
 
         if (versionJar == null) {
-            Log.e("PING_LAUNCHER", "❌ 게임 client jar 를 찾지 못함! ($versionId.jar) — pre-1.6 리소스 로딩 실패 위험")
+            Log.e("FLAME_LAUNCHER", "❌ 게임 client jar 를 찾지 못함! ($versionId.jar) — pre-1.6 리소스 로딩 실패 위험")
         }
 
         versionJar?.let {
@@ -1639,9 +1639,9 @@ class MinecraftActivity : BaseActivity() {
             //   난독화돼 net.minecraft.* 가 없으므로 deobf 게임 jar 와 패키지 충돌도 없다.
             if (!jarList.contains(it.absolutePath)) {
                 jarList.add(it.absolutePath)
-                Log.d("PING_LAUNCHER", "✅ 바닐라 client jar classpath 포함 (ZL2 방식): ${it.absolutePath}")
+                Log.d("FLAME_LAUNCHER", "✅ 바닐라 client jar classpath 포함 (ZL2 방식): ${it.absolutePath}")
             } else {
-                Log.d("PING_LAUNCHER", "ℹ️ client jar 이미 classpath 에 있음: ${it.name}")
+                Log.d("FLAME_LAUNCHER", "ℹ️ client jar 이미 classpath 에 있음: ${it.name}")
             }
         }
 
@@ -1696,12 +1696,12 @@ class MinecraftActivity : BaseActivity() {
 
                 if (before != "false") {   // 이미 false 면 다시 쓰지 않음
                     splashCfg.writeText(props.entries.joinToString("\n") { "${it.key}=${it.value}" } + "\n")
-                    Log.d("PING_LAUNCHER", "🩹 1.12.x SplashProgress 비활성화 적용(enabled=${before ?: "none"}→false) @ ${splashCfg.absolutePath}")
+                    Log.d("FLAME_LAUNCHER", "🩹 1.12.x SplashProgress 비활성화 적용(enabled=${before ?: "none"}→false) @ ${splashCfg.absolutePath}")
                 } else {
-                    Log.d("PING_LAUNCHER", "🩹 1.12.x SplashProgress 이미 비활성화됨")
+                    Log.d("FLAME_LAUNCHER", "🩹 1.12.x SplashProgress 이미 비활성화됨")
                 }
             } catch (e: Exception) {
-                Log.w("PING_LAUNCHER", "splash.properties 쓰기 실패", e)
+                Log.w("FLAME_LAUNCHER", "splash.properties 쓰기 실패", e)
             }
         }
 
@@ -1724,7 +1724,7 @@ class MinecraftActivity : BaseActivity() {
         // (앱이 자기 외부 디렉토리 파일을 쓰는 것이라 권한 문제 없음)
         val enableEarlyWindow = instanceMeta?.type != InstanceType.MODPACK
         if (!enableEarlyWindow) {
-            Log.d("PING_LAUNCHER", "🪟 모드팩 인스턴스 — early window 비활성화(Connector 모듈 호환)")
+            Log.d("FLAME_LAUNCHER", "🪟 모드팩 인스턴스 — early window 비활성화(Connector 모듈 호환)")
         }
         syncFmlConfig(File(mcDir, "config/fml.toml"), true)
 
@@ -1804,7 +1804,7 @@ class MinecraftActivity : BaseActivity() {
 
                 if (needed.isNotEmpty()) {
                     val patched = arg + "," + needed.joinToString(",")
-                    Log.d("PING_LAUNCHER", "🩹 ignoreList 보강: +${needed.joinToString(",")}")
+                    Log.d("FLAME_LAUNCHER", "🩹 ignoreList 보강: +${needed.joinToString(",")}")
                     patched
                 } else arg
             } else arg
@@ -1830,13 +1830,13 @@ class MinecraftActivity : BaseActivity() {
             )
         } else emptyArray()
 
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "isModernForge=$isModernLoader metaJvmArgs(resolved)=${metaJvmArgs.toList()}")
 
         var renderer = resolveRendererForVersion()
 
 //        if (renderer.id == "zink" && !RendererProbe.nativeZinkCompatible()) {
-//            Log.w("PING_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
+//            Log.w("FLAME_LAUNCHER", "⚠️ 이 기기는 Zink 미호환 — Holy GL4ES로 자동 폴백")
 //            runOnUiThread {
 //                Toast.makeText(
 //                    this,
@@ -1863,12 +1863,12 @@ class MinecraftActivity : BaseActivity() {
         val originalSize = jarList.size
         var dedupedJars = jarList.filter { abs ->
             if (!seenAbs.add(abs)) {
-                Log.d("PING_LAUNCHER", "🗑 절대경로 중복 jar 제거: $abs")
+                Log.d("FLAME_LAUNCHER", "🗑 절대경로 중복 jar 제거: $abs")
                 return@filter false
             }
             val fname = File(abs).name
             if (!seenFileName.add(fname)) {
-                Log.d("PING_LAUNCHER", "🗑 동일 파일명 jar 중복 제거: $fname")
+                Log.d("FLAME_LAUNCHER", "🗑 동일 파일명 jar 중복 제거: $fname")
                 return@filter false
             }
             true
@@ -1892,25 +1892,25 @@ class MinecraftActivity : BaseActivity() {
                 }
                 i++
             }
-            Log.d("PING_LAUNCHER", "🎯 module-path jars (${moduleJarsFromMp.size}): $moduleJarsFromMp")
+            Log.d("FLAME_LAUNCHER", "🎯 module-path jars (${moduleJarsFromMp.size}): $moduleJarsFromMp")
 
             val before = dedupedJars.size
             dedupedJars = dedupedJars.filter { abs ->
                 val name = File(abs).name
                 when {
                     name in moduleJarsFromMp -> {
-                        Log.d("PING_LAUNCHER", "🚫 module-path 에 있어 classpath 제외: $name")
+                        Log.d("FLAME_LAUNCHER", "🚫 module-path 에 있어 classpath 제외: $name")
                         false
                     }
                     // processor-launcher 분기 자체를 삭제 — 이 jar 는 mainClass 일 때 classpath 필수
                     else -> true
                 }
             }
-            Log.d("PING_LAUNCHER", "📦 modern Forge classpath 정리: $before → ${dedupedJars.size}")
+            Log.d("FLAME_LAUNCHER", "📦 modern Forge classpath 정리: $before → ${dedupedJars.size}")
         }
 
         if (dedupedJars.size != originalSize) {
-            Log.d("PING_LAUNCHER", "📦 classpath dedupe total: $originalSize → ${dedupedJars.size}")
+            Log.d("FLAME_LAUNCHER", "📦 classpath dedupe total: $originalSize → ${dedupedJars.size}")
         }
         val classPathStr = dedupedJars.joinToString(File.pathSeparator)
 
@@ -1942,9 +1942,9 @@ class MinecraftActivity : BaseActivity() {
         // 절대경로를 LWJGL 에 직접 지정한다. (실제 인자 주입/중복 제거는 normalizeJvmArgsForJni 에서 수행)
         val freetypeSo = File(applicationInfo.nativeLibraryDir, "libfreetype.so")
         if (freetypeSo.exists()) {
-            Log.d("PING_LAUNCHER", "🔤 freetype 강제 지정: ${freetypeSo.absolutePath}")
+            Log.d("FLAME_LAUNCHER", "🔤 freetype 강제 지정: ${freetypeSo.absolutePath}")
         } else {
-            Log.w("PING_LAUNCHER", "⚠️ libfreetype.so 가 nativeLibraryDir 에 없음 — 폰트 로딩 실패 가능")
+            Log.w("FLAME_LAUNCHER", "⚠️ libfreetype.so 가 nativeLibraryDir 에 없음 — 폰트 로딩 실패 가능")
         }
 
         val jvmArgs = jvm8CompatArgs +
@@ -1964,18 +1964,18 @@ class MinecraftActivity : BaseActivity() {
                 modernForgeArgs +     // ★ 추가 — metaJvmArgs 보다 앞에 둬서 version.json 인자가 덮어쓰도록
                 metaJvmArgs
 
-        Log.d("PING_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}, isFabric=$isFabric, javaMajor=$javaMajor")
+        Log.d("FLAME_LAUNCHER", "버전: $versionId, mcDir: ${mcDir.absolutePath}, isFabric=$isFabric, javaMajor=$javaMajor")
 
-        Log.d("PING_LAUNCHER", "═══ classpath 항목 ${dedupedJars.size}개 ═══")
-        dedupedJars.forEachIndexed { i, p -> Log.d("PING_LAUNCHER", "  [$i] ${File(p).name}") }
+        Log.d("FLAME_LAUNCHER", "═══ classpath 항목 ${dedupedJars.size}개 ═══")
+        dedupedJars.forEachIndexed { i, p -> Log.d("FLAME_LAUNCHER", "  [$i] ${File(p).name}") }
 
         // SDL2 기반 모드(controllable)는 데스크톱 glibc 네이티브(libm.so.6 의존)를 번들해
         // Android(bionic)에서 로드 불가 → 부팅 직전 .jar 확장자를 바꿔 로드에서 제외한다.
         disableUnsupportedMods(File(mcDir, "mods"))
 
-        Log.d("PING_LAUNCHER", "═══ mods/ 폴더 ═══")
+        Log.d("FLAME_LAUNCHER", "═══ mods/ 폴더 ═══")
         File(mcDir, "mods").listFiles()?.forEach {
-            Log.d("PING_LAUNCHER", "  ${it.name} (${it.length()}B)")
+            Log.d("FLAME_LAUNCHER", "  ${it.name} (${it.length()}B)")
         }
 
         Thread {
@@ -2014,13 +2014,13 @@ class MinecraftActivity : BaseActivity() {
                         "\${version_type}"      to if (isFabric) "Fabric" else "release",
                         "\${user_properties}"   to "{}",
                         "\${profile_name}"      to username,
-                        "\${launcher_name}"     to "PingLauncher",
+                        "\${launcher_name}"     to "FlameLauncher",
                         "\${launcher_version}"  to "1.0"
                     )
                     val resolved = legacyArgs.map { arg ->
                         placeholders.entries.fold(arg) { acc, (k, v) -> acc.replace(k, v) }
                     }
-                    Log.d("PING_LAUNCHER", "legacy mcArgs (${resolved.size}): $resolved")
+                    Log.d("FLAME_LAUNCHER", "legacy mcArgs (${resolved.size}): $resolved")
                     resolved.toTypedArray()
                 } else {
                     // ── 1.13+ (또는 Fabric/모드팩): 기존 하드코딩 + 메타 추가 인자 ──
@@ -2052,8 +2052,8 @@ class MinecraftActivity : BaseActivity() {
                     }
                 }
 
-                Log.d("PING_LAUNCHER", "🎨 적용된 렌더러: ${renderer.displayName}")
-                rendererEnv.forEach { (k, v) -> Log.d("PING_LAUNCHER", "  env $k=$v") }
+                Log.d("FLAME_LAUNCHER", "🎨 적용된 렌더러: ${renderer.displayName}")
+                rendererEnv.forEach { (k, v) -> Log.d("FLAME_LAUNCHER", "  env $k=$v") }
                 launcher.applyEnv(rendererEnv)
 
                 // JNA 네이티브(libjnidispatch.so) 강제 지정 (ZL2 방식).
@@ -2061,10 +2061,10 @@ class MinecraftActivity : BaseActivity() {
                 // 그 경로를 jna.boot.library.path 로 지정해 추출 없이 직접 로드하게 한다.
                 val jnaDispatch = File(applicationInfo.nativeLibraryDir, "libjnidispatch.so")
                 val jnaBootPath = if (jnaDispatch.exists()) {
-                    Log.d("PING_LAUNCHER", "🧩 JNA 부트 경로: ${applicationInfo.nativeLibraryDir}")
+                    Log.d("FLAME_LAUNCHER", "🧩 JNA 부트 경로: ${applicationInfo.nativeLibraryDir}")
                     applicationInfo.nativeLibraryDir
                 } else {
-                    Log.w("PING_LAUNCHER", "⚠️ libjnidispatch.so 가 nativeLibraryDir 에 없음 — JNA 모드 크래시 가능")
+                    Log.w("FLAME_LAUNCHER", "⚠️ libjnidispatch.so 가 nativeLibraryDir 에 없음 — JNA 모드 크래시 가능")
                     null
                 }
 
@@ -2075,16 +2075,16 @@ class MinecraftActivity : BaseActivity() {
                     jnaTmpDir = cacheDir.absolutePath,
                 )
 
-                Log.d("PING_LAUNCHER", "정규화 후 JVM 인자 ${normalizedJvmArgs.size}개")
+                Log.d("FLAME_LAUNCHER", "정규화 후 JVM 인자 ${normalizedJvmArgs.size}개")
                 normalizedJvmArgs.forEachIndexed { idx, a ->
                     if (a.startsWith("--add-") || a.startsWith("--module-path") || a.startsWith("--patch-module")) {
-                        Log.d("PING_LAUNCHER", "  [$idx] $a")
+                        Log.d("FLAME_LAUNCHER", "  [$idx] $a")
                     }
                 }
 
                 launcher.bootMinecraftJVM(libJvmPath, normalizedJvmArgs, mcArgs)
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "MC 실행 예외: ${e.message}")
+                Log.e("FLAME_LAUNCHER", "MC 실행 예외: ${e.message}")
             } finally {
                 val crashDir = File(instanceBase, "crash-reports")
                 val files = crashDir.listFiles()
@@ -2101,7 +2101,7 @@ class MinecraftActivity : BaseActivity() {
         }.start()
 
         Thread {
-            Log.d("PING_LAUNCHER", "🔵 showingWindow 워치독 시작")
+            Log.d("FLAME_LAUNCHER", "🔵 showingWindow 워치독 시작")
             val deadline = System.currentTimeMillis() + 120_000
             var attempts = 0
             var success = false
@@ -2113,19 +2113,19 @@ class MinecraftActivity : BaseActivity() {
                 try {
                     if (nativeTrySetupShowingWindow()) {
                         if (!success) {
-                            Log.d("PING_LAUNCHER", "✅ showingWindow 첫 세팅 (시도 $attempts, 경과 ${attempts * 50}ms 이내)")
+                            Log.d("FLAME_LAUNCHER", "✅ showingWindow 첫 세팅 (시도 $attempts, 경과 ${attempts * 50}ms 이내)")
                             success = true
                             interval = 5000L   // 잡힌 뒤엔 느슨하게
                         }
                     } else if (attempts % 40 == 0 && !success) {
-                        Log.d("PING_LAUNCHER", "🔵 대기중... (시도 $attempts)")
+                        Log.d("FLAME_LAUNCHER", "🔵 대기중... (시도 $attempts)")
                     }
                 } catch (e: Throwable) {
-                    Log.w("PING_LAUNCHER", "워치독 예외: ${e.message}")
+                    Log.w("FLAME_LAUNCHER", "워치독 예외: ${e.message}")
                 }
                 Thread.sleep(interval)
             }
-            Log.d("PING_LAUNCHER", "🔵 워치독 종료 (success=$success)")
+            Log.d("FLAME_LAUNCHER", "🔵 워치독 종료 (success=$success)")
         }.apply { isDaemon = true; start() }
     }
 
@@ -2260,7 +2260,7 @@ class MinecraftActivity : BaseActivity() {
     }
 
     private fun handlePhysicalKey(event: KeyEvent): Boolean {
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "🔑 handlePhysicalKey: keyCode=${event.keyCode} " +
                     "action=${event.action} src=0x${event.source.toString(16)}")
 
@@ -2369,7 +2369,7 @@ class MinecraftActivity : BaseActivity() {
     }
 
     private fun sendCharToMc(c: Char, mods: Int = 0) {
-        Log.d("PING_LAUNCHER", "📝 sendCharToMc: '$c' (0x${c.code.toString(16)}) mods=$mods")
+        Log.d("FLAME_LAUNCHER", "📝 sendCharToMc: '$c' (0x${c.code.toString(16)}) mods=$mods")
         try {
             val cb = Class.forName("org.lwjgl.glfw.CallbackBridge")
 
@@ -2380,7 +2380,7 @@ class MinecraftActivity : BaseActivity() {
             cb.getMethod("nativeSendCharMods", Char::class.java, Int::class.java)
                 .invoke(null, c, mods)
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "📝 sendChar 예외", e)
+            Log.e("FLAME_LAUNCHER", "📝 sendChar 예외", e)
         }
     }
 
@@ -2441,7 +2441,7 @@ class MinecraftActivity : BaseActivity() {
     private fun resolveRendererForVersion(): Renderer {
         val base = RendererManager.load(this)
         if (isPre113Version(versionId) && base.id != "gl4es" && base.id != "gl4es_desktop") {
-            Log.w("PING_LAUNCHER",
+            Log.w("FLAME_LAUNCHER",
                 "🕹️ pre-1.13 레거시($versionId) 감지 → 렌더러 GL4ES 강제 폴백 (기존: ${base.id})")
             return Renderer.fromId("gl4es")
         }
@@ -2459,7 +2459,7 @@ class MinecraftActivity : BaseActivity() {
         return modsDir.listFiles()?.count { f ->
             f.isFile && (
                     f.name.endsWith(".jar", ignoreCase = true) ||
-                            f.name.endsWith(".jar.pingdisabled", ignoreCase = true)
+                            f.name.endsWith(".jar.flamedisabled", ignoreCase = true)
                     )
         } ?: 0
     }
@@ -2671,7 +2671,7 @@ class MinecraftActivity : BaseActivity() {
         if (brandNewInstance && existing.none { it.startsWith("lang:") } && !isPre16) {
             val mcLang = systemMinecraftLang()
             upsert("lang", mcLang)
-            Log.d("PING_LAUNCHER", "🌐 최초 실행 — 시스템 언어로 lang=$mcLang 설정")
+            Log.d("FLAME_LAUNCHER", "🌐 최초 실행 — 시스템 언어로 lang=$mcLang 설정")
         } else if (isPre16) {
             // pre-1.6 은 lang 을 주입하지 않을 뿐 아니라, 이전 (버그 있던) 실행에서 이미 박힌
             //   소문자/미지원 lang 줄이 있으면 제거한다. 그래야 StringTranslate 가 내장 기본값으로
@@ -2679,15 +2679,15 @@ class MinecraftActivity : BaseActivity() {
             val before = existing.size
             existing.removeAll { it.startsWith("lang:") }
             if (existing.size != before) {
-                Log.d("PING_LAUNCHER", "🌐 pre-1.6($versionId) — 기존 lang 줄 제거(StringTranslate NPE 회피)")
+                Log.d("FLAME_LAUNCHER", "🌐 pre-1.6($versionId) — 기존 lang 줄 제거(StringTranslate NPE 회피)")
             } else {
-                Log.d("PING_LAUNCHER", "🌐 pre-1.6($versionId) — 시스템 언어 주입 건너뜀 (기본 언어 사용)")
+                Log.d("FLAME_LAUNCHER", "🌐 pre-1.6($versionId) — 시스템 언어 주입 건너뜀 (기본 언어 사용)")
             }
         }
 
         // ── 첫 실행 + 무거운 모드팩 → 렌더 설정 강제 하향 ──
         val tier = computePerfTier(modCount)
-        val marker = File(optionsFile.parentFile, ".ping_perf_applied")
+        val marker = File(optionsFile.parentFile, ".flame_perf_applied")
         val isFirstLaunch = !marker.exists()
 
         if (isFirstLaunch && tier != PerfTier.VANILLA) {
@@ -2710,11 +2710,11 @@ class MinecraftActivity : BaseActivity() {
                     marker.parentFile?.mkdirs()
                     marker.writeText("tier=$tier\nmodCount=$modCount\n")
                 }
-                Log.d("PING_LAUNCHER",
+                Log.d("FLAME_LAUNCHER",
                     "⚙️ 첫 실행 성능 하향 적용: tier=$tier modCount=$modCount floor=$floor")
             }
         } else if (tier != PerfTier.VANILLA) {
-            Log.d("PING_LAUNCHER",
+            Log.d("FLAME_LAUNCHER",
                 "⚙️ 성능 하향 건너뜀(이미 적용됨): tier=$tier modCount=$modCount")
         }
 
@@ -2723,7 +2723,7 @@ class MinecraftActivity : BaseActivity() {
             ?.substringAfter("guiScale:")?.trim()?.toIntOrNull() ?: 0
 
         optionsFile.writeText(existing.joinToString("\n"))
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync " +
                     "renderDist=${currentInt("renderDistance")} simDist=${currentInt("simulationDistance")} " +
                     "tier=$tier mipmap=0")
@@ -2775,10 +2775,10 @@ class MinecraftActivity : BaseActivity() {
             }
 
             fmlToml.writeText(lines.joinToString("\n"))
-            Log.d("PING_LAUNCHER",
+            Log.d("FLAME_LAUNCHER",
                 "🪟 fml.toml sync: earlyWindow=${if (ENABLE_EARLY_WINDOW) "ON(fmlearlywindow)" else "OFF(none)"} (${fmlToml.absolutePath})")
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "fml.toml 수정 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "fml.toml 수정 실패: ${e.message}", e)
         }
     }
 
@@ -2832,10 +2832,10 @@ class MinecraftActivity : BaseActivity() {
                 assets.open("lwjgl3/$jarName").use { input ->
                     target.outputStream().use { output -> input.copyTo(output) }
                 }
-                Log.d("PING_LAUNCHER", "📦 LWJGL jar 추출: $jarName (${target.length()} bytes)")
+                Log.d("FLAME_LAUNCHER", "📦 LWJGL jar 추출: $jarName (${target.length()} bytes)")
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "LWJGL jar 추출 실패", e)
+            Log.e("FLAME_LAUNCHER", "LWJGL jar 추출 실패", e)
         }
     }
 
@@ -2846,7 +2846,7 @@ class MinecraftActivity : BaseActivity() {
             ?.let { it.requestFocus() }
             ?: window.decorView.requestFocus()
 
-        Log.d("PING_LAUNCHER", "onResume — surface 재바인딩 대기")
+        Log.d("FLAME_LAUNCHER", "onResume — surface 재바인딩 대기")
     }
 
     override fun onPause() {

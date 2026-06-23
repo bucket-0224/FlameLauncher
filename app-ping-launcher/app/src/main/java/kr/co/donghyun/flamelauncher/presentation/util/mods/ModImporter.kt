@@ -59,7 +59,7 @@ object ModImporter {
                 if (dest.exists() && dest.length() > 0) added.add(safeName)
                 else skipped.add("$safeName (복사 실패)")
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "모드 복사 실패: $safeName", e)
+                Log.e("FLAME_LAUNCHER", "모드 복사 실패: $safeName", e)
                 skipped.add("$safeName (${e.message ?: "오류"})")
             }
         }

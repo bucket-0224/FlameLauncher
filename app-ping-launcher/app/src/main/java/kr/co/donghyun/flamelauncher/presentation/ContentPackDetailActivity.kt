@@ -439,7 +439,7 @@ class ContentPackDetailActivity : BaseActivity() {
                         ContentSource.MODRINTH -> fetchModrinthDetail(modStringId)
                     }
                 } catch (e: Exception) {
-                    Log.e("PING_LAUNCHER", "상세 정보 로드 실패: ${e.message}")
+                    Log.e("FLAME_LAUNCHER", "상세 정보 로드 실패: ${e.message}")
                 } finally {
                     _isLoading.value = false
                 }
@@ -609,7 +609,7 @@ class ContentPackDetailActivity : BaseActivity() {
                 Gson().fromJson<CurseForgeListResponse<CurseForgeFile>>(body, type).data
             }
         } catch (e: Exception) {
-            Log.w("PING_LAUNCHER", "파일 감지 페치 실패: ${e.message}")
+            Log.w("FLAME_LAUNCHER", "파일 감지 페치 실패: ${e.message}")
             emptyList()
         }
     }
@@ -630,7 +630,7 @@ class ContentPackDetailActivity : BaseActivity() {
                 }
             }
         }
-        Log.d("PING_LAUNCHER", "🔍 supported loaders: $out (files=${files.size})")
+        Log.d("FLAME_LAUNCHER", "🔍 supported loaders: $out (files=${files.size})")
         return out
     }
 
@@ -646,7 +646,7 @@ class ContentPackDetailActivity : BaseActivity() {
                 if (MC_VERSION_REGEX.matches(gv.trim())) out += gv.trim()
             }
         }
-        Log.d("PING_LAUNCHER", "🔍 supported MC versions: $out (files=${files.size})")
+        Log.d("FLAME_LAUNCHER", "🔍 supported MC versions: $out (files=${files.size})")
         return out
     }
 
@@ -693,7 +693,7 @@ class ContentPackDetailActivity : BaseActivity() {
             .sortedWith(compareByDescending<VersionLoaderCombo> { it.sortKey }
                 .thenBy { it.loader?.ordinal ?: -1 })
 
-        Log.d("PING_LAUNCHER", "🔍 version×loader combos: ${result.map { it.label }} (files=${files.size})")
+        Log.d("FLAME_LAUNCHER", "🔍 version×loader combos: ${result.map { it.label }} (files=${files.size})")
         return result
     }
 
@@ -745,7 +745,7 @@ class ContentPackDetailActivity : BaseActivity() {
                 )
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "인스턴스 스캔 실패: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "인스턴스 스캔 실패: ${e.message}")
             emptyList()
         }
     }

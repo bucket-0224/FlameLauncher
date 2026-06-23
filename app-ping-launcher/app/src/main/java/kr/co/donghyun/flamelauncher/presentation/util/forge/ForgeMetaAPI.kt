@@ -108,12 +108,12 @@ class ForgeMetaAPI {
         if (minSafeBuild == null) return true
         val build = forgeBuildNumber(forge)
         if (build == null) {
-            Log.w("PING_LAUNCHER", "Forge 빌드 번호 파싱 실패: $forge → 필터 통과")
+            Log.w("FLAME_LAUNCHER", "Forge 빌드 번호 파싱 실패: $forge → 필터 통과")
             return true
         }
         val ok = build >= minSafeBuild
         if (!ok) {
-            Log.d("PING_LAUNCHER",
+            Log.d("FLAME_LAUNCHER",
                 "🚫 $mcVersion-$forge 제외 (JDK-8032636 CME 위험, 최소 안전 빌드 $minSafeBuild)")
         }
         return ok

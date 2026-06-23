@@ -249,7 +249,7 @@ dependencies {
     // ── ProcessorLauncher.java → assets/forge-runtime/processor-launcher.jar 빌드 ──
 // embedded OpenJDK 위에서 돌 코드라 안드로이드 dex 와는 별도로 JVM 8 호환 jar 로 패키징.
     val processorLauncherSrc =
-        file("src/main/java/kr/co/donghyun/pinglauncher/forge/ProcessorLauncher.java")
+        file("src/main/java/kr/co/donghyun/flamelauncher/forge/ProcessorLauncher.java")
     val processorLauncherClassesDir =
         layout.buildDirectory.dir("processor-launcher/classes")
     val processorLauncherJarOut =

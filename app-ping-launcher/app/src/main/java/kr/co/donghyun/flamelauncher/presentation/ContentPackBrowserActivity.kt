@@ -130,7 +130,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     .takeIf { it > 0 }
 
                 val contentType = _selectedContentType.value
-                Log.d("PING_LAUNCHER",
+                Log.d("FLAME_LAUNCHER",
                     "install request: mod=${mod.name} type=$contentType " +
                             "targetInstance=$targetInstanceId targetVersion=$targetVersion " +
                             "targetLoader=$targetLoader targetWorld=$targetWorld targetFileId=$targetFileId")
@@ -262,7 +262,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             currentPageIndex += results.size
             _hasMore.value = results.size >= pageSize
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "검색 실패: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "검색 실패: ${e.message}")
             _hasMore.value = false
         } finally {
             _isLoading.value = false
@@ -313,7 +313,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             return runCatching {
                 gson.fromJson<CurseForgeListResponse<CurseForgeMod>>(body, type).data
             }.getOrElse {
-                Log.e("PING_LAUNCHER", "검색 응답 파싱 실패: ${it.message}")
+                Log.e("FLAME_LAUNCHER", "검색 응답 파싱 실패: ${it.message}")
                 emptyList()
             }
         }
@@ -365,10 +365,10 @@ class ContentPackBrowserActivity : BaseActivity() {
 
             // 2) zip 안에서 level.dat 위치 추적
             val worldRoot = findWorldRootInZip(tmpZip) ?: run {
-                Log.e("PING_LAUNCHER", "🗺️ zip 안에 level.dat 없음 — 맵 아님? ${file.fileName}")
+                Log.e("FLAME_LAUNCHER", "🗺️ zip 안에 level.dat 없음 — 맵 아님? ${file.fileName}")
                 return@withContext false
             }
-            Log.d("PING_LAUNCHER", "🗺️ worldRoot in zip = '${worldRoot.ifEmpty { "(root)" }}'")
+            Log.d("FLAME_LAUNCHER", "🗺️ worldRoot in zip = '${worldRoot.ifEmpty { "(root)" }}'")
 
             // 3) 폴더명 결정
             val baseName = when {
@@ -421,15 +421,15 @@ class ContentPackBrowserActivity : BaseActivity() {
             }
 
             if (extractedFiles == 0) {
-                Log.e("PING_LAUNCHER", "🗺️ 추출된 파일이 0개 — 손상된 zip?")
+                Log.e("FLAME_LAUNCHER", "🗺️ 추출된 파일이 0개 — 손상된 zip?")
                 target.deleteRecursively()
                 return@withContext false
             }
 
-            Log.d("PING_LAUNCHER", "🗺️ 맵 설치 완료: ${target.name} ($extractedFiles 파일)")
+            Log.d("FLAME_LAUNCHER", "🗺️ 맵 설치 완료: ${target.name} ($extractedFiles 파일)")
             true
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "🗺️ 맵 설치 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "🗺️ 맵 설치 실패: ${e.message}", e)
             false
         } finally {
             tmpZip.delete()
@@ -495,7 +495,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             instanceDir.resolve("saves")
         val worldDir = savesDir.resolve(worldName)
         if (!worldDir.isDirectory) {
-            Log.e("PING_LAUNCHER", "📦 대상 월드 없음: $worldName")
+            Log.e("FLAME_LAUNCHER", "📦 대상 월드 없음: $worldName")
             return@withContext false
         }
         val datapacksDir = worldDir.resolve("datapacks")
@@ -518,9 +518,9 @@ class ContentPackBrowserActivity : BaseActivity() {
                     zip.entries().asSequence().any { !it.isDirectory && it.name.endsWith("/pack.mcmeta") }
                 }
                 if (nested) {
-                    Log.e("PING_LAUNCHER", "📦 데이터팩이 폴더로 감싸져 있음(루트에 pack.mcmeta 없음): ${file.fileName}")
+                    Log.e("FLAME_LAUNCHER", "📦 데이터팩이 폴더로 감싸져 있음(루트에 pack.mcmeta 없음): ${file.fileName}")
                 } else {
-                    Log.e("PING_LAUNCHER", "📦 pack.mcmeta 없음 — 데이터팩 아님? ${file.fileName}")
+                    Log.e("FLAME_LAUNCHER", "📦 pack.mcmeta 없음 — 데이터팩 아님? ${file.fileName}")
                 }
                 return@withContext false
             }
@@ -538,10 +538,10 @@ class ContentPackBrowserActivity : BaseActivity() {
             }
             tmpZip.copyTo(target, overwrite = false)
 
-            Log.d("PING_LAUNCHER", "📦 데이터팩 설치 완료: ${target.name} → $worldName/datapacks/")
+            Log.d("FLAME_LAUNCHER", "📦 데이터팩 설치 완료: ${target.name} → $worldName/datapacks/")
             true
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "📦 데이터팩 설치 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "📦 데이터팩 설치 실패: ${e.message}", e)
             false
         } finally {
             tmpZip.delete()
@@ -579,14 +579,14 @@ class ContentPackBrowserActivity : BaseActivity() {
                 when (contentType) {
                     ContentType.MODPACK -> installModpack(cfMod, fileId)
                     else -> {
-                        Log.e("PING_LAUNCHER",
+                        Log.e("FLAME_LAUNCHER",
                             "❌ $contentType 가 installDirect 로 들어옴 — detailLauncher 분기 확인 필요")
                         _statusMessage.value = "내부 오류: 설치 타겟이 지정되지 않음"
                     }
                 }
                 refreshInstalledIds()
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "설치 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "설치 실패: ${e.message}", e)
             } finally {
                 endInstall()
             }
@@ -607,7 +607,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                         ?: versions.firstOrNull()
                     val file = version?.files?.firstOrNull { it.primary } ?: version?.files?.firstOrNull()
                     if (file == null) {
-                        Log.e("PING_LAUNCHER", "❌ Modrinth 모드팩 파일 없음: ${mod.id}")
+                        Log.e("FLAME_LAUNCHER", "❌ Modrinth 모드팩 파일 없음: ${mod.id}")
                         return@withContext null
                     }
                     val instanceId = InstanceManager.modpackId(mod.name)
@@ -644,7 +644,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                 _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
                 _statusMessage.value = "✅ ${mod.name} 설치 완료"
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "Modrinth 모드팩 설치 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "Modrinth 모드팩 설치 실패: ${e.message}", e)
                 _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = e.message)
             } finally {
                 endInstall()
@@ -683,30 +683,30 @@ class ContentPackBrowserActivity : BaseActivity() {
             prefix == "fabric-api"
         }
         if (hasFabricApi) {
-            Log.d("PING_LAUNCHER", "🩹 Fabric API 이미 설치됨 — 스킵")
+            Log.d("FLAME_LAUNCHER", "🩹 Fabric API 이미 설치됨 — 스킵")
             return
         }
 
-        Log.d("PING_LAUNCHER", "🩹 Fabric API 없음 → 자동 설치 (mc=$mcVersion)")
+        Log.d("FLAME_LAUNCHER", "🩹 Fabric API 없음 → 자동 설치 (mc=$mcVersion)")
 
         val file = withContext(Dispatchers.IO) {
             fetchLatestFileForVersion(FABRIC_API_MOD_ID, mcVersion, "fabric")
         } ?: run {
-            Log.w("PING_LAUNCHER", "🩹 Fabric API: mc=$mcVersion 호환 빌드 없음 — 스킵")
+            Log.w("FLAME_LAUNCHER", "🩹 Fabric API: mc=$mcVersion 호환 빌드 없음 — 스킵")
             return
         }
 
         val outFile = modsDir.resolve(file.fileName)
         if (outFile.exists() && outFile.length() == file.fileLength && file.fileLength > 0) {
-            Log.d("PING_LAUNCHER", "🩹 Fabric API 동일 파일 존재 — 스킵")
+            Log.d("FLAME_LAUNCHER", "🩹 Fabric API 동일 파일 존재 — 스킵")
             return
         }
         try {
             val url = resolveDownloadUrl(file)
             withContext(Dispatchers.IO) { downloadFile(url, outFile, file.fileName) }
-            Log.d("PING_LAUNCHER", "🩹 Fabric API 자동 설치 완료: ${file.fileName}")
+            Log.d("FLAME_LAUNCHER", "🩹 Fabric API 자동 설치 완료: ${file.fileName}")
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "🩹 Fabric API 다운로드 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "🩹 Fabric API 다운로드 실패: ${e.message}", e)
         }
     }
 
@@ -728,7 +728,7 @@ class ContentPackBrowserActivity : BaseActivity() {
     ) {
         val normalizedLoader = loaderType?.lowercase()
         if (normalizedLoader !in setOf("fabric", "neoforge")) {
-            Log.d("PING_LAUNCHER", "🩹 Podium augment 스킵 — loader=$normalizedLoader (Fabric/NeoForge 만 지원)")
+            Log.d("FLAME_LAUNCHER", "🩹 Podium augment 스킵 — loader=$normalizedLoader (Fabric/NeoForge 만 지원)")
             return
         }
 
@@ -746,45 +746,45 @@ class ContentPackBrowserActivity : BaseActivity() {
             extractModFilePrefix(f.name).lowercase() in sodiumPrefixes
         }
         if (sodiumJar == null) {
-            Log.d("PING_LAUNCHER", "🩹 모드팩 mods/ 에 Sodium 본체 없음 — Podium augment 불필요")
+            Log.d("FLAME_LAUNCHER", "🩹 모드팩 mods/ 에 Sodium 본체 없음 — Podium augment 불필요")
             return
         }
 
         val hasPodium = jars.any { it.name.startsWith("podium", ignoreCase = true) }
         if (hasPodium) {
-            Log.d("PING_LAUNCHER", "🩹 모드팩에 Podium 이미 포함됨 (${jars.first { it.name.startsWith("podium", true) }.name}) — 스킵")
+            Log.d("FLAME_LAUNCHER", "🩹 모드팩에 Podium 이미 포함됨 (${jars.first { it.name.startsWith("podium", true) }.name}) — 스킵")
             return
         }
 
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "🩹 모드팩 Sodium 감지(${sodiumJar.name}) → Podium 자동 추가 시도 (mc=$mcVersion, loader=$normalizedLoader)")
 
         val podiumFile = withContext(Dispatchers.IO) {
             fetchLatestFileForVersion(PODIUM_MOD_ID, mcVersion, normalizedLoader)
                 ?: fetchLatestFileForVersion(PODIUM_MOD_ID, gameVersion = null, loaderType = normalizedLoader)?.also {
-                    Log.w("PING_LAUNCHER",
+                    Log.w("FLAME_LAUNCHER",
                         "🩹 Podium: mc=$mcVersion 매칭 실패 → loader=$normalizedLoader 최신(${it.fileName})으로 폴백")
                 }
                 ?: fetchLatestFileForVersion(PODIUM_MOD_ID, gameVersion = null, loaderType = null)?.also {
-                    Log.w("PING_LAUNCHER",
+                    Log.w("FLAME_LAUNCHER",
                         "🩹 Podium: loader 매칭도 실패 → 가장 최신(${it.fileName})으로 폴백")
                 }
         } ?: run {
-            Log.w("PING_LAUNCHER", "🩹 Podium 호환 파일 못 찾음 — 스킵")
+            Log.w("FLAME_LAUNCHER", "🩹 Podium 호환 파일 못 찾음 — 스킵")
             return
         }
 
         val outFile = modsDir.resolve(podiumFile.fileName)
         if (outFile.exists() && outFile.length() == podiumFile.fileLength && podiumFile.fileLength > 0) {
-            Log.d("PING_LAUNCHER", "🩹 Podium 이미 같은 파일 존재 — 스킵")
+            Log.d("FLAME_LAUNCHER", "🩹 Podium 이미 같은 파일 존재 — 스킵")
             return
         }
         try {
             val url = resolveDownloadUrl(podiumFile)
             withContext(Dispatchers.IO) { downloadFile(url, outFile, podiumFile.fileName) }
-            Log.d("PING_LAUNCHER", "🩹 Podium 자동 설치 완료: ${podiumFile.fileName}")
+            Log.d("FLAME_LAUNCHER", "🩹 Podium 자동 설치 완료: ${podiumFile.fileName}")
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "🩹 Podium 다운로드 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "🩹 Podium 다운로드 실패: ${e.message}", e)
         }
     }
 
@@ -818,19 +818,19 @@ class ContentPackBrowserActivity : BaseActivity() {
         //   3) 그것마저 없으면 아무거나 최신
         val podiumFile = fetchLatestFileForVersion(PODIUM_MOD_ID, mcVersion, loaderType)
             ?: fetchLatestFileForVersion(PODIUM_MOD_ID, gameVersion = null, loaderType = loaderType)?.also {
-                Log.w("PING_LAUNCHER",
+                Log.w("FLAME_LAUNCHER",
                     "🩹 Podium: mc=$mcVersion 호환 파일 없음 → loader=$loaderType 최신(${it.fileName})으로 폴백")
             }
             ?: fetchLatestFileForVersion(PODIUM_MOD_ID, gameVersion = null, loaderType = null)?.also {
-                Log.w("PING_LAUNCHER",
+                Log.w("FLAME_LAUNCHER",
                     "🩹 Podium: loader=$loaderType 매칭도 실패 → 가장 최신 빌드(${it.fileName})로 폴백")
             }
             ?: run {
-                Log.w("PING_LAUNCHER", "Podium 파일 자체를 못 찾음 — 스킵")
+                Log.w("FLAME_LAUNCHER", "Podium 파일 자체를 못 찾음 — 스킵")
                 return items
             }
 
-        Log.d("PING_LAUNCHER", "🩹 Sodium 감지 → Podium 자동 추가: ${podiumFile.fileName}")
+        Log.d("FLAME_LAUNCHER", "🩹 Sodium 감지 → Podium 자동 추가: ${podiumFile.fileName}")
         return items + (podiumMod to podiumFile)
     }
 
@@ -845,7 +845,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             ?: throw IllegalStateException("인스턴스 메타 없음: $instanceId")
 
         val loaderFilter = if (contentType == ContentType.MOD) meta.loaderType else null
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "addContentToInstance: mod=${mod.id} type=$contentType " +
                     "instance=$instanceId mc=${meta.mcVersion} loaderFilter=$loaderFilter world=$worldName")
 
@@ -853,7 +853,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         val rootFile = withContext(Dispatchers.IO) {
             fetchLatestFileForVersion(mod.id, meta.mcVersion, loaderFilter)
         } ?: run {
-            Log.w("PING_LAUNCHER", "❌ ${mod.name} — MC ${meta.mcVersion} 호환 파일 없음")
+            Log.w("FLAME_LAUNCHER", "❌ ${mod.name} — MC ${meta.mcVersion} 호환 파일 없음")
             _statusMessage.value = "${mod.name} — MC ${meta.mcVersion} 호환 파일 없음"
             return false
         }
@@ -865,7 +865,7 @@ class ContentPackBrowserActivity : BaseActivity() {
 
         if (contentType == ContentType.DATAPACK) {
             if (worldName.isNullOrBlank()) {
-                Log.e("PING_LAUNCHER", "📦 데이터팩 설치인데 대상 월드가 지정되지 않음")
+                Log.e("FLAME_LAUNCHER", "📦 데이터팩 설치인데 대상 월드가 지정되지 않음")
                 _statusMessage.value = "데이터팩을 넣을 월드를 선택해주세요."
                 return false
             }
@@ -885,10 +885,10 @@ class ContentPackBrowserActivity : BaseActivity() {
         }
         val allItems = withPodium   // 기존: val allItems = listOf(mod to rootFile) + deps
 
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "📦 설치 대상 ${allItems.size}개 (메인 1 + 의존성 ${deps.size})")
         deps.forEach { (m, f) ->
-            Log.d("PING_LAUNCHER", "  ↳ ${m.name} → ${f.fileName} (rt=${f.releaseType})")
+            Log.d("FLAME_LAUNCHER", "  ↳ ${m.name} → ${f.fileName} (rt=${f.releaseType})")
         }
 
         // ── 3) 출력 디렉토리 결정 ────────────────────────────────────
@@ -916,7 +916,7 @@ class ContentPackBrowserActivity : BaseActivity() {
 
             val outFile = outDir.resolve(f.fileName)
             if (outFile.exists() && outFile.length() == f.fileLength && f.fileLength > 0) {
-                Log.d("PING_LAUNCHER", "  → 이미 동일 파일 존재, 스킵: ${f.fileName}")
+                Log.d("FLAME_LAUNCHER", "  → 이미 동일 파일 존재, 스킵: ${f.fileName}")
                 return@forEachIndexed
             }
 
@@ -926,14 +926,14 @@ class ContentPackBrowserActivity : BaseActivity() {
                     downloadFile(downloadUrl, outFile, f.fileName)
                 }
                 if (!outFile.exists() || outFile.length() == 0L) {
-                    Log.e("PING_LAUNCHER", "  ❌ 검증 실패: ${outFile.absolutePath}")
+                    Log.e("FLAME_LAUNCHER", "  ❌ 검증 실패: ${outFile.absolutePath}")
                     allOk = false
                 } else {
-                    Log.d("PING_LAUNCHER",
+                    Log.d("FLAME_LAUNCHER",
                         "  ✅ ${f.fileName} (${outFile.length()}B)")
                 }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "  ❌ 예외: ${f.fileName} — ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "  ❌ 예외: ${f.fileName} — ${e.message}", e)
                 allOk = false
             }
         }
@@ -977,7 +977,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             ?: throw IllegalStateException("인스턴스 메타 없음: $instanceId")
 
         val loaderFilter = if (contentType == ContentType.MOD) meta.loaderType?.lowercase() else null
-        Log.d("PING_LAUNCHER",
+        Log.d("FLAME_LAUNCHER",
             "addModrinthContentToInstance: project=${item.id} type=$contentType " +
                     "instance=$instanceId mc=${meta.mcVersion} loaderFilter=$loaderFilter world=$worldName")
 
@@ -985,7 +985,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         val rootVersion = withContext(Dispatchers.IO) {
             pickModrinthVersion(item.id, meta.mcVersion, loaderFilter)
         } ?: run {
-            Log.w("PING_LAUNCHER", "❌ ${item.name} — MC ${meta.mcVersion} 호환 Modrinth 버전 없음")
+            Log.w("FLAME_LAUNCHER", "❌ ${item.name} — MC ${meta.mcVersion} 호환 Modrinth 버전 없음")
             _statusMessage.value = "${item.name} — MC ${meta.mcVersion} 호환 버전 없음"
             return false
         }
@@ -1038,19 +1038,19 @@ class ContentPackBrowserActivity : BaseActivity() {
             }
             val outFile = outDir.resolve(f.filename)
             if (outFile.exists() && outFile.length() == f.size && f.size > 0) {
-                Log.d("PING_LAUNCHER", "  → 이미 동일 파일 존재, 스킵: ${f.filename}")
+                Log.d("FLAME_LAUNCHER", "  → 이미 동일 파일 존재, 스킵: ${f.filename}")
                 return@forEachIndexed
             }
             try {
                 withContext(Dispatchers.IO) { downloadFile(f.url, outFile, f.filename) }
                 if (!outFile.exists() || outFile.length() == 0L) {
-                    Log.e("PING_LAUNCHER", "  ❌ 검증 실패: ${outFile.absolutePath}")
+                    Log.e("FLAME_LAUNCHER", "  ❌ 검증 실패: ${outFile.absolutePath}")
                     allOk = false
                 } else {
-                    Log.d("PING_LAUNCHER", "  ✅ ${f.filename} (${outFile.length()}B)")
+                    Log.d("FLAME_LAUNCHER", "  ✅ ${f.filename} (${outFile.length()}B)")
                 }
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "  ❌ 예외: ${f.filename} — ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "  ❌ 예외: ${f.filename} — ${e.message}", e)
                 allOk = false
             }
         }
@@ -1139,7 +1139,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             instanceDir.resolve(".minecraft/saves") else instanceDir.resolve("saves")
         val worldDir = savesDir.resolve(worldName)
         if (!worldDir.isDirectory) {
-            Log.e("PING_LAUNCHER", "📦 대상 월드 없음: $worldName")
+            Log.e("FLAME_LAUNCHER", "📦 대상 월드 없음: $worldName")
             return@withContext false
         }
         val datapacksDir = worldDir.resolve("datapacks").also { it.mkdirs() }
@@ -1147,10 +1147,10 @@ class ContentPackBrowserActivity : BaseActivity() {
         try {
             downloadFile(url, outFile, fileName)
             val ok = outFile.exists() && outFile.length() > 0
-            if (ok) Log.d("PING_LAUNCHER", "✅ 데이터팩 설치: $fileName → $worldName")
+            if (ok) Log.d("FLAME_LAUNCHER", "✅ 데이터팩 설치: $fileName → $worldName")
             ok
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "데이터팩 설치 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "데이터팩 설치 실패: ${e.message}", e)
             false
         }
     }
@@ -1185,7 +1185,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         }
 
         optionsFile.writeText(lines.joinToString("\n"))
-        Log.d("PING_LAUNCHER", "📝 options.txt 갱신: $packToken (${optionsFile.absolutePath})")
+        Log.d("FLAME_LAUNCHER", "📝 options.txt 갱신: $packToken (${optionsFile.absolutePath})")
     }
 
     /**
@@ -1207,7 +1207,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             "shaderPack=$shaderFileName"
         )
         irisConfig.writeText(merged.joinToString("\n"))
-        Log.d("PING_LAUNCHER", "📝 iris.properties 갱신: $shaderFileName")
+        Log.d("FLAME_LAUNCHER", "📝 iris.properties 갱신: $shaderFileName")
     }
 
 // ── options.txt 의 resourcePacks 값 파싱/직렬화 ──
@@ -1238,7 +1238,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     addModrinthContentToInstance(mod, instanceId, contentType, worldName)
                     refreshInstalledIds()
                 } catch (e: Exception) {
-                    Log.e("PING_LAUNCHER", "Modrinth 기존 인스턴스 설치 실패: ${e.message}", e)
+                    Log.e("FLAME_LAUNCHER", "Modrinth 기존 인스턴스 설치 실패: ${e.message}", e)
                 } finally {
                     endInstall()
                 }
@@ -1252,7 +1252,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                 addContentToInstance(cfMod, instanceId, contentType, worldName)
                 refreshInstalledIds()
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "기존 인스턴스 설치 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "기존 인스턴스 설치 실패: ${e.message}", e)
             } finally {
                 endInstall()
             }
@@ -1274,7 +1274,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                 val versionEntry = withContext(Dispatchers.IO) {
                     VersionRepository().fetchVersionList().firstOrNull { it.id == mcVersion }
                 } ?: run {
-                    Log.e("PING_LAUNCHER", "MC $mcVersion manifest 못 찾음")
+                    Log.e("FLAME_LAUNCHER", "MC $mcVersion manifest 못 찾음")
                     _statusMessage.value = "MC $mcVersion 를 찾을 수 없습니다."
                     return@launch
                 }
@@ -1295,7 +1295,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                 refreshInstalledIds()
                 _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
             } catch (e: Exception) {
-                Log.e("PING_LAUNCHER", "신규 인스턴스 설치 실패: ${e.message}", e)
+                Log.e("FLAME_LAUNCHER", "신규 인스턴스 설치 실패: ${e.message}", e)
                 _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = e.message)
             } finally {
                 endInstall()
@@ -1311,7 +1311,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         val instanceId = InstanceManager.vanillaId(mcVersion)
         val instanceDir = InstanceManager.instanceDir(this, instanceId)
         if (InstanceManager.loadMeta(instanceDir) != null) {
-            Log.d("PING_LAUNCHER", "ℹ️ Vanilla 인스턴스 재사용: $instanceId")
+            Log.d("FLAME_LAUNCHER", "ℹ️ Vanilla 인스턴스 재사용: $instanceId")
             return instanceId
         }
 
@@ -1352,14 +1352,14 @@ class ContentPackBrowserActivity : BaseActivity() {
         val loaderVersion = loaderList.firstOrNull { it.loader.stable }?.loader?.version
             ?: loaderList.firstOrNull()?.loader?.version
             ?: run {
-                Log.e("PING_LAUNCHER", "Fabric loader 후보 없음 mc=$mcVersion")
+                Log.e("FLAME_LAUNCHER", "Fabric loader 후보 없음 mc=$mcVersion")
                 return null
             }
 
         val instanceId = InstanceManager.fabricId(mcVersion, loaderVersion)
         val instanceDir = InstanceManager.instanceDir(this, instanceId)
         if (InstanceManager.loadMeta(instanceDir) != null) {
-            Log.d("PING_LAUNCHER", "ℹ️ Fabric 인스턴스 재사용: $instanceId")
+            Log.d("FLAME_LAUNCHER", "ℹ️ Fabric 인스턴스 재사용: $instanceId")
             return instanceId
         }
 
@@ -1379,7 +1379,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             }.install(mcVersion, loaderVersion)
         }
         if (!fr.success) {
-            Log.e("PING_LAUNCHER", "Fabric 설치 실패: ${fr.error}")
+            Log.e("FLAME_LAUNCHER", "Fabric 설치 실패: ${fr.error}")
             return null
         }
         File(instanceDir, "mods").mkdirs()
@@ -1424,7 +1424,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         }
         if (loaderList.isEmpty()) {
             val name = if (isNeoForge) "NeoForge" else "Forge"
-            Log.e("PING_LAUNCHER", "$name 후보 없음 mc=$mcVersion")
+            Log.e("FLAME_LAUNCHER", "$name 후보 없음 mc=$mcVersion")
             _statusMessage.value = "$mcVersion 용 $name 빌드가 없습니다."
             return null
         }
@@ -1436,7 +1436,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         val instanceId = "${loaderType}_${mcVersion.replace('.', '_')}_${forgeVersion.replace('.', '_')}"
         val instanceDir = InstanceManager.instanceDir(this, instanceId)
         if (InstanceManager.loadMeta(instanceDir) != null) {
-            Log.d("PING_LAUNCHER", "ℹ️ $loaderType 인스턴스 재사용: $instanceId")
+            Log.d("FLAME_LAUNCHER", "ℹ️ $loaderType 인스턴스 재사용: $instanceId")
             return instanceId
         }
 
@@ -1458,13 +1458,13 @@ class ContentPackBrowserActivity : BaseActivity() {
             }.install(this@ContentPackBrowserActivity, mcVersion, forgeVersion, isNeoForge = isNeoForge)
         }
         if (!fr.success) {
-            Log.e("PING_LAUNCHER", "Forge 설치 실패: ${fr.error}")
+            Log.e("FLAME_LAUNCHER", "Forge 설치 실패: ${fr.error}")
             _statusMessage.value = "Forge 설치 실패: ${fr.error}"
             return null
         }
 
         if (fr.requiresProcessors) {
-            Log.i("PING_LAUNCHER",
+            Log.i("FLAME_LAUNCHER",
                 "Forge 1.13+ — ProcessorLauncher 경유로 부팅합니다. " +
                         "최초 실행 시 BinaryPatcher 등이 돌아가서 시간이 걸릴 수 있습니다.")
             _statusMessage.value = "Modern Forge — 최초 실행 시 client jar 패칭이 수행됩니다."
@@ -1514,12 +1514,12 @@ class ContentPackBrowserActivity : BaseActivity() {
                 ?: fetchLatestFileForVersion(mod.id, gameVersion = null, loaderType = null)
             else fetchLatestFileForVersion(mod.id, gameVersion = null, loaderType = null)
         } ?: run {
-            Log.e("PING_LAUNCHER", "❌ 모드팩 파일 정보 못 가져옴: mod=${mod.id} fileId=$fileId")
+            Log.e("FLAME_LAUNCHER", "❌ 모드팩 파일 정보 못 가져옴: mod=${mod.id} fileId=$fileId")
             _statusMessage.value = "❌ ${mod.name} 파일 정보를 가져올 수 없음"
             _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = "파일 정보 없음")
             return
         }
-        Log.d("PING_LAUNCHER", "📦 모드팩 설치 파일 확정: ${file.displayName} (id=${file.id}, rt=${file.releaseType})")
+        Log.d("FLAME_LAUNCHER", "📦 모드팩 설치 파일 확정: ${file.displayName} (id=${file.id}, rt=${file.releaseType})")
 
         // ── 1) 모드팩 zip 다운로드 + manifest 파싱 + overrides + 필수 모드들 ──
         _statusMessage.value = "${mod.name} 모드팩 추출 중..."
@@ -1531,7 +1531,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             ).install(mod, file.id, mcVersionOverride = file.primaryMcVersion())
         }
         if (!packResult.success) {
-            Log.e("PING_LAUNCHER", "❌ ModPackInstaller 실패: ${packResult.error}")
+            Log.e("FLAME_LAUNCHER", "❌ ModPackInstaller 실패: ${packResult.error}")
             _statusMessage.value = "❌ 모드팩 추출 실패: ${packResult.error}"
             _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = packResult.error)
             return
@@ -1540,7 +1540,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         val mcVersion = packResult.mcVersion
         val loaderType = packResult.loaderType?.lowercase()
         val loaderVersion = packResult.loaderVersion
-        Log.d("PING_LAUNCHER", "📦 모드팩 파싱: mc=$mcVersion, loader=$loaderType $loaderVersion")
+        Log.d("FLAME_LAUNCHER", "📦 모드팩 파싱: mc=$mcVersion, loader=$loaderType $loaderVersion")
 
         finalizeModpackInstance(
             instanceId = instanceId,
@@ -1579,7 +1579,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             runCatching { VersionRepository().fetchVersionList().firstOrNull { it.id == mcVersion } }
                 .getOrNull()
         } ?: run {
-            Log.e("PING_LAUNCHER", "❌ MC $mcVersion manifest 없음")
+            Log.e("FLAME_LAUNCHER", "❌ MC $mcVersion manifest 없음")
             _statusMessage.value = "❌ MC $mcVersion 매니페스트를 찾을 수 없음"
             _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = "MC manifest 없음")
             return
@@ -1608,7 +1608,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     }.install(mcVersion, loaderVersion)
                 }
                 if (!fr.success) {
-                    Log.e("PING_LAUNCHER", "❌ Fabric 설치 실패: ${fr.error}")
+                    Log.e("FLAME_LAUNCHER", "❌ Fabric 설치 실패: ${fr.error}")
                     _statusMessage.value = "❌ Fabric 설치 실패: ${fr.error}"
                     _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = fr.error)
                     return
@@ -1647,13 +1647,13 @@ class ContentPackBrowserActivity : BaseActivity() {
                     }.install(this@ContentPackBrowserActivity, mcVersion, loaderVersion, isNeoForge = isNeoForge)
                 }
                 if (!fr.success) {
-                    Log.e("PING_LAUNCHER", "❌ $label 설치 실패: ${fr.error}")
+                    Log.e("FLAME_LAUNCHER", "❌ $label 설치 실패: ${fr.error}")
                     _statusMessage.value = "❌ $label 설치 실패: ${fr.error}"
                     _progress.value = DownloadProgress(phase = DownloadPhase.ERROR, error = fr.error)
                     return
                 }
                 if (fr.requiresProcessors) {
-                    Log.i("PING_LAUNCHER", "ℹ️ Modern $label — 첫 실행 시 ProcessorLauncher 가 client jar 패칭")
+                    Log.i("FLAME_LAUNCHER", "ℹ️ Modern $label — 첫 실행 시 ProcessorLauncher 가 client jar 패칭")
                 }
                 InstanceMeta(
                     id = instanceId,
@@ -1673,7 +1673,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             }
 
             else -> {
-                Log.w("PING_LAUNCHER",
+                Log.w("FLAME_LAUNCHER",
                     "⚠️ 모드팩 loader 식별 실패 (raw=$loaderType) — Vanilla 로 폴백")
                 val legacyArgs = mcResult.minecraftArguments
                     ?.split(" ")?.filter { it.isNotBlank() } ?: emptyList()
@@ -1699,7 +1699,7 @@ class ContentPackBrowserActivity : BaseActivity() {
 
         _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
         _statusMessage.value = "✅ $displayName 설치 완료"
-        Log.d("PING_LAUNCHER", "✅ 모드팩 인스턴스 생성 완료: $instanceId (${finalMeta.loaderType ?: "vanilla"})")
+        Log.d("FLAME_LAUNCHER", "✅ 모드팩 인스턴스 생성 완료: $instanceId (${finalMeta.loaderType ?: "vanilla"})")
     }
 
 
@@ -1726,7 +1726,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                 gson.fromJson<CurseForgeResponse<CurseForgeFile>>(body, type).data
             }
         }.onFailure {
-            Log.w("PING_LAUNCHER", "파일 단건 조회 실패: mod=$modId file=$fileId — ${it.message}")
+            Log.w("FLAME_LAUNCHER", "파일 단건 조회 실패: mod=$modId file=$fileId — ${it.message}")
         }.getOrNull()
     }
 
@@ -1779,7 +1779,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     .sortedWith(compareBy({ it.releaseType }, { -it.id }))
                     .firstOrNull()
                     .also {
-                        Log.d("PING_LAUNCHER",
+                        Log.d("FLAME_LAUNCHER",
                             "📋 mod=$modId mc=$gameVersion loader=$loaderType " +
                                     "→ ${it?.fileName ?: "(없음)"} (rt=${it?.releaseType})")
                     }
@@ -1822,13 +1822,13 @@ class ContentPackBrowserActivity : BaseActivity() {
 
             val depMod = fetchModInfo(dep.modId)
             if (depMod == null) {
-                Log.w("PING_LAUNCHER", "  ↳ 의존성 mod 정보 못 받음: id=${dep.modId}")
+                Log.w("FLAME_LAUNCHER", "  ↳ 의존성 mod 정보 못 받음: id=${dep.modId}")
                 continue
             }
 
             val depFile = fetchLatestFileForVersion(dep.modId, mcVersion, loaderType)
             if (depFile == null) {
-                Log.w("PING_LAUNCHER",
+                Log.w("FLAME_LAUNCHER",
                     "  ↳ ${depMod.name} — mc=$mcVersion loader=$loaderType 호환 파일 없음")
                 continue
             }
@@ -1863,7 +1863,7 @@ class ContentPackBrowserActivity : BaseActivity() {
 
             val oldPrefix = extractModFilePrefix(f.name)
             if (oldPrefix.equals(newPrefix, ignoreCase = true)) {
-                Log.d("PING_LAUNCHER",
+                Log.d("FLAME_LAUNCHER",
                     "🗑 같은 prefix($newPrefix) 기존 jar 제거: ${f.name}")
                 f.delete()
             }
@@ -1958,12 +1958,12 @@ class ContentPackBrowserActivity : BaseActivity() {
             val instanceDir = InstanceManager.instanceDir(this, instanceId)
             val meta = InstanceManager.loadMeta(instanceDir)
             if (meta == null) {
-                Log.e("PING_LAUNCHER", "❌ 인스턴스 메타 없음: $instanceId — 모드팩을 다시 설치하세요")
+                Log.e("FLAME_LAUNCHER", "❌ 인스턴스 메타 없음: $instanceId — 모드팩을 다시 설치하세요")
                 _statusMessage.value = "❌ ${mod.name} 인스턴스가 없음 — 다시 설치하세요"
                 return
             }
 
-            Log.d("PING_LAUNCHER",
+            Log.d("FLAME_LAUNCHER",
                 "▶ 실행: id=$instanceId mc=${meta.mcVersion} loader=${meta.loaderType ?: "vanilla"} " +
                         "mainClass=${meta.mainClass} extraJars=${meta.extraJars.size}")
 
@@ -1990,7 +1990,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                         )
                     }
                 } catch (e: Exception) {
-                    Log.e("PING_LAUNCHER", "▶ 실행 준비 실패: ${e.message}", e)
+                    Log.e("FLAME_LAUNCHER", "▶ 실행 준비 실패: ${e.message}", e)
                     withContext(Dispatchers.Main) {
                         _statusMessage.value = "❌ 실행 실패: ${e.message}"
                     }
@@ -2101,7 +2101,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         val part2 = file.id % 1000
         val safeName = file.fileName.replace(" ", "%20")
         return "https://edge.forgecdn.net/files/$part1/$part2/$safeName".also {
-            Log.i("PING_LAUNCHER",
+            Log.i("FLAME_LAUNCHER",
                 "🔁 downloadUrl=null → CDN fallback: mod=${file.id} → $it")
         }
     }

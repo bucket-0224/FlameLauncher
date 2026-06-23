@@ -13,7 +13,7 @@
 #include "environ.h"
 #include "log.h"
 
-// pingjvm.cpp 상단에 include 추가
+// flamejvmjvm.cpp 상단에 include 추가
 #include <vulkan/vulkan.h>
 #include <dlfcn.h>
 
@@ -299,7 +299,7 @@ void* stdout_logger_thread_func(void*) {
     return nullptr;
 }
 
-// pingjvm.cpp에 추가
+// flamejvmjvm.cpp에 추가
 static bool g_isGrabbing = false;
 typedef void (*SetGrabbing_t)(JNIEnv*, jclass, jboolean);
 [[maybe_unused]] static SetGrabbing_t g_originalSetGrabbing = nullptr;
@@ -631,7 +631,7 @@ static void registerGLFWGamepadNative(JNIEnv* customEnv) {
 
 // libpojavexec.so 의 nativeSetGrabbing 은 installGrabbingHook() 에서 점프 패치로
 // hookedSetGrabbing 으로 리다이렉트된다. JNI 이름 바인딩이 (libpojavexec.so 대신)
-// 이 libpingjvm.so 심볼을 고를 수도 있으므로, 여기서도 동일한 안전 경로
+// 이 libflamejvmjvm.so 심볼을 고를 수도 있으므로, 여기서도 동일한 안전 경로
 // (JVM env 미사용, dalvik 측 콜백 호출)로 위임한다.
 extern "C" JNIEXPORT void JNICALL
 Java_org_lwjgl_glfw_CallbackBridge_nativeSetGrabbing(

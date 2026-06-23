@@ -25,7 +25,7 @@ class ModrinthAPI {
     private val baseUrl = "https://api.modrinth.com/v2"
 
     // TODO: 연락처/리포 주소를 실제 값으로 바꾸면 차단 위험이 더 낮아진다.
-    private val userAgent = "donghyun/PingLauncher/1.0 (kr.co.donghyun.pinglauncher)"
+    private val userAgent = "donghyun/FlameLauncher/1.0 (kr.co.donghyun.pinglauncher)"
 
     private fun buildRequest(url: String): Request =
         Request.Builder()
@@ -35,7 +35,7 @@ class ModrinthAPI {
             .build()
 
     /**
-     * project_type facet 값. PingLauncher 의 ContentType 과 매핑해서 넘긴다.
+     * project_type facet 값. FlameLauncher 의 ContentType 과 매핑해서 넘긴다.
      *   modpack / mod / resourcepack / shader / datapack
      */
     fun search(
@@ -64,13 +64,13 @@ class ModrinthAPI {
             client.newCall(buildRequest(url)).execute().use { resp ->
                 val json = resp.body?.string() ?: return emptyList()
                 if (!resp.isSuccessful) {
-                    Log.w("PING_LAUNCHER", "Modrinth 검색 실패 ${resp.code}: $json")
+                    Log.w("FLAME_LAUNCHER", "Modrinth 검색 실패 ${resp.code}: $json")
                     return emptyList()
                 }
                 gson.fromJson(json, ModrinthSearchResponse::class.java)?.hits ?: emptyList()
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "Modrinth 검색 예외: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "Modrinth 검색 예외: ${e.message}")
             emptyList()
         }
     }
@@ -85,7 +85,7 @@ class ModrinthAPI {
                 gson.fromJson(json, ModrinthProject::class.java)
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "Modrinth 프로젝트 조회 예외: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "Modrinth 프로젝트 조회 예외: ${e.message}")
             null
         }
     }
@@ -118,7 +118,7 @@ class ModrinthAPI {
                 gson.fromJson<List<ModrinthVersion>>(json, type) ?: emptyList()
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "Modrinth 버전 조회 예외: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "Modrinth 버전 조회 예외: ${e.message}")
             emptyList()
         }
     }
@@ -133,7 +133,7 @@ class ModrinthAPI {
                 gson.fromJson(json, ModrinthVersion::class.java)
             }
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "Modrinth 단일 버전 조회 예외: ${e.message}")
+            Log.e("FLAME_LAUNCHER", "Modrinth 단일 버전 조회 예외: ${e.message}")
             null
         }
     }

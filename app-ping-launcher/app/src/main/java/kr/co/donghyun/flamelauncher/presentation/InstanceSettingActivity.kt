@@ -143,7 +143,7 @@ class InstanceSettingsActivity : BaseActivity() {
         try {
             mapPicker.launch(zipMimeTypes)
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "맵 피커 실행 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "맵 피커 실행 실패: ${e.message}", e)
             pendingMapMessage = null
             pendingMapImporting = null
             Toast.makeText(this, "파일 선택기를 열 수 없습니다.", Toast.LENGTH_SHORT).show()
@@ -154,7 +154,7 @@ class InstanceSettingsActivity : BaseActivity() {
         try {
             modPicker.launch(jarMimeTypes)
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "모드 피커 실행 실패: ${e.message}", e)
+            Log.e("FLAME_LAUNCHER", "모드 피커 실행 실패: ${e.message}", e)
             pendingModMessage = null
             pendingModImporting = null
             Toast.makeText(this, "파일 선택기를 열 수 없습니다.", Toast.LENGTH_SHORT).show()

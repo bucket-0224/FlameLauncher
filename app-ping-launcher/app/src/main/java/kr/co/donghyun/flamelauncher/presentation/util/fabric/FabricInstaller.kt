@@ -66,7 +66,7 @@ class FabricInstaller(
                             tryDownload("https://maven.fabricmc.net/$path", destFile) ||
                             tryDownload("https://libraries.minecraft.net/$path", destFile)
                     if (!ok) {
-                        Log.w("PING_LAUNCHER", "Fabric 라이브러리 실패: $name")
+                        Log.w("FLAME_LAUNCHER", "Fabric 라이브러리 실패: $name")
                     }
                 }
                 if (destFile.exists() && destFile.length() > 0) {
@@ -81,7 +81,7 @@ class FabricInstaller(
                 args["game"]?.asJsonArray?.forEach { addStringArg(it, gameArgs) }
             }
 
-            Log.d("PING_LAUNCHER", "✅ Fabric 설치: mainClass=$mainClass, jars=${jarList.size}, jvmArgs=$gameJvmArgs")
+            Log.d("FLAME_LAUNCHER", "✅ Fabric 설치: mainClass=$mainClass, jars=${jarList.size}, jvmArgs=$gameJvmArgs")
 
             FabricInstallResult(
                 success = true,
@@ -91,7 +91,7 @@ class FabricInstaller(
                 gameArgs = gameArgs
             )
         } catch (e: Exception) {
-            Log.e("PING_LAUNCHER", "Fabric 설치 예외", e)
+            Log.e("FLAME_LAUNCHER", "Fabric 설치 예외", e)
             FabricInstallResult(success = false, error = e.message ?: "알 수 없는 오류")
         }
     }
