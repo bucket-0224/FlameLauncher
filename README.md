@@ -1,4 +1,4 @@
-# 🌸 PingLauncher
+# 🔥 FlameLauncher
 
 > Android-native Minecraft: Java Edition launcher — built on the **PojavLauncher** core with launch logic adapted from **ZalithLauncher 2 (ZL2)**, wrapped in a touch-first, Korean-friendly Jetpack Compose UI.
 >
@@ -12,7 +12,7 @@
 
 ### Overview
 
-PingLauncher runs Minecraft: Java Edition on Android. It is a **derivative of PojavLauncher and ZalithLauncher 2 (ZL2)**:
+FlameLauncher runs Minecraft: Java Edition on Android. It is a **derivative of PojavLauncher and ZalithLauncher 2 (ZL2)**:
 
 - It reuses PojavLauncher's battle-tested native bridges — JNI / EGL / OSMesa context bridges, LWJGL & exec hooks, and the AWT (Caciocavallo) stubs.
 - It adapts several launch-orchestration approaches from ZL2 — NeoForge classpath handling, GLFW 3.4 method stubbing, Forge/NeoForge early-window handling, and hotbar hit-testing.
@@ -22,7 +22,7 @@ Pink-themed and Korean-first by default, with responsive layouts for both phones
 
 ### 🎮 Input — touch-first by design
 
-PingLauncher is built for **touch play**. The on-screen virtual keypad plus touch camera / attack / hotbar controls are the primary input path:
+FlameLauncher is built for **touch play**. The on-screen virtual keypad plus touch camera / attack / hotbar controls are the primary input path:
 
 - The keypad layout is fully editable (drag-and-drop) and auto-scales for phone vs. tablet.
 - A **combat / normal toggle** swaps tap and long-press between attack and use depending on context.
@@ -93,7 +93,7 @@ app/src/main/
 │   │   ├── awt_bridge.c              # Cacio AWT bridge (built as a separate .so)
 │   │   └── driver_helper/            # Adreno Turnip loader / namespace bypass
 │   └── CMakeLists.txt
-├── java/kr/co/donghyun/pinglauncher/
+├── java/kr/co/donghyun/FlameLauncher/
 │   ├── data/                         # Domain models
 │   │   ├── auth/  curseforge/  instance/  jvm/  key/  mojang/  renderer/  setting/
 │   └── presentation/                 # Jetpack Compose UI + launch orchestration
@@ -136,7 +136,7 @@ app/src/main/
 
 ### 개요
 
-PingLauncher는 안드로이드 기기에서 마인크래프트 자바 에디션을 실행하는 런처이며, **PojavLauncher와 ZalithLauncher 2(ZL2)의 파생 프로젝트**입니다.
+FlameLauncher는 안드로이드 기기에서 마인크래프트 자바 에디션을 실행하는 런처이며, **PojavLauncher와 ZalithLauncher 2(ZL2)의 파생 프로젝트**입니다.
 
 - PojavLauncher의 검증된 네이티브 브릿지(JNI / EGL / OSMesa 컨텍스트 브릿지, LWJGL·exec 후킹, Caciocavallo AWT 스텁)를 재사용합니다.
 - ZL2의 실행 흐름 처리 방식 일부를 차용했습니다 — NeoForge 클래스패스 처리, GLFW 3.4 메서드 스텁, Forge/NeoForge early-window 처리, 핫바 히트 테스트 등.
@@ -146,7 +146,7 @@ PingLauncher는 안드로이드 기기에서 마인크래프트 자바 에디션
 
 ### 🎮 입력 — 터치 우선 설계
 
-PingLauncher는 **터치 플레이를 중심으로** 설계되었습니다. 화면 위 가상 키패드와 터치 기반 카메라 / 공격 / 핫바 조작이 기본 입력 경로입니다.
+FlameLauncher는 **터치 플레이를 중심으로** 설계되었습니다. 화면 위 가상 키패드와 터치 기반 카메라 / 공격 / 핫바 조작이 기본 입력 경로입니다.
 
 - 키패드 배치는 드래그 앤 드롭으로 자유롭게 편집할 수 있고, 폰/태블릿에 맞춰 자동 스케일됩니다.
 - **전투 / 일반 토글**이 상황에 따라 탭과 롱프레스 동작(공격 ↔ 사용)을 자동으로 바꿔줍니다.
@@ -217,7 +217,7 @@ app/src/main/
 │   │   ├── awt_bridge.c              # Cacio AWT 브릿지 (별도 .so 로 빌드)
 │   │   └── driver_helper/            # Adreno Turnip 로더 / 네임스페이스 우회
 │   └── CMakeLists.txt
-├── java/kr/co/donghyun/pinglauncher/
+├── java/kr/co/donghyun/FlameLauncher/
 │   ├── data/                         # 도메인 모델
 │   │   ├── auth/  curseforge/  instance/  jvm/  key/  mojang/  renderer/  setting/
 │   └── presentation/                 # Compose UI + 실행 로직
@@ -256,6 +256,6 @@ app/src/main/
 
 ---
 
-<sub>🌸 Made with too much caffeine and not enough sleep.</sub>
+<sub>🔥 Made with too much caffeine and not enough sleep.</sub>
 
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://coff.ee/ydh878787)
