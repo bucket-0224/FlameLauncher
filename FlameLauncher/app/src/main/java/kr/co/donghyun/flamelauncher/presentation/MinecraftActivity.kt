@@ -708,6 +708,28 @@ class MinecraftActivity : BaseActivity() {
     // 마인크래프트 GUI 스케일(options.txt). 핫바 영역 계산에 사용. 게임 실행 시 갱신.
     @Volatile internal var mcGuiScale: Int = 0   // 0 = 자동(auto)
 
+    // 사용자가 인게임 오버레이에서 직접 맞춘 핫바 "터치 영역" 스케일.
+    //   0 = 미설정(자동: options.txt guiScale → 없으면 해상도 auto 사용)
+    //   1~4 = 그 스케일로 핫바 터치 사각형 강제(게임 GUI Scale 단위와 동일)
+    //   화면에 그려지는 핫바 크기는 마인크래프트 옵션에서 바꾸고, 여기선 터치 인식 영역만 맞춘다.
+    @Volatile internal var hotbarTouchScaleOverride: Int = 0
+
+    private val hotbarPrefs by lazy {
+        getSharedPreferences("ping_ingame", MODE_PRIVATE)
+    }
+
+    /** 저장된 핫바 터치 스케일 오버라이드를 읽어 적용(게임 시작 시 1회 호출). */
+    internal fun loadHotbarTouchScale() {
+        hotbarTouchScaleOverride = hotbarPrefs.getInt("hotbar_touch_scale", 0)
+    }
+
+    /** 핫바 터치 스케일 오버라이드 설정(0=자동, 1~4). 즉시 반영 + 저장. */
+    internal fun setHotbarTouchScale(scale: Int) {
+        val v = scale.coerceIn(0, 4)
+        hotbarTouchScaleOverride = v
+        hotbarPrefs.edit().putInt("hotbar_touch_scale", v).apply()
+    }
+
     /**
      * 핫바 슬롯 선택 (index 0~8). 화면 하단 핫바 영역 터치 시 호출.
      * 마인크래프트는 1~9 키로 슬롯을 직접 선택하므로 GLFW_KEY_1(49)+index 를 전송.
@@ -722,12 +744,21 @@ class MinecraftActivity : BaseActivity() {
     /**
      * 현재 화면 크기 기준 핫바의 화면상 사각형(left,right,top,bottom px)을 계산한다.
      * ZL2 와 동일한 규칙: slotSize = guiScale*20, 핫바너비 = slotSize*9, 화면 하단 중앙.
-     * guiScale 이 0(자동)이면 해상도로 계산. 핫바가 화면에 없으면 null.
+     *
+     * 스케일 우선순위:
+     *   1) 사용자 오버라이드(hotbarTouchScaleOverride, 1~4) — 인게임 오버레이에서 맞춘 값
+     *   2) options.txt 의 guiScale(mcGuiScale, 1~auto)
+     *   3) 해상도 기반 auto
+     * 핫바가 화면에 없으면 null.
      */
     internal fun computeHotbarRect(viewW: Int, viewH: Int): android.graphics.RectF? {
         if (viewW <= 0 || viewH <= 0) return null
         val auto = minOf(viewW / 320, viewH / 240).coerceAtLeast(1)
-        val scale = if (mcGuiScale in 1..auto) mcGuiScale else auto
+        val scale = when {
+            hotbarTouchScaleOverride in 1..4 -> hotbarTouchScaleOverride   // 사용자 지정 우선
+            mcGuiScale in 1..auto -> mcGuiScale                            // options.txt
+            else -> auto                                                   // 자동
+        }
         val slot = scale * 20f
         val total = slot * 9f
         if (total <= 0f || total > viewW) return null
@@ -1460,6 +1491,15 @@ class MinecraftActivity : BaseActivity() {
                 || mainClass.contains("BootstrapLauncher", ignoreCase = true)
                 || mainClass.contains("ProcessorLauncher", ignoreCase = true)
                 || mainClass.contains("net.neoforged", ignoreCase = true))
+
+        // Forge 와 NeoForge 는 게임 jar 처리 방식이 다르다:
+        //   - NeoForge: -DlibraryDirectory + 좌표로 게임 jar 를 transformer module 로 직접 찾음
+        //               → classpath 에 넣으면 중복 모듈 충돌. 제외해야 함.
+        //   - Forge   : ForgeProdLaunchHandler.getMinecraftPaths 가 classpath/모듈 레이어에서
+        //               net/minecraft/client/Minecraft.class(SRG) 를 직접 찾음
+        //               → srg 게임 jar 를 classpath 에 넣어야 함(빼면 BOOTSTRAP 로더가 못 찾고 죽음).
+        val isNeoForge = instanceMeta?.loaderType == "neoforge"
+                || mainClass.contains("net.neoforged", ignoreCase = true)
         // PojavLauncher 패치 LWJGL은 모든 MC 버전에 필요 (libglfw.so가 pojavInit 라우팅을 가정함)
         copyLwjglJars(base)
         patchLwjglGlfwIfNeeded(File(base, "lwjgl3"))
@@ -1509,21 +1549,20 @@ class MinecraftActivity : BaseActivity() {
         }
         searchDirs.forEach { dir ->
             val librariesDir = File(dir, "libraries")
+            // ── ZL2 방식(절충): Forge/NeoForge 에서도 libraries/ 는 walkTopDown 으로 수집하되,
+            //   net.minecraft 패키지 소유권을 꼬이게 하는 "게임 jar 류"만 정밀 제외한다.
+            //   (log4j-core 등 일반 라이브러리는 Forge version.json libs 에 없고 바닐라 쪽에만
+            //    있을 수 있으므로, 디스크 수집을 끊으면 'Module log4j.core not found' 가 난다.
+            //    그래서 전체 스킵이 아니라 게임 jar 만 제외하는 게 맞다 = ZL2 filterLibrary 와 동일)
             if (librariesDir.exists()) {
                 librariesDir.walkTopDown().forEach { f ->
                     if (!f.isFile || f.extension != "jar") return@forEach
                     if (f.name.contains("natives-linux")) return@forEach
 
-                    // ZL2 방식: NeoForge 게임 jar 는 classpath 에서 제외한다.
-                    //   NeoForge 는 -DlibraryDirectory + --fml.mcVersion/neoFormVersion 좌표로
-                    //   net/minecraft/client/<ver>/ (srg) 와 net/neoforged/neoforge/<ver>/ (client)
-                    //   게임 jar 를 찾아 transformer module 'minecraft' 로 직접 로드한다.
-                    //   이걸 classpath 에 또 넣으면 자동 모듈 'client'/'minecraft' 로 중복 생성되어
-                    //   "Module minecraft contains package net.minecraft.X, module client exports
-                    //    package net.minecraft.X to minecraft" module resolution 충돌이 난다.
-                    //   ZL2 도 version.json libraries(게임 jar 없음) + 바닐라 clientJar 만 classpath 에 넣고
-                    //   게임 jar(srg/slim/neoforge-client/universal)는 넣지 않는다.
-                    if (isModernLoader) {
+                    // NeoForge 게임 jar 는 classpath 에서 제외(좌표로 자동 로드 → 중복 모듈 충돌 회피).
+                    //   Forge 는 반대로 srg 게임 jar 를 classpath 에 넣어야 getMinecraftPaths 가
+                    //   net/minecraft/client/Minecraft.class 를 찾는다 → Forge 는 제외하지 않음.
+                    if (isNeoForge) {
                         val n = f.name
                         val ap = f.absolutePath
                         val isGameJar =
@@ -1538,6 +1577,19 @@ class MinecraftActivity : BaseActivity() {
                             Log.d("FLAME_LAUNCHER", "🚫 NeoForge 게임 jar classpath 제외 (좌표로 자동 로드, ZL2 방식): ${f.name}")
                             return@forEach
                         }
+                    }
+
+                    // Forge: net/minecraft/client/<ver>/ 아래의 "중간 산출물"을 classpath 에서 제외.
+                    //   client-<ver>-official.jar 는 processor.1(deobf) 산출물로, Minecraft.class 를
+                    //   담고 있지만 Forge 패치(binarypatcher) 적용 "전" 버전이다. 이게 cp 에 있으면
+                    //   BootstrapLauncher 의 "첫 jar 가 패키지 소유" 규칙에 따라 net.minecraft 패키지를
+                    //   선점해, 정작 실행용인 forge-<ver>-client.jar(패치 후)의 클래스가 가려진다.
+                    //   → official/mappings/slim/srg 등 중간 산출물은 빼고, 위에서 명시 등록한
+                    //     forge-<ver>-client.jar 만 게임 jar 로 남긴다.
+                    if (isModernLoader && !isNeoForge
+                        && f.absolutePath.contains("/net/minecraft/client/")) {
+                        Log.d("FLAME_LAUNCHER", "🚫 Forge 중간 산출물 classpath 제외 (forge-client.jar 만 사용): ${f.name}")
+                        return@forEach
                     }
 
                     if (isProcessorOnlyJar(f)) {
@@ -1633,15 +1685,73 @@ class MinecraftActivity : BaseActivity() {
         }
 
         versionJar?.let {
-            // ZL2 방식: 바닐라 client jar 를 NeoForge 에서도 classpath 에 포함한다.
-            //   ZL2 generateLaunchClassPath 는 clientJar(= inheritsFrom 의 바닐라 <ver>.jar)를
-            //   항상 classpath 에 추가한다(if clientJar.exists() classpathList.add). 바닐라 jar 는
-            //   난독화돼 net.minecraft.* 가 없으므로 deobf 게임 jar 와 패키지 충돌도 없다.
-            if (!jarList.contains(it.absolutePath)) {
+            // ZL2 방식: 바닐라 client jar 를 classpath 에 포함한다(pre-1.6 리소스 로딩 등).
+            //   ⚠️ 단, modern Forge 는 예외다. 바닐라 <ver>.jar 는 net/minecraft/ 패키지를
+            //   다수 포함(약 29개)하는데, 이게 forge-<ver>-client.jar 보다 먼저 classpath 에
+            //   들어가면 BootstrapLauncher 의 "첫 jar 가 패키지 소유" 규칙에 따라 net.minecraft
+            //   패키지를 선점한다. 그런데 바닐라엔 deobf 된 net/minecraft/client/Minecraft.class 가
+            //   없으므로(official/SRG 이름 불일치), 결국 BOOTSTRAP 에서 Minecraft.class 를 못 찾고
+            //   "Could not find net/minecraft/client/Minecraft.class" 로 죽는다.
+            //   → modern Forge 는 바닐라 jar 를 넣지 않는다. 게임 클래스는 forge-<ver>-client.jar
+            //     (binarypatcher 산출물, official 매핑 + Forge 코드 포함)가 제공한다.
+            //   (NeoForge 는 게임 jar 를 좌표로 로드하므로 기존 동작 유지)
+            val skipVanillaForForge = isModernLoader && !isNeoForge
+            if (skipVanillaForForge) {
+                Log.d("FLAME_LAUNCHER", "🚫 modern Forge: 바닐라 client jar 제외 (forge-client.jar 가 net.minecraft 소유): ${it.name}")
+            } else if (!jarList.contains(it.absolutePath)) {
                 jarList.add(it.absolutePath)
                 Log.d("FLAME_LAUNCHER", "✅ 바닐라 client jar classpath 포함 (ZL2 방식): ${it.absolutePath}")
             } else {
                 Log.d("FLAME_LAUNCHER", "ℹ️ client jar 이미 classpath 에 있음: ${it.name}")
+            }
+        }
+
+        // ── Forge: processor 가 만드는 최종 게임 jar 를 classpath 에 "미리" 등록 ──
+        //   Forge prod 의 ForgeProdLaunchHandler.getMinecraftPaths 는 BOOTSTRAP 클래스로더에서
+        //   net/minecraft/client/Minecraft.class 를 getResource 로 찾는다. 그 클래스를 담은 jar 는
+        //   binarypatcher(processor.2)가 만드는 forge-<ver>-client.jar 다.
+        //
+        //   문제: classpath 구성(이 walkTopDown)은 ProcessorLauncher 가 jar 를 만들기 "전"에
+        //   끝나므로, 첫 실행 땐 forge-<ver>-client.jar 가 디스크에 없어 cp 에서 빠진다.
+        //   그러면 BOOTSTRAP 이 Minecraft.class 를 못 찾고
+        //   "Could not find net/minecraft/client/Minecraft.class" 로 죽는다.
+        //   (두 번째 실행에서도 cp 는 이 시점에 다시 구성되므로 동일하게 빠진다)
+        //
+        //   해결: 파일이 아직 없어도 그 경로를 cp 에 넣어둔다. processor 가 launch 도중 그 경로에
+        //   생성하고, BootstrapLauncher 가 java.class.path 를 읽는 시점(processor 실행 후)엔
+        //   이미 존재한다. NeoForge 는 좌표 자동로드라 해당 없음 → Forge 에만 적용.
+        if (isModernLoader && !isNeoForge) {
+            val forgeRoot = File(File(instanceBase, "libraries"), "net/minecraftforge/forge")
+            val forgeClientJars: List<File> = (forgeRoot.listFiles()?.toList() ?: emptyList())
+                .filter { it.isDirectory }
+                .flatMap { verDir ->
+                    (verDir.listFiles()?.toList() ?: emptyList())
+                        .filter { it.name.endsWith("-client.jar") }
+                }
+
+            if (forgeClientJars.isEmpty()) {
+                // 디스크에 아직 디렉터리/파일이 없으면 메타의 loaderVersion 으로 경로를 합성해 등록.
+                val lv = instanceMeta?.loaderVersion
+                if (lv != null) {
+                    // loaderVersion 이 "54.1.14" 또는 "1.21.4-54.1.14" 둘 다 올 수 있으므로 정규화.
+                    val full = if (lv.startsWith("$versionId-")) lv else "$versionId-$lv"
+                    val synth = File(forgeRoot, "$full/forge-$full-client.jar")
+                    if (!jarList.contains(synth.absolutePath)) {
+                        jarList.add(synth.absolutePath)
+                        Log.d("FLAME_LAUNCHER", "✅ Forge client jar 선등록(합성 경로, 아직 미생성): ${synth.absolutePath}")
+                    }
+                } else {
+                    Log.w("FLAME_LAUNCHER", "⚠️ Forge client jar 경로를 합성할 loaderVersion 이 없음 — getMinecraftPaths 실패 위험")
+                }
+            } else {
+                forgeClientJars.forEach { cj ->
+                    if (!jarList.contains(cj.absolutePath)) {
+                        jarList.add(cj.absolutePath)
+                        Log.d("FLAME_LAUNCHER", "✅ Forge client jar classpath 포함: ${cj.absolutePath}")
+                    } else {
+                        Log.d("FLAME_LAUNCHER", "ℹ️ Forge client jar 이미 classpath 에 있음: ${cj.name}")
+                    }
+                }
             }
         }
 
@@ -1819,6 +1929,10 @@ class MinecraftActivity : BaseActivity() {
                 // (과거엔 OSMesa 크래시 회피용으로 여기서 false 를 강제했으나, ZL2 와 동일하게
                 //  GLFW stub 이 GL 컨텍스트 버전을 렌더러에 맞춰 고정하므로 더는 필요 없음.)
                 "-Djava.awt.headless=true",
+                // ── 진단: BootstrapLauncher 가 어떤 jar 를 모듈로 만들고 어떤 걸 제외하는지
+                //   stdout 으로 출력하게 한다(bsl.debug). forge-client.jar 가 BOOTSTRAP 모듈
+                //   레이어에 안 올라가는 이유(ignoreList/패키지소유/모듈명충돌)를 직접 확인용.
+                "-Dbsl.debug=true",
                 "--add-opens", "java.base/java.util.jar=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang.invoke=ALL-UNNAMED",
                 "--add-opens", "java.base/java.lang=ALL-UNNAMED",
@@ -2721,6 +2835,9 @@ class MinecraftActivity : BaseActivity() {
         // 핫바 영역 계산용 — options.txt 의 guiScale 을 읽어둔다(없으면 0=자동).
         mcGuiScale = existing.firstOrNull { it.startsWith("guiScale:") }
             ?.substringAfter("guiScale:")?.trim()?.toIntOrNull() ?: 0
+
+        // 사용자가 이전에 인게임에서 맞춘 핫바 터치 영역 스케일 복원(없으면 0=자동).
+        loadHotbarTouchScale()
 
         optionsFile.writeText(existing.joinToString("\n"))
         Log.d("FLAME_LAUNCHER",

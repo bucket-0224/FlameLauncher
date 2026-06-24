@@ -71,6 +71,10 @@ static jmethodID g_fbSizeInvoke = NULL;
 static jmethodID g_winSizeInvoke = NULL;
 static jmethodID g_cursorEnterInvoke = NULL;
 
+// nativeSendScreenSize(=UI 스레드) 가 "리사이즈 콜백을 다시 쏴 달라"고 요청하는 플래그.
+// 실제 dispatch 는 렌더 스레드(pojavBootDispatchFramebufferSize)에서만 수행한다.
+static atomic_int g_pendingSizeDispatch = 0;
+
 // input_bridge_v3.c 상단 헬퍼 추가
 static jclass findAppClass(JNIEnv* env, const char* name) {
     // 1) 평범하게 시도
@@ -493,16 +497,40 @@ void pojavPumpEvents(void* window) {
     // The out target index is updated by the rewinder
 }
 
-// 부팅 후 한 번만 framebuffer/window size 를 MC 에 알림
-// egl_bridge.c::pojavSwapBuffers 에서 매 frame 호출되지만 한 번 dispatch 후 노옵.
+// 부팅 후 framebuffer/window size 를 MC 에 알림.
+// egl_bridge.c::pojavSwapBuffers 에서 매 프레임(=실제 swap) 호출된다 → 항상 렌더 스레드.
+//
+// [왜 한 번이 아니라 여러 번인가]
+//   예전엔 'static int dispatched' 로 평생 1회만 dispatch 했다. 그 1회는 콜백이 처음 등록되는
+//   순간(= OptiFine init 직후, FML 모드 로딩/타이틀 렌더 루프 시작 '전')에 떨어진다.
+//   1.12.2 는 Display.wasResized() 플래그로 리사이즈를 처리하는데, 이 이른 콜백은 타이틀 루프가
+//   돌기 전에 플래그가 소진/덮어쓰여 버리고, 이후 재발화가 없어 init 기본 크기(854x480 등)에
+//   그대로 굳는다(OptiFine 1.12.2 에서 재현; 바닐라는 타이밍이 달라 살아남음).
+//   → 이 함수는 'swap 이 일어난 프레임'에서만 불리므로, 프레임이 쌓이기 시작한 뒤(=타이틀 루프가
+//     실제로 도는 동안) 같은 크기를 몇 번 더 재dispatch 하면 반드시 한 번은 resize 가 박힌다.
+//     기존과 동일 스레드/동일 env 라 안전하고, 초반 한정이라 FBO 재생성도 몇 번에 그친다.
 void pojavBootDispatchFramebufferSize(void) {
-    static int dispatched = 0;
-    if (dispatched) return;
     if (pojav_environ->savedWidth <= 0 || pojav_environ->savedHeight <= 0) return;
-    if (!pojav_environ->GLFW_invoke_FramebufferSize) return;  // 등록 전엔 미발화
-    dispatched = 1;
-    LOGI("[BOOT] dispatching FramebufferSize/WindowSize %dx%d",
-         pojav_environ->savedWidth, pojav_environ->savedHeight);
+    if (!pojav_environ->GLFW_invoke_FramebufferSize) return;  // 콜백 등록 전엔 미발화
+
+    static int  firstDispatched = 0;  // 콜백 등록 후 최초 1회 보장
+    static long frame = 0;            // 실제 렌더된 프레임 수(= swap 횟수)
+    frame++;
+
+    // (A) 명시적 재요청: nativeSendScreenSize(런타임 회전/Kotlin 재전송)가 pending 을 세움.
+    int pending = atomic_exchange_explicit(&g_pendingSizeDispatch, 0, memory_order_acq_rel);
+
+    // (B) 부팅 타이밍 보정: 최초 1회 + 초반 프레임 몇 곳에서 재dispatch.
+    //     프레임은 타이틀 루프가 돌기 시작해야 쌓이므로, 15/30/60.../300 은 타이틀 루프 안에 떨어진다.
+    int bootKick = (!firstDispatched) ||
+                   (frame == 15) || (frame == 30) ||
+                   (frame <= 300 && (frame % 60 == 0));
+
+    if (!pending && !bootKick) return;
+    firstDispatched = 1;
+
+    LOGI("[BOOT] dispatching FramebufferSize/WindowSize %dx%d (frame=%ld pending=%d)",
+         pojav_environ->savedWidth, pojav_environ->savedHeight, frame, pending);
     dispatchFramebufferSizeDirect(pojav_environ->savedWidth, pojav_environ->savedHeight);
     dispatchWindowSizeDirect(pojav_environ->savedWidth, pojav_environ->savedHeight);
 }
@@ -840,6 +868,11 @@ void critical_send_screen_size(jint width, jint height) {
     // This is done to ensure that we have predictable conditions to correctly call
     // updateMonitorSize() and updateWindowSize() while on the render thread with an attached
     // JNIEnv.
+    //
+    // 단, framebuffer/window size 리사이즈 콜백 재발화를 렌더 스레드에 요청한다.
+    // (여긴 UI 스레드라 직접 invoke 하지 않고 플래그만 세움 → pojavBootDispatchFramebufferSize 가 처리)
+    // 이렇게 해야 부팅 후 회전/해상도 변경이나 Kotlin 의 재전송이 실제 resize 로 이어진다.
+    atomic_store_explicit(&g_pendingSizeDispatch, 1, memory_order_release);
 }
 
 void noncritical_send_screen_size(__attribute__((unused)) JNIEnv* env, __attribute__((unused)) jclass clazz, jint width, jint height) {

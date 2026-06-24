@@ -377,7 +377,7 @@ private fun InstanceItem(
         // 실행
         Button(
             onClick = onLaunch,
-            enabled = isLoggedIn,
+            enabled = (isLoggedIn || BuildConfig.DEBUG),
             colors = ButtonDefaults.buttonColors(
                 containerColor = FlamePrimary,
                 disabledContainerColor = BgBorder
@@ -496,7 +496,7 @@ private fun SidePlayPanel(
             Spacer(modifier = Modifier.height(8.dp))
             Button(
                 onClick = onPlayClick,
-                enabled = selectedVersion != null && !isDownloading && isSupported && isLoggedIn,
+                enabled = selectedVersion != null && !isDownloading && isSupported && (isLoggedIn || BuildConfig.DEBUG),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = FlamePrimary,
                     disabledContainerColor = BgBorder

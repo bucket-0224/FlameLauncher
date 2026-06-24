@@ -28,6 +28,23 @@ var longPressRunnable: Runnable? = null
 val handler = android.os.Handler(android.os.Looper.getMainLooper())
 private const val LONG_PRESS_TIMEOUT = 500L
 
+// 카메라/클릭을 담당하는 "활성 포인터"의 ID. 맨 처음 내려간 손가락만 추적한다.
+//   둘째 손가락(블록 캐는 중 인벤/다른 화면 동시 클릭)이 들어와도 카메라 좌표가
+//   그쪽으로 점프하지 않도록, 이 ID 의 이벤트만 카메라/클릭에 반영한다.
+//   ACTION_POINTER_UP 으로 활성 포인터가 떼질 때 발생하던 "좌표 점프 → 카메라 획 돎"도 차단.
+private const val INVALID_POINTER = -1
+var activePointerId = INVALID_POINTER
+
+/** 모든 터치 상태를 초기화(grab 전환/surface 재생성/취소 시 stale 값 제거). */
+private fun resetTouchState() {
+    longPressRunnable?.let { handler.removeCallbacks(it) }
+    longPressRunnable = null
+    isDragging = false
+    isLongPress = false
+    isHotbarTouch = false
+    activePointerId = INVALID_POINTER
+}
+
 @Composable
 fun MinecraftSurface(
     modifier: Modifier = Modifier,
@@ -80,10 +97,12 @@ fun MinecraftSurface(
                 }
 
                 setOnTouchListener { _, event ->
-                    Log.d("FLAME_LAUNCHER", "Surface 터치: ${event.action}, isGrabbing=${activity.isGrabbing}, combat=${activity.combatMode}")
+                    Log.d("FLAME_LAUNCHER", "Surface 터치: ${event.actionMasked}, isGrabbing=${activity.isGrabbing}, combat=${activity.combatMode}")
                     try {
-                        when (event.action and MotionEvent.ACTION_MASK) {
+                        when (event.actionMasked) {
                             MotionEvent.ACTION_DOWN -> {
+                                // 첫 손가락 — 이 포인터를 활성 포인터로 지정
+                                activePointerId = event.getPointerId(0)
                                 downX = event.x
                                 downY = event.y
                                 lastX = event.x
@@ -125,10 +144,41 @@ fun MinecraftSurface(
                                 }
                             }
 
+                            MotionEvent.ACTION_POINTER_DOWN -> {
+                                // 둘째 이후 손가락이 내려옴 (블록 캐는 중 인벤/다른 화면 동시 클릭 등).
+                                // 카메라는 활성 포인터(첫 손가락)만 따라가므로 여기선 아무것도 하지 않는다.
+                                // → 활성 포인터 좌표/기준점을 건드리지 않아 카메라가 튀지 않음.
+                            }
+
+                            MotionEvent.ACTION_POINTER_UP -> {
+                                // 손가락 하나가 떨어짐. 그게 "활성 포인터"라면 좌표 점프를 막기 위해
+                                // 남아있는 다른 손가락으로 활성 포인터를 넘기되, 기준점을 그 위치로 리셋한다.
+                                // (활성 포인터가 떼질 때 발생하던 카메라 획 돎의 직접 원인 제거)
+                                val upIndex = event.actionIndex
+                                val upId = event.getPointerId(upIndex)
+                                if (upId == activePointerId) {
+                                    // 활성 포인터가 아닌 다른 포인터 하나를 새 활성 포인터로
+                                    val newIndex = if (upIndex == 0) 1 else 0
+                                    if (newIndex < event.pointerCount) {
+                                        activePointerId = event.getPointerId(newIndex)
+                                        // 기준점을 새 손가락 위치로 리셋 → 델타가 튀지 않음
+                                        lastX = event.getX(newIndex)
+                                        lastY = event.getY(newIndex)
+                                    }
+                                }
+                            }
+
                             MotionEvent.ACTION_MOVE -> {
                                 if (isHotbarTouch) return@setOnTouchListener true
-                                val totalDx = event.x - downX
-                                val totalDy = event.y - downY
+
+                                // 활성 포인터의 좌표만 사용 (둘째 손가락 움직임은 카메라에 반영 안 함)
+                                val pIndex = event.findPointerIndex(activePointerId)
+                                if (pIndex < 0) return@setOnTouchListener true
+                                val px = event.getX(pIndex)
+                                val py = event.getY(pIndex)
+
+                                val totalDx = px - downX
+                                val totalDy = py - downY
 
                                 if (!isDragging &&
                                     (totalDx * totalDx + totalDy * totalDy) > DRAG_SLOP * DRAG_SLOP
@@ -140,33 +190,32 @@ fun MinecraftSurface(
                                     }
                                     // 드래그 시작 순간 기준점을 현재 위치로 리셋 →
                                     //   슬롭(20px) 넘는 동안의 이동이 카메라에 한꺼번에 튀지 않게 함.
-                                    //   (연타/짧은 터치 시 화면이 그 방향으로 확 도는 현상 방지)
-                                    lastX = event.x
-                                    lastY = event.y
+                                    lastX = px
+                                    lastY = py
                                 }
 
                                 if (isDragging) {
                                     if (activity.isGrabbing) {
                                         // 인게임 — 델타 기반 카메라 회전
-                                        val dx2 = event.x - lastX
-                                        val dy2 = event.y - lastY
+                                        val dx2 = px - lastX
+                                        val dy2 = py - lastY
                                         activity.currentCursorX += dx2 * activity.MOUSE_SENSITIVITY
                                         activity.currentCursorY += dy2 * activity.MOUSE_SENSITIVITY
                                     } else {
                                         // UI — 절대 좌표
-                                        activity.currentCursorX = event.x
-                                        activity.currentCursorY = event.y
+                                        activity.currentCursorX = px
+                                        activity.currentCursorY = py
                                     }
                                     activity.sendCursorPos(activity.currentCursorX, activity.currentCursorY)
                                 }
 
-                                lastX = event.x
-                                lastY = event.y
+                                lastX = px
+                                lastY = py
                             }
 
                             MotionEvent.ACTION_UP -> {
                                 if (isHotbarTouch) {
-                                    isHotbarTouch = false
+                                    resetTouchState()
                                     return@setOnTouchListener true
                                 }
                                 longPressRunnable?.let { handler.removeCallbacks(it) }
@@ -193,24 +242,16 @@ fun MinecraftSurface(
                                     activity.sendMouseButton(0, 0)
                                 }
 
-                                isLongPress = false
-                                isDragging = false
+                                resetTouchState()
                             }
 
                             MotionEvent.ACTION_CANCEL -> {
-                                if (isHotbarTouch) {
-                                    isHotbarTouch = false
-                                    return@setOnTouchListener true
-                                }
-                                // 안전망: 어떤 이유로 취소되면 모든 버튼 release
-                                longPressRunnable?.let { handler.removeCallbacks(it) }
-                                longPressRunnable = null
+                                // 안전망: 어떤 이유로 취소되면 모든 버튼 release + 상태 초기화
                                 if (isLongPress && activity.isGrabbing) {
                                     val longBtn = if (activity.combatMode) 1 else 0
                                     activity.sendMouseButton(longBtn, 0)
                                 }
-                                isLongPress = false
-                                isDragging = false
+                                resetTouchState()
                             }
                         }
                     } catch (_: Exception) {}

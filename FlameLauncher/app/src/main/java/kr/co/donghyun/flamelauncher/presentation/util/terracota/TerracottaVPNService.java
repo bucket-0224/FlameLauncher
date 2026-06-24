@@ -11,6 +11,19 @@
  *  - Terracotta.setWaiting() 인자 제거 (이식본 시그니처)
  *  - NotificationChannelData 의존 제거 → 자체 CHANNEL_ID + ensureChannel()
  *  - NOTIFICATION_ID_VPN_REQUEST_CODE 제거 → 고정 request code(1001)
+ *
+ * 버그 픽스 1 (ForegroundServiceDidNotStartInTimeException):
+ *  - startForegroundService() 로 진입 가능한 "모든" 경로에서 startForeground() 를
+ *    반드시 1회 호출하도록 보장.
+ *  - mode 미설정 등으로 정식 알림(buildVpnNotification)이 null 이면
+ *    buildFallbackNotification() 으로라도 포그라운드 약속을 이행.
+ *  - ACTION_STOP 도 cleanup/stopSelf 전에 먼저 startForeground() 로 약속 이행.
+ *
+ * 버그 픽스 2 (IllegalStateException: There's no pending VpnService request):
+ *  - getPendingVpnServiceRequest() 는 보류 요청이 없으면 던지므로 반드시 가드한다.
+ *    (게임 부하로 onStartCommand 가 지연돼 native 요청이 타임아웃됐거나 중복 START 인 경우.)
+ *    요청이 없으면: tun 이 이미 있으면 유지, 없으면 정리 후 종료(대기 복귀).
+ *  - VPN 설정 호출 전체를 try/catch 로 감싸 어떤 실패도 크래시로 번지지 않게 함.
  */
 
 package kr.co.donghyun.flamelauncher.presentation.util.terracota;
@@ -81,6 +94,9 @@ public class TerracottaVPNService extends VpnService {
 
         if (ACTION_STOP.equals(action)) {
             isStopping = true;
+            // ★ startForegroundService() 로 들어왔을 수 있으니, 내리기 전에
+            //   포그라운드 약속을 먼저 이행한다(아니면 DidNotStartInTime 크래시).
+            startForeground0(currentNotificationOrFallback());
             cleanup();
             stopForeground(true);
             stopSelf();
@@ -91,8 +107,8 @@ public class TerracottaVPNService extends VpnService {
             currentStateStringRes = getStateTextRes(intent);
 
             if (!isStopping) {
-                Notification n = buildVpnNotification();
-                if (n != null) notificationManager.notify(VPN_NOTIFICATION_ID, n);
+                // notify 대신 startForeground 로 갱신해 포그라운드 약속도 함께 이행.
+                startForeground0(currentNotificationOrFallback());
             }
             return Service.START_STICKY;
         }
@@ -102,31 +118,64 @@ public class TerracottaVPNService extends VpnService {
         if (ACTION_REPOST.equals(action) && fromDelete && !isStopping) {
             Log.d(TAG, "Repost VPN notification after user cleared it.");
             currentStateStringRes = getStateTextRes(intent);
-            Notification notification = buildVpnNotification();
-            if (notification == null)
-                return Service.START_NOT_STICKY;
-
-            startForeground0(notification);
+            startForeground0(currentNotificationOrFallback());
             return Service.START_STICKY;
         }
 
         isStopping = false;
 
-        Notification notification = buildVpnNotification();
-        if (notification == null)
-            return Service.START_NOT_STICKY;
+        // ★ 정식 알림이 아직 없으면(mode 미설정 등) 폴백으로라도 반드시 포그라운드 진입.
+        //   (이걸 먼저 해 둬야 아래에서 일찍 종료해도 타임아웃 크래시가 안 난다.)
+        startForeground0(currentNotificationOrFallback());
 
-        startForeground0(notification);
-
-        Builder vpnBuilder = new Builder().setSession("Terracotta Connection");
-
+        // ★ 보류 중인 VPN 요청 획득. 없으면 getPendingVpnServiceRequest() 가
+        //   IllegalStateException 을 던지므로(요청 타임아웃/중복 START 등) 반드시 가드한다.
+        TerracottaAndroidAPI.VpnServiceRequest request = null;
         try {
-            vpnBuilder.addDisallowedApplication(getPackageName());
-        } catch (PackageManager.NameNotFoundException ignored) {
+            request = TerracottaAndroidAPI.getPendingVpnServiceRequest();
+        } catch (Throwable t) {
+            Log.w(TAG, "no pending VpnService request: " + t.getMessage());
         }
 
-        TerracottaAndroidAPI.VpnServiceRequest request = TerracottaAndroidAPI.getPendingVpnServiceRequest();
-        vpnInterface = request.startVpnService(vpnBuilder);
+        if (request == null) {
+            if (vpnInterface != null) {
+                // 이미 tun 이 떠 있는데 들어온 중복 START → 무시하고 유지.
+                Log.d(TAG, "duplicate START with no pending request; keeping existing tun.");
+                return Service.START_STICKY;
+            }
+            // 설정할 VPN 이 없다 → 깔끔히 종료. onDestroy 에서 Terracotta.setWaiting() 으로 대기 복귀.
+            Log.w(TAG, "START with no pending request and no tun; stopping service.");
+            cleanup();
+            stopForeground(true);
+            stopSelf();
+            return Service.START_NOT_STICKY;
+        }
+
+        // VPN 설정 (어떤 실패도 크래시로 번지지 않도록 통째로 가드)
+        try {
+            // 재설정 시 이전 tun 누수 방지
+            if (vpnInterface != null) {
+                try {
+                    vpnInterface.close();
+                } catch (IOException ignored) {
+                }
+                vpnInterface = null;
+            }
+
+            Builder vpnBuilder = new Builder().setSession("Terracotta Connection");
+            try {
+                vpnBuilder.addDisallowedApplication(getPackageName());
+            } catch (PackageManager.NameNotFoundException ignored) {
+            }
+
+            vpnInterface = request.startVpnService(vpnBuilder);
+        } catch (Throwable t) {
+            Log.e(TAG, "startVpnService failed: " + t.getMessage(), t);
+            cleanup();
+            stopForeground(true);
+            stopSelf();
+            return Service.START_NOT_STICKY;
+        }
 
         return Service.START_STICKY;
     }
@@ -168,6 +217,34 @@ public class TerracottaVPNService extends VpnService {
             );
             notificationManager.createNotificationChannel(channel);
         }
+    }
+
+    /**
+     * 항상 non-null 인 알림을 돌려준다.
+     * 정식 상태 알림을 만들 수 없으면(예: Terracotta.mode 가 아직 null) 최소 폴백 알림 사용.
+     * startForeground() 가 어떤 분기에서도 안전하게 호출되도록 하기 위한 헬퍼.
+     */
+    private Notification currentNotificationOrFallback() {
+        try {
+            Notification n = buildVpnNotification();
+            if (n != null) return n;
+        } catch (Throwable t) {
+            // 알림 생성이 던져도 startForeground() 가 반드시 호출되도록 폴백으로 내려간다.
+            Log.w(TAG, "buildVpnNotification failed: " + t.getMessage());
+        }
+        return buildFallbackNotification();
+    }
+
+    /** mode 미설정 등으로 정식 알림을 못 만들 때 쓰는 최소 포그라운드 알림(절대 null 아님). */
+    private Notification buildFallbackNotification() {
+        return new Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(R.mipmap.ic_launcher)
+                .setContentTitle(getString(R.string.terracotta_notification_title))
+                .setWhen(System.currentTimeMillis())
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setCategory(Notification.CATEGORY_SERVICE)
+                .build();
     }
 
     private Notification buildVpnNotification() {

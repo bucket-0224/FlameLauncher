@@ -123,6 +123,25 @@ class InstanceSettingsActivity : BaseActivity() {
         }
     }
 
+    /**
+     * 모드/월드가 들어갈 게임 디렉터리.
+     * 1.12.2 이하(legacy)는 <instance>/.minecraft, 1.13+ 는 <instance> 자체.
+     * (ContentPackBrowserActivity 와 동일 기준 — 레거시는 .minecraft/mods, .minecraft/saves 를 읽음)
+     */
+    private fun gameDirForInstance(): File {
+        val instanceDir = InstanceManager.instanceDir(this, instanceId)
+        val mcVersion = runCatching {
+            InstanceManager.loadMeta(instanceDir)?.mcVersion
+        }.getOrNull() ?: ""
+        return if (isLegacyVersion(mcVersion)) File(instanceDir, ".minecraft") else instanceDir
+    }
+
+    private fun isLegacyVersion(versionId: String): Boolean {
+        val parts = versionId.removePrefix("1.").split(".")
+        val major = parts.getOrNull(0)?.toIntOrNull() ?: return false
+        return major <= 12
+    }
+
 
     // ── 동작들 ──
 
@@ -132,11 +151,14 @@ class InstanceSettingsActivity : BaseActivity() {
         "application/octet-stream",
     )
 
-    // 일부 파일관리자는 .jar 을 octet-stream 으로만 노출한다. 안 보이면 arrayOf("*/*") 로 넓혀도 됨.
+    // 일부 파일관리자/다운로드 폴더는 .jar 을 비표준 MIME 으로 노출하거나 위 타입과 매칭이 안 돼
+    // 피커에서 회색으로 비활성된다(OptiFine 등). "*/*" 를 포함해 모두 보이게 하고,
+    // 실제 jar(zip) 여부는 ModImporter 의 PK 매직바이트 검사로 거른다.
     private val jarMimeTypes = arrayOf(
         "application/java-archive",
         "application/x-java-archive",
         "application/octet-stream",
+        "*/*",
     )
 
     private fun launchMapPicker() {
@@ -166,7 +188,7 @@ class InstanceSettingsActivity : BaseActivity() {
         importing: MutableState<Boolean>,
         zipUri: Uri,
     ) {
-        val savesDir = File(InstanceManager.instanceDir(this, instanceId), "saves")
+        val savesDir = File(gameDirForInstance(), "saves")
         importMessage.value = "맵을 가져오는 중…"
         importing.value = true   // 진행 다이얼로그 표시
 
@@ -194,7 +216,7 @@ class InstanceSettingsActivity : BaseActivity() {
         importing: MutableState<Boolean>,
         jarUris: List<Uri>,
     ) {
-        val modsDir = File(InstanceManager.instanceDir(this, instanceId), "mods")
+        val modsDir = File(gameDirForInstance(), "mods")
         importMessage.value = "모드를 추가하는 중…"
         importing.value = true
 

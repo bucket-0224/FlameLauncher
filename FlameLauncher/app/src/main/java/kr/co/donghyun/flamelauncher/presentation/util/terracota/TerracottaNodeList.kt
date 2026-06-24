@@ -23,10 +23,20 @@ private const val TAG = "TerracottaNodeList"
 /**
  * 공개/자체 EasyTier 노드 목록.
  * 본인 노드를 띄웠다면 그 주소로 교체하세요. 예) "tcp://my-easytier.example:11010"
+ *
+ * ⚠️ 이 목록이 비면 호스트가 룸을 등록/중계할 코디네이션 지점이 없어
+ *    방 만들기 후 타임아웃으로 PING_SERVER_RST / SCAFFOLDING_INVALID_RESPONSE 류
+ *    Exception 이 자동으로 뜬다. 최소 1개 이상 유효한 노드를 두는 것을 권장.
  */
 private val PUBLIC_NODES: List<String> = listOf(
-    "tcp://public.easytier.top:11010"
+    "tcp://13.125.58.184:11010"
 )
+
+/**
+ * 호출부에서 "기본 노드" 로 바로 쓰기 위한 동기 접근자(네트워크 호출 없음).
+ * 컨트롤러 생성 시 기본값으로 넣어 노드가 빈 채로 호스팅되는 일을 막는다.
+ */
+fun defaultNodes(): List<String> = PUBLIC_NODES
 
 /**
  * 노드 목록을 반환한다(네트워크 호출 없음).

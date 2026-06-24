@@ -24,11 +24,12 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField(
-            "String",
-            "CURSEFORGE_API_KEY",
-            "\"${localProperties["curseforge.api.key"]}\""
-        )
+        val properties = Properties().apply {
+            load(rootProject.file("local.properties").inputStream())
+        }
+        val curseforgeApiKey = properties.getProperty("CURSEFORGE_API_KEY") ?: ""
+
+        buildConfigField("String", "CURSEFORGE_API_KEY", "\"$curseforgeApiKey\"")
 
         // ── ABI는 MinecraftActivity가 arm64-v8a만 추출하므로 단일 ABI ──
         ndk {

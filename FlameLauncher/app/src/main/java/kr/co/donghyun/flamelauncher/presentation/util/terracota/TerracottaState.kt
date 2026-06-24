@@ -137,7 +137,9 @@ sealed class TerracottaState {
 
         override fun localStringRes(): Int = R.string.terracotta_status_exception
 
-        fun getEnumType(): Type = Type.entries[type]
+        // 방어: type 이 범위를 벗어나도 IndexOutOfBounds 로 죽지 않도록 가드.
+        // (정상 경로는 validateResult 에서 [0, size) 로 검증되지만, 안전망을 둔다.)
+        fun getEnumType(): Type = Type.entries.getOrElse(type) { Type.entries.first() }
     }
 
     companion object {

@@ -39,12 +39,15 @@ import java.io.File
  * 파일관리자 등에서 .jar / .zip 을 "공유"하면 이 액티비티가 받아서
  * 종류(모드/월드)를 자동 감지하고, 사용자가 고른 인스턴스의 mods/ 또는 saves/ 로 넣는다.
  *
- * AndroidManifest 에 ACTION_SEND / ACTION_SEND_MULTIPLE intent-filter 등록 필요(아래 스니펫 참고).
+ *  - 모드(.jar) : 로더가 설치된 인스턴스의 mods/ 로 복사
+ *  - 월드(.zip) : 인스턴스의 saves/ 로 압축 해제
  *
- * ⚠️ 확인 필요한 가정 한 곳:
- *   loadInstances() 가 인스턴스 목록을 "<externalFilesDir>/instances/<id>" 구조로 가정한다.
- *   프로젝트의 InstanceManager 가 목록 API(예: listInstances)를 따로 제공하면 그걸로 바꾸는 게 가장 정확하다.
- *   (실제 import 경로는 InstanceManager.instanceDir(ctx, id) 를 그대로 쓰므로 거긴 안전함)
+ * AndroidManifest 에 ACTION_SEND / ACTION_SEND_MULTIPLE intent-filter 등록 필요.
+ *
+ * ⚠️ 공유로 들어온 content:// 는 이 task 에 묶인 일시 권한이라
+ *    백그라운드 코루틴에서 열기 전에 grantUriPermission 으로 권한을 보강하고,
+ *    읽을 때도 Activity 컨텍스트(this)를 써야 한다(applicationContext 금지).
+ *    이게 누락되면 IO 스레드에서 SecurityException/FileNotFound 로 조용히 실패한다.
  */
 class ShareImportActivity : BaseActivity() {
 
@@ -57,7 +60,7 @@ class ShareImportActivity : BaseActivity() {
     private val statusMsg = mutableStateOf("")
 
     override fun onCreated() {
-        val uris = extractSharedUris(intent)
+        val uris = extractSharedUris(intent).also { grantReadOnShared(intent, it) }
         if (uris.isEmpty()) {
             Toast.makeText(this, "가져올 파일을 찾지 못했습니다.", Toast.LENGTH_SHORT).show()
             finish(); return
@@ -102,18 +105,39 @@ class ShareImportActivity : BaseActivity() {
             getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
         else getParcelableArrayListExtra(Intent.EXTRA_STREAM)) ?: emptyList()
 
+    /**
+     * 공유(ACTION_SEND)로 들어온 content:// 는 이 task 에 묶인 일시 권한이라
+     * 백그라운드 코루틴/다른 컨텍스트에서 열면 SecurityException/FileNotFound 로 죽는다.
+     * intent 에 read flag 를 보강하고, 각 Uri 에 명시적으로 read 권한을 부여해 둔다.
+     */
+    private fun grantReadOnShared(intent: Intent, uris: List<Uri>) {
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        for (uri in uris) {
+            runCatching {
+                grantUriPermission(packageName, uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+    }
+
     private fun detectType(name: String): ImportType =
         if (name.endsWith(".jar", ignoreCase = true)) ImportType.MOD else ImportType.WORLD
+
+    /**
+     * 1.12.2 이하는 legacy — 게임 디렉터리가 <instance>/.minecraft 이고
+     * 모드/월드도 그 아래(.minecraft/mods, .minecraft/saves)에 둬야 인식된다.
+     * (ContentPackBrowserActivity 의 동명 로직과 동일 기준)
+     */
+    private fun isLegacyVersion(versionId: String): Boolean {
+        val parts = versionId.removePrefix("1.").split(".")
+        val major = parts.getOrNull(0)?.toIntOrNull() ?: return false
+        return major <= 12
+    }
 
     // ── 인스턴스 목록 ──
 
     private fun loadInstances(context: Context): List<InstancePick> {
-        // ⚠️ 가정: 인스턴스가 <externalFilesDir>/instances/<id> 에 있음.
-        val root = File(context.getExternalFilesDir(null), "instances")
-        val dirs = root.listFiles()?.filter { it.isDirectory }?.sortedBy { it.name } ?: emptyList()
-        return dirs.map { dir ->
-            val loader = runCatching { InstanceManager.loadMeta(dir)?.loaderType }.getOrNull()
-            InstancePick(id = dir.name, label = dir.name, loaderType = loader)
+        return InstanceManager.listInstances(context).map { meta ->
+            InstancePick(id = meta.id, label = meta.name, loaderType = meta.loaderType)
         }
     }
 
@@ -124,11 +148,23 @@ class ShareImportActivity : BaseActivity() {
         statusMsg.value = if (type == ImportType.MOD) "모드 추가 중…" else "월드 추가 중…"
 
         lifecycleScope.launch(Dispatchers.IO) {
-            val baseDir = InstanceManager.instanceDir(applicationContext, instanceId)
+            // ⚠️ 공유 Uri 는 이 Activity task 에 묶인 일시 권한이므로
+            //    applicationContext 가 아니라 Activity 컨텍스트로 읽어야 한다.
+            val ctx = this@ShareImportActivity
+            val instanceDir = InstanceManager.instanceDir(ctx, instanceId)
+
+            // 1.12.2 이하(legacy)는 게임 디렉터리가 <instance>/.minecraft 라
+            //   모드/월드도 .minecraft/mods, .minecraft/saves 에 들어가야 인식된다.
+            val mcVersion = runCatching {
+                InstanceManager.loadMeta(instanceDir)?.mcVersion
+            }.getOrNull() ?: ""
+            val gameDir = if (isLegacyVersion(mcVersion))
+                File(instanceDir, ".minecraft") else instanceDir
+
             val text = when (type) {
                 ImportType.MOD -> {
                     val r = ModImporter.importJars(
-                        applicationContext, files.map { it.uri }, File(baseDir, "mods")
+                        ctx, files.map { it.uri }, File(gameDir, "mods")
                     )
                     when (r) {
                         is ModImporter.Result.Success -> buildString {
@@ -139,11 +175,11 @@ class ShareImportActivity : BaseActivity() {
                     }
                 }
                 ImportType.WORLD -> {
-                    val savesDir = File(baseDir, "saves")
+                    val savesDir = File(gameDir, "saves")
                     var ok = 0
                     val fails = ArrayList<String>()
                     files.forEach { f ->
-                        when (val res = MapImporter.importZip(applicationContext, f.uri, savesDir)) {
+                        when (val res = MapImporter.importZip(ctx, f.uri, savesDir)) {
                             is MapImporter.Result.Success -> ok++
                             is MapImporter.Result.Failure -> fails.add("${f.name}: ${res.reason}")
                         }

@@ -5,8 +5,16 @@ import android.content.Context
 import android.content.Intent
 import android.net.VpnService
 import android.util.Log
+import android.widget.Toast
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.collect
 import kr.co.donghyun.terracota.TerracottaAndroidAPI
 import java.io.File
 
@@ -22,20 +30,46 @@ private const val TAG = "TerracottaController"
  *   3) ctrl.start()  → Terracotta 초기화 + waiting
  *   4) 호스트: ctrl.hostRoom(userName)  → state 가 HostOK 되면 .code 가 룸 코드
  *      게스트: ctrl.joinRoom(code, userName)
+ *
+ * 추가된 동작:
+ *   - ① 랜 미오픈: 호스팅 후 HOST_SCAN_TIMEOUT_MS 안에 스캔을 벗어나지 못하면
+ *        "LAN 을 먼저 여세요" 오류를 띄우고 대기로 복귀.
+ *   - ② 랜 닫힘: 호스트 세션 중 PING_HOST_FAIL/RST·HOST_ET_CRASH 예외가 뜨면
+ *        강제 teardown(setWaiting) 으로 연결된 게스트를 끊는다.
+ *   - 두 경우 모두 [notices] 로 UI 가 구독할 수 있고, Toast 도 함께 띄운다(UI 수정 없이도 동작).
  */
 class TerracottaController(
     private val activity: Activity,
     private val scope: CoroutineScope,
-    private val nodes: List<String> = listOf(),
+    // 비워두면 EasyTier 가 P2P 직결만 시도하고, NAT/룸 등록 실패로 방 만들기 후
+    // n초 뒤 자동 Exception 이 뜬다. 기본값으로 공개/자체 노드를 넣어준다.
+    // (다른 노드를 쓰려면 생성 시 명시적으로 전달.)
+    private val nodes: List<String> = defaultNodes(),
 ) {
-    //TerracottaNodes.PUBLIC_NODES
     /** VPN 동의 다이얼로그를 띄우는 람다. activity 의 ActivityResultLauncher.launch 를 연결한다. */
     var launchVpnConsent: ((Intent) -> Unit)? = null
 
     val state get() = Terracotta.state
     val stateChanges get() = Terracotta.stateChanges
 
+    /** 호스트 LAN 관련 알림. UI 가 선택적으로 collect 해서 메시지를 보여줄 수 있다. */
+    enum class HostNotice { NO_LAN_OPEN, LAN_CLOSED }
+
+    private val _notices = MutableSharedFlow<HostNotice>(extraBufferCapacity = 8)
+    val notices = _notices.asSharedFlow()
+
+    private var hostScanTimeoutJob: Job? = null
+    private var stateObserverJob: Job? = null
+
+    companion object {
+        /** 이 시간 안에 HostScanning 을 벗어나지 못하면 "LAN 미오픈"으로 간주. */
+        private const val HOST_SCAN_TIMEOUT_MS = 8_000L
+    }
+
     fun start() {
+        // ② 를 위한 상태 관찰자 — 초기화 여부와 무관하게 한 번만 띄운다.
+        ensureStateObserver()
+
         if (Terracotta.initialized) {
             Terracotta.setWaiting()
             return
@@ -45,8 +79,7 @@ class TerracottaController(
 
         Terracotta.initialize(
             rootDir = root,
-            logFile = logFile,
-            scope = scope
+            logFile = logFile
         ) {
             // native 가 VpnService 를 요구 → 메인 스레드에서 동의 흐름
             activity.runOnUiThread { requestVpn() }
@@ -55,7 +88,10 @@ class TerracottaController(
     }
 
     private fun requestVpn() {
-        val intent = VpnService.prepare(activity)
+        val intent = runCatching { VpnService.prepare(activity) }.getOrElse {
+            Log.w(TAG, "VpnService.prepare 실패: ${it.message}")
+            null
+        }
         if (intent != null) {
             // 아직 동의 전 → 시스템 다이얼로그
             val launcher = launchVpnConsent
@@ -84,16 +120,84 @@ class TerracottaController(
     }
 
     private fun startVpnService() {
-        val vpnIntent = Intent(activity, TerracottaVPNService::class.java)
-            .setAction(TerracottaVPNService.ACTION_START)
-        ContextCompat.startForegroundService(activity, vpnIntent)
+        runCatching {
+            val vpnIntent = Intent(activity, TerracottaVPNService::class.java)
+                .setAction(TerracottaVPNService.ACTION_START)
+            ContextCompat.startForegroundService(activity, vpnIntent)
+        }.onFailure { Log.w(TAG, "startVpnService 실패: ${it.message}") }
     }
 
     /** 호스트: 새 룸을 열고 LAN 을 광고. 진행은 state(HostScanning→HostStarting→HostOK)로 드러남. */
     fun hostRoom(userName: String?) {
-        runCatching {
+        val started = runCatching {
             Terracotta.setScanning(room = null, player = userName, extraNodes = nodes)
-        }.onFailure { Log.w(TAG, "hostRoom 실패: ${it.message}") }
+            true
+        }.getOrElse {
+            Log.w(TAG, "hostRoom 실패: ${it.message}")
+            false
+        }
+        if (started) startHostScanTimeout()
+    }
+
+    /**
+     * ① 랜 미오픈 감지.
+     * 네이티브가 LAN 브로드캐스트를 못 찾아 HostScanning 에서 정체되면,
+     * HOST_SCAN_TIMEOUT_MS 후 "LAN 을 먼저 여세요" 오류를 띄우고 대기로 복귀한다.
+     * (LAN 이 열려 있으면 곧 HostStarting/HostOK 로 진행되어 타임아웃이 발동하지 않는다.)
+     */
+    private fun startHostScanTimeout() {
+        hostScanTimeoutJob?.cancel()
+        hostScanTimeoutJob = scope.launch {
+            val progressed = withTimeoutOrNull(HOST_SCAN_TIMEOUT_MS) {
+                // 스캔을 벗어나는(또는 외부에서 리셋되는) 첫 상태까지 대기
+                Terracotta.state.first { s ->
+                    s is TerracottaState.HostStarting ||
+                            s is TerracottaState.HostOK ||
+                            s is TerracottaState.Exception ||
+                            s is TerracottaState.Waiting
+                }
+            }
+            if (progressed == null) {
+                // 제한 시간 내내 HostScanning → LAN 미오픈으로 간주
+                Log.w(TAG, "host scan timed out; assuming Minecraft LAN is not open")
+                _notices.tryEmit(HostNotice.NO_LAN_OPEN)
+                toast("LAN 월드를 찾지 못했어요. 먼저 마인크래프트에서 'Open to LAN'으로 월드를 연 뒤 다시 시도하세요.")
+                Terracotta.setWaiting()
+            }
+            // progressed != null → 정상 진행/예외/리셋. 예외 처리는 상태 관찰자(②)가 담당.
+        }
+    }
+
+    /**
+     * ② 랜 닫힘 → 게스트 강제 끊기.
+     * 호스트 세션 중 호스트 측 LAN/서버가 사라졌음을 뜻하는 예외가 뜨면,
+     * setWaiting() 으로 가상망을 내려 연결된 게스트를 끊는다.
+     */
+    private fun ensureStateObserver() {
+        if (stateObserverJob?.isActive == true) return
+        stateObserverJob = scope.launch {
+            Terracotta.stateChanges.collect { (_, cur) ->
+                runCatching { handleHostLanLoss(cur) }
+                    .onFailure { Log.w(TAG, "state observe error: ${it.message}") }
+            }
+        }
+    }
+
+    private fun handleHostLanLoss(cur: TerracottaState.Ready) {
+        if (Terracotta.mode != Terracotta.Mode.Host) return
+        if (cur !is TerracottaState.Exception) return
+
+        val type = runCatching { cur.getEnumType() }.getOrNull()
+        val hostLanLost = type == TerracottaState.Exception.Type.PING_HOST_FAIL ||
+                type == TerracottaState.Exception.Type.PING_HOST_RST ||
+                type == TerracottaState.Exception.Type.HOST_ET_CRASH
+        if (!hostLanLost) return
+
+        Log.w(TAG, "host LAN/server lost ($type); tearing down to disconnect guests")
+        hostScanTimeoutJob?.cancel()
+        _notices.tryEmit(HostNotice.LAN_CLOSED)
+        toast("호스트의 LAN 월드 연결이 끊겨 룸을 종료했어요. 연결된 기기의 접속이 끊깁니다.")
+        Terracotta.setWaiting()
     }
 
     /** 게스트: 룸 코드로 합류. 코드가 유효하지 않으면 false. */
@@ -112,15 +216,27 @@ class TerracottaController(
 
     /** 대기 상태로 복귀 (룸 나가기) */
     fun reset() {
+        hostScanTimeoutJob?.cancel()
         Terracotta.setWaiting()
     }
 
     /** VPN 서비스 중지 */
     fun stopVpn(context: Context) {
+        hostScanTimeoutJob?.cancel()
         if (TerracottaVPNService.isRunning()) {
-            val vpnIntent = Intent(context, TerracottaVPNService::class.java)
-                .setAction(TerracottaVPNService.ACTION_STOP)
-            ContextCompat.startForegroundService(context, vpnIntent)
+            runCatching {
+                val vpnIntent = Intent(context, TerracottaVPNService::class.java)
+                    .setAction(TerracottaVPNService.ACTION_STOP)
+                ContextCompat.startForegroundService(context, vpnIntent)
+            }.onFailure { Log.w(TAG, "stopVpn 실패: ${it.message}") }
+        }
+    }
+
+    private fun toast(msg: String) {
+        runCatching {
+            activity.runOnUiThread {
+                Toast.makeText(activity, msg, Toast.LENGTH_LONG).show()
+            }
         }
     }
 }

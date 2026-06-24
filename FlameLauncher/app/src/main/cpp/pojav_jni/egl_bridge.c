@@ -328,9 +328,7 @@ static gpu_probe_t detect_gpu() {
 
 int pojavInitOpenGL() {
     // Only affects GL4ES as of now
-    const char *forceVsync = getenv("FORCE_VSYNC");
-    if (forceVsync && strcmp(forceVsync, "true") == 0)
-        pojav_environ->force_vsync = true;
+    pojav_environ->force_vsync = true;
 
     const char *renderer = getenv("POJAV_RENDERER");
     if (!renderer) {

@@ -1,5 +1,6 @@
 package kr.co.donghyun.flamelauncher.presentation.ui.screen
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -21,20 +22,21 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kr.co.donghyun.flamelauncher.R
 import kr.co.donghyun.flamelauncher.data.mods.ContentItem
 import kr.co.donghyun.flamelauncher.data.mods.ContentSource
 import kr.co.donghyun.flamelauncher.data.mojang.DownloadProgress
-import kr.co.donghyun.flamelauncher.data.renderer.RendererManager
-import kr.co.donghyun.flamelauncher.presentation.ContentPackDetailActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.*
 import kr.co.donghyun.flamelauncher.presentation.util.window.isTablet
 
@@ -191,11 +193,11 @@ fun ContentPackBrowserScreen(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+
                 ContentSource.entries.forEach { source ->
                     val isSelected = selectedSource == source
                     Box(
                         modifier = Modifier
-                            .weight(1f)
                             .clip(RoundedCornerShape(16.dp))
                             .background(if (isSelected) Flame else BgDark)
                             .border(1.dp, if (isSelected) Flame else BgBorder, RoundedCornerShape(16.dp))
@@ -208,12 +210,22 @@ fun ContentPackBrowserScreen(
                             .padding(horizontal = if (tablet) 12.dp else 10.dp, vertical = if (tablet) 8.dp else 6.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = source.label,
-                            color = if (isSelected) Color.White else TextSub,
-                            fontSize = if (tablet) 13.sp else 11.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+                            Image(
+                                painter = if(source.prefix == "cf") painterResource(R.drawable.img_curseforge_icon)
+                                else painterResource(R.drawable.img_modrith_icon),
+                                contentDescription = null,
+                                colorFilter = ColorFilter.tint(if (isSelected) Color.White else TextSub),
+                                modifier = Modifier.size(if (tablet) 16.dp else 12.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = source.label,
+                                color = if (isSelected) Color.White else TextSub,
+                                fontSize = if (tablet) 13.sp else 11.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
                     }
                 }
             }
@@ -243,7 +255,7 @@ fun ContentPackBrowserScreen(
             columns = GridCells.Fixed(if (tablet) 2 else 1),
             state = gridState,
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(if (tablet) 14.dp else 10.dp),
+            contentPadding = PaddingValues(horizontal = if (tablet) 14.dp else 10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
