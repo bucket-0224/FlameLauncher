@@ -68,7 +68,7 @@ fun MainScreen(
     onOpenContents: () -> Unit,
     onOpenNetworkSettings: () -> Unit,
     onOpenKeySettings: () -> Unit,
-    onOpenJVMSettings: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenRendererSettings: () -> Unit,
     uuid: String?,
     isLoggedIn: Boolean,
@@ -99,7 +99,7 @@ fun MainScreen(
         Column(modifier = Modifier.fillMaxSize().padding(bottom = if (tablet) 0.dp else 40.dp)) {
             ProfileHeader(
                 isLoggedIn, username, uuid, onLogin,
-                onOpenContents, onOpenKeySettings, onOpenNetworkSettings, onOpenJVMSettings, onOpenRendererSettings,
+                onOpenContents, onOpenKeySettings, onOpenNetworkSettings, onOpenSettings, onOpenRendererSettings,
                 onOpenTerracotta = { showTerracotta = true }
             )
 
@@ -528,7 +528,7 @@ fun ProfileHeader(
     onOpenContents: () -> Unit,
     onOpenKeySettings: () -> Unit,
     onOpenNetworkSettings: () -> Unit,
-    onOpenJVMSettings: () -> Unit,
+    onOpenSettings: () -> Unit,
     onOpenRendererSettings: () -> Unit,
     onOpenTerracotta: () -> Unit = {},
 ) {
@@ -589,7 +589,7 @@ fun ProfileHeader(
                 listOf(
                     "📦 추가 컨텐츠" to onOpenContents,
                     "🎮 키 설정" to onOpenKeySettings,
-                    "⚙️ JVM" to onOpenJVMSettings,
+                    "⚙️ 렌더링 설정" to onOpenSettings,
 //                    "🌐 네트워크" to onOpenNetworkSettings,
 //                    "🛰️ 온라인 LAN" to onOpenTerracotta,
                 ).forEach { (label, action) ->

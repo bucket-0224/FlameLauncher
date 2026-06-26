@@ -2,6 +2,7 @@ package kr.co.donghyun.flamelauncher.data.jvm
 
 import android.content.Context
 import com.google.gson.Gson
+import com.google.gson.JsonParser
 import kr.co.donghyun.flamelauncher.data.renderer.RendererManager
 import java.io.File
 
@@ -19,7 +20,32 @@ data class JvmSettings(
     val graphicsMode: Int = 0,       // 0=fast, 1=fancy, 2=fabulous
     val cacheDirPath: String = "",
     val unlockFps: Boolean = true,
+
+    // ── 디스플레이 ────────────────────────────────────────────────
+    // 전체 화면: 시스템 바(상태/내비)를 숨기고 화면을 꽉 채운다. 기본 켜짐, 끌 수 있음.
+    //            실제 적용은 게임 Activity 에서 한다(아래 applyFullscreen 참고).
+    val fullscreen: Boolean = true,
+    // 렌더 해상도 배율(%). 100 = 네이티브(화면 그대로). 낮출수록 프레임버퍼가 작아져
+    //            FPS 가 오르고 화면은 약간 흐려진다. (ZalithLauncher2 의 Resolution 과 동일 개념)
+    val resolutionScalePercent: Int = 100,
 ) {
+
+    /** 0.25 ~ 1.00 범위로 보정된 실제 배율. 잘못된 값이 들어와도 범위를 벗어나지 않게 한다. */
+    val resolutionScale: Float
+        get() = resolutionScalePercent
+            .coerceIn(RES_SCALE_MIN_PERCENT, RES_SCALE_MAX_PERCENT) / 100f
+
+    /**
+     * 화면 픽셀(width × height)에 배율을 적용한 실제 렌더 해상도.
+     * GL/영상 백엔드 안정성을 위해 짝수로 맞추고 최소 2px 을 보장한다.
+     * 모던(1.13+) 버전에서 surface/브리지 윈도우 크기를 정할 때 사용한다.
+     */
+    fun scaledResolution(width: Int, height: Int): Pair<Int, Int> {
+        val s = resolutionScale
+        val w = ((width * s).toInt() and 1.inv()).coerceAtLeast(2)
+        val h = ((height * s).toInt() and 1.inv()).coerceAtLeast(2)
+        return w to h
+    }
 
     fun toJvmArgArray(
         context: Context,
@@ -124,9 +150,10 @@ data class JvmSettings(
                 "$cacioDir/cacio-shared-1.10-SNAPSHOT.jar"
             ).joinToString(":")
 
+            // 레거시(1.12.2-)는 AWT/Cacio 가상 화면 크기가 곧 렌더 해상도다.
+            // 여기에 resolutionScale 을 적용하면 모던과 동일하게 해상도 배율로 FPS 를 조절할 수 있다.
             val dm = context.resources.displayMetrics
-            val cacioW = dm.widthPixels
-            val cacioH = dm.heightPixels
+            val (cacioW, cacioH) = scaledResolution(dm.widthPixels, dm.heightPixels)
             args += "-Dcacio.managed.screensize=${cacioW}x${cacioH}"
 
             args += "-Xbootclasspath/p:$cacioJars"
@@ -160,6 +187,16 @@ data class JvmSettings(
 
         return args.toTypedArray()
     }
+
+    companion object {
+        /** 해상도 배율 하한 (%) */
+        const val RES_SCALE_MIN_PERCENT = 25
+        /**
+         * 해상도 배율 상한 (%). 100 = 네이티브.
+         * 100 초과로 올리고 싶으면(슈퍼샘플링 = 화질↑·FPS↓) 이 값만 키우면 된다.
+         */
+        const val RES_SCALE_MAX_PERCENT = 100
+    }
 }
 
 object JvmSettingsManager {
@@ -167,17 +204,35 @@ object JvmSettingsManager {
     private val gson = Gson()
 
     fun load(context: Context): JvmSettings {
+        val fallback = JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
         return try {
             val file = File(context.filesDir, FILE_NAME)
-            if (!file.exists()) return JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
-            val settings = gson.fromJson(file.readText(), JvmSettings::class.java)
-                ?: JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
+            if (!file.exists()) return fallback
+
+            val text = file.readText()
+            var settings = gson.fromJson(text, JvmSettings::class.java) ?: return fallback
+
+            // ⚠️ Gson 은 Kotlin 생성자를 거치지 않아서, JSON 에 없는 필드는 data class 의
+            //    기본값이 아니라 0/false 로 채워진다. 구버전 jvm_settings.json 에는
+            //    fullscreen / resolutionScalePercent 가 없으므로, 키가 빠진 경우 기본값으로 보정한다.
+            //    (이게 없으면 기존 사용자는 전체화면 off, 해상도 0% 로 깨진다.)
+            val obj = runCatching { JsonParser.parseString(text).asJsonObject }.getOrNull()
+            if (obj?.has("fullscreen") != true) settings = settings.copy(fullscreen = true)
+            if (obj?.has("resolutionScalePercent") != true)
+                settings = settings.copy(resolutionScalePercent = 100)
+
+            // 범위 보정 (잘못된 값/0 방지)
+            settings = settings.copy(
+                resolutionScalePercent = settings.resolutionScalePercent
+                    .coerceIn(JvmSettings.RES_SCALE_MIN_PERCENT, JvmSettings.RES_SCALE_MAX_PERCENT)
+            )
+
             // cacheDirPath가 비어있으면 채워주기
             if (settings.cacheDirPath.isEmpty())
                 settings.copy(cacheDirPath = context.cacheDir.absolutePath)
             else settings
         } catch (_: Exception) {
-            JvmSettings(cacheDirPath = context.cacheDir.absolutePath)
+            fallback
         }
     }
 

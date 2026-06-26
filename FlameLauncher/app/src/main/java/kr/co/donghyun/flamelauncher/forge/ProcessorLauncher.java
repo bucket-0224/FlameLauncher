@@ -2,6 +2,9 @@ package kr.co.donghyun.flamelauncher.forge;
 
 import java.io.*;
 import java.lang.reflect.Method;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetSocketAddress;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -58,9 +61,16 @@ public final class ProcessorLauncher {
 
             String jarName = new File(jar).getName();
 
-            boolean strictShaCheck = !"1".equals(System.getProperty("ping.forge.skip_sha"));
-
-            if (outKeys.length > 0 && (!strictShaCheck || outputsValid(outKeys, outShas))) {
+            // 🔧 FIX: 출력이 "실제로 유효"할 때만 건너뛴다.
+            //   (구) 조건: (!strictShaCheck || outputsValid(...))
+            //     → ping.forge.skip_sha=1 이면 !strictShaCheck 가 true 가 되고, OR 의 단락평가
+            //       때문에 outputsValid 를 아예 호출하지 않고 '출력 존재 여부와 무관하게' 무조건
+            //       SKIP 됐다. 결과적으로 ForgeAutoRenamingTool(SRG 변환)/binarypatcher 가 한 번도
+            //       실행되지 않아, net/minecraft/client/Minecraft.class 가 든 patched client jar 가
+            //       생성되지 않고 → BOOTSTRAP 에서 "Could not find ...Minecraft.class" 로 죽었다.
+            //   skip_sha 는 'SHA 강제 여부' 플래그였는데 outputsValid 는 이미 SHA 를 보지 않으므로
+            //   여기서 별도 분기로 둘 이유가 없다. 항상 존재/구조 검증(outputsValid)을 거치게 한다.
+            if (outKeys.length > 0 && outputsValid(outKeys, outShas)) {
                 log("[" + i + "/" + count + "] SKIP (outputs already valid): " + jarName);
                 continue;
             }
@@ -141,7 +151,7 @@ public final class ProcessorLauncher {
             }
         }
 
-        log("All processors complete. Launching " + realMainClass);
+        log("All processors complete. (빌더 모드: 게임은 별도로 부팅됨)");
 
         // NeoForge 전용 후처리:
         //   우리 프로세서는 Minecraft 를 미리 deobfuscate 한 patched client jar 를 만든다.
@@ -159,49 +169,44 @@ public final class ProcessorLauncher {
             }
         }
 
-        // NeoForge(FancyModLoader)의 FatalErrorReporting 은 시작 에러를 Swing(GUI)으로
-        // 띄우려 하는데, 그 경로(showErrorUsingSwing → UIManager → AWT)는 안드로이드에
-        // X11 헤드풀 라이브러리(libawt_xawt.so)가 없어 UnsatisfiedLinkError 로 2차 크래시한다.
-        // 그 결과 "진짜 시작 에러"가 AWT 크래시에 가려져 로그에 안 남는다.
+        // ✅ ZL2 방식: 이 프로세스는 "patched jar 빌더" 역할만 한다.
+        //   ForgeBootstrap(게임)을 같은 JVM 에서 부르지 않는다.
         //
-        //  (1) GraphicsEnvironment 를 미리 headless 로 초기화/캐시해 둔다.
-        //      NeoForge 가 내부에서 java.awt.headless 를 false 로 덮어써도, 이미 캐시된
-        //      headless=true 가 유지되면 Swing 대신 TinyFD 경로로 빠져 X11 크래시를 피한다.
-        //  (2) main 호출을 try/catch 로 감싸 예외가 전파되면 전체 cause 체인을 콘솔(logcat)에
-        //      강제로 찍는다 → NeoForge 가 GUI 로 보여주려던 진짜 원인을 우리가 볼 수 있다.
-        try {
-            System.setProperty("java.awt.headless", "true");
-            // GraphicsEnvironment 정적 초기화를 강제(headless 상태 캐시).
-            // java.desktop 모듈을 컴파일 경로에 요구하지 않도록 리플렉션으로 호출한다.
-            Class<?> ge = Class.forName("java.awt.GraphicsEnvironment");
-            ge.getMethod("isHeadless").invoke(null);
-        } catch (Throwable ignore) {
-            // AWT 자체가 없거나 초기화 실패해도 무시 — 본 호출에는 영향 없음
-        }
+        //   [이유] 게임 JVM 부팅 시점엔 forge-<ver>-client.jar 가 아직 디스크에 없어,
+        //   AppClassLoader / BootstrapLauncher 의 SecureModuleClassLoader 가 그 jar 경로를
+        //   "죽은 엔트리"로 캐시한다. binarypatcher 가 같은 프로세스에서 뒤늦게 파일을 만들어도
+        //   getResource("net/minecraft/client/Minecraft.class") 는 캐시된 빈 엔트리를 보고 null →
+        //   ForgeProdLaunchHandler.getMinecraftPaths 가 "Could not find ...Minecraft.class" 로
+        //   죽는다(첫 실행만 크래시, jar 가 생긴 둘째 실행부턴 정상이던 바로 그 증상).
+        //   같은 프로세스 안에서는 이 캐시를 되살릴 방법이 없다.
+        //
+        //   [해결] processor 가 jar 를 만들고 종료(halt)하면, 런처가 :minecraft 프로세스를
+        //   ForgeBootstrap 진입점으로 새로 띄운다. 그 시점엔 jar 가 디스크에 존재하므로
+        //   부팅 시 모듈 인덱싱이 정상적으로 되고 getResource 가 클래스를 찾는다.
+        //   (ZL2 의 JvmService 가 processor JVM 과 게임 JVM 을 프로세스째 분리하는 것과 동일)
+        //
+        //   종료코드는 JvmService 가 UDP 로 런처에 전달한다. 정상=0.
+        //   shutdown hook / AWT thread 등 부작용 없이 즉시 끝내기 위해 halt 를 쓴다.
+        log("✅ 빌더 종료(코드 0). 게임 프로세스 재기동 대기.");
+        sendExitCode(0);   // ★ halt 가 native bootMinecraftJVM 반환을 막으므로 여기서 직접 전송
+        System.out.flush();
+        System.err.flush();
+        Runtime.getRuntime().halt(0);
+    }
 
-        Class<?> mainCls = Class.forName(realMainClass, true, ClassLoader.getSystemClassLoader());
-        Method mainMethod = mainCls.getMethod("main", String[].class);
-        try {
-            mainMethod.invoke(null, (Object) args);
-        } catch (Throwable t) {
-            // NeoForge 시작 실패의 "진짜 원인"을 전체 체인으로 출력
-            log("================ REAL STARTUP FAILURE (unwrapped) ================");
-            Throwable cur = t;
-            int depth = 0;
-            while (cur != null) {
-                log("[cause #" + depth + "] " + cur.getClass().getName() + ": " + cur.getMessage());
-                StackTraceElement[] st = cur.getStackTrace();
-                int limit = Math.min(st.length, 12);
-                for (int i = 0; i < limit; i++) {
-                    log("    at " + st[i]);
-                }
-                Throwable next = cur.getCause();
-                if (next == cur) break;
-                cur = next;
-                depth++;
-            }
-            log("=================================================================");
-            throw t; // 기존 동작 유지(상위에서도 처리)
+    /** 빌더 종료코드를 메인 프로세스로 직접 UDP 전송. (127.0.0.1:PROCESS_SERVICE_PORT)
+     *  halt(0) 는 JVM 을 즉사시켜 native bootMinecraftJVM 이 반환되지 않으므로
+     *  ForgeBuilderService.sendCode() 가 못 돈다 → 여기서 직접 쏴야 런처가 게임을 띄운다.
+     *  포트는 JVMBuilderAPI.kt 의 PROCESS_SERVICE_PORT(=53151) 와 반드시 동일. */
+    private static void sendExitCode(int code) {
+        final int PROCESS_SERVICE_PORT = 53151;
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", PROCESS_SERVICE_PORT));
+            byte[] data = Integer.toString(code).getBytes(StandardCharsets.UTF_8);
+            socket.send(new DatagramPacket(data, data.length));
+            log("종료코드 " + code + " 전송 → 127.0.0.1:" + PROCESS_SERVICE_PORT);
+        } catch (Exception e) {
+            log("⚠️ 종료코드 전송 실패: " + e);
         }
     }
 
@@ -362,15 +367,65 @@ public final class ProcessorLauncher {
         for (int i = 0; i < keys.length; i++) {
             File f = new File(keys[i]);
             if (!f.exists() || f.length() == 0) return false;
-            // ⚠️ SHA 비교 제거:
+
+            // 🔧 FIX: "존재 + 크기>0" 만으로는 중간에 끊겨 일부만 써진 jar / 엔트리가 깨진 jar
+            //   같은 손상·미완성 산출물을 '유효'로 오판해 프로세서를 영구히 건너뛰게 된다.
+            //   (그러면 patched client jar 에 Minecraft.class 가 없는데도 SKIP → 동일 크래시 반복)
+            //   SHA 비교는 아래 사유로 여전히 쓸 수 없으므로, 대신 '구조 검증'을 한다:
+            //   jar 면 zip 으로 열어 central directory/엔트리를 끝까지 읽을 수 있는지 확인하고,
+            //   읽다 깨지면(EOFException/ZipException) invalid 로 보고 프로세서를 재실행시킨다.
+            if (f.getName().endsWith(".jar") && !isReadableJar(f)) return false;
+
+            // 🔧 FIX(첫 설치 최초 실행 크래시): 패치된 Forge client jar 은 net/minecraft/client/
+            //   Minecraft.class 를 반드시 포함해야 한다. 설치 단계에서 만들어진 "구조적으론 멀쩡하지만
+            //   Minecraft.class 가 빠진" forge-<ver>-client.jar 가 존재하면, 위 구조 검증만으론 유효로
+            //   오판해 binarypatcher 가 SKIP 되고 → 그 불완전 jar 가 classpath 에 남아
+            //   getMinecraftPaths 가 "Could not find ...Minecraft.class" 로 죽는다.
+            //   (그래서 첫 설치 최초 실행에서만 터지고, jar 를 rm 후 재실행하면 재생성돼 정상이었다.)
+            //   → client jar 면 실제 엔트리 포함 여부까지 확인해, 없으면 invalid 로 보고 재생성시킨다.
+            String norm = f.getPath().replace('\\', '/');
+            if (norm.endsWith("-client.jar") && norm.contains("/net/minecraftforge/forge/")
+                    && !jarContainsEntry(f, "net/minecraft/client/Minecraft.class")) {
+                log("  ⚠️ patched client jar 에 net/minecraft/client/Minecraft.class 없음(재생성 유도): "
+                        + f.getName());
+                return false;
+            }
+
+            // ⚠️ SHA 비교 제거(사유):
             //   ForgeAutoRenamingTool/binarypatcher 같은 변환 단계는 jar 압축 시
             //   타임스탬프·엔트리 순서가 환경마다 달라서, 내용이 동일해도 바이트 해시가 달라짐.
             //   expected SHA 는 Forge 설치 데이터를 만든 PC 환경 기준이라 안드로이드 변환 결과와 불일치.
             //   (예: client-official.jar 안에 Minecraft.class 등 올바른 클래스가 다 들어있는데도
-            //    SHA 만 안 맞아 실패하던 문제) → 존재 + 비어있지 않음만 검증.
+            //    SHA 만 안 맞아 실패하던 문제) → 존재 + 구조 정상 여부만 검증.
             //   if (!sha1(f).equalsIgnoreCase(sha[i])) return false;
         }
         return true;
+    }
+
+    /**
+     * jar 가 끝까지 정상적으로 읽히는 zip 인지(=손상/미완성이 아닌지) 검사.
+     * 프로세스가 중간에 죽어 EOCD(End Of Central Directory)가 안 써진 jar 는
+     * new JarFile(...) 또는 엔트리 열거에서 ZipException 으로 걸린다.
+     */
+    private static boolean isReadableJar(File f) {
+        try (JarFile jf = new JarFile(f)) {
+            int entries = 0;
+            java.util.Enumeration<JarEntry> e = jf.entries();
+            while (e.hasMoreElements()) { e.nextElement(); entries++; }
+            return entries > 0;
+        } catch (Exception ex) {
+            log("  ⚠️ 손상/미완성 산출물 감지(프로세서 재실행 유도): " + f.getName() + " — " + ex);
+            return false;
+        }
+    }
+
+    /** jar 안에 특정 엔트리(예: net/minecraft/client/Minecraft.class)가 들어있는지 검사. */
+    private static boolean jarContainsEntry(File f, String entry) {
+        try (JarFile jf = new JarFile(f)) {
+            return jf.getJarEntry(entry) != null;
+        } catch (Exception ex) {
+            return false;
+        }
     }
 
     private static String sha1(File f) throws Exception {

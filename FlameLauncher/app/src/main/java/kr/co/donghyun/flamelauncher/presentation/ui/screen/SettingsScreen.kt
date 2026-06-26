@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -41,7 +40,6 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kr.co.donghyun.flamelauncher.data.jvm.JvmSettings
 import kr.co.donghyun.flamelauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgBorder
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgDark
@@ -52,7 +50,7 @@ import kr.co.donghyun.flamelauncher.presentation.ui.theme.TextSub
 import kr.co.donghyun.flamelauncher.presentation.util.window.isTablet
 
 @Composable
-fun JvmSettingsScreen(onBack: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val tablet = isTablet()
 
@@ -135,6 +133,20 @@ fun JvmSettingsScreen(onBack: () -> Unit) {
                     .padding(if (tablet) 16.dp else 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                Text("🖥 화면 설정", color = TextMain, fontSize = if (tablet) 15.sp else 12.sp, fontWeight = FontWeight.Bold)
+
+                SettingToggleRow(
+                    emoji = "🖥", title = "전체 화면",
+                    subtitle = "시스템 바를 숨기고 화면을 꽉 채웁니다",
+                    checked = settings.fullscreen,
+                    onCheckedChange = { settings = settings.copy(fullscreen = it); JvmSettingsManager.save(context, settings) },
+                )
+                ResolutionScaleRow(
+                    percent = settings.resolutionScalePercent,
+                    onPercentChange = { settings = settings.copy(resolutionScalePercent = it); JvmSettingsManager.save(context, settings) },
+                )
+
+                Spacer(Modifier.height(10.dp))
                 Text("🧠 메모리 할당 (최대 RAM: ${totalRamMb}MB)", color = TextMain, fontSize = if (tablet) 15.sp else 12.sp, fontWeight = FontWeight.Bold)
 
                 Column {

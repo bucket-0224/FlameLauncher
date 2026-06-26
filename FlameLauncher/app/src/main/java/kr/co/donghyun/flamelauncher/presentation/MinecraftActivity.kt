@@ -11,6 +11,7 @@ import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
+import android.view.SurfaceView
 import android.view.View
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.graphics.Insets
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
@@ -48,6 +50,7 @@ import kr.co.donghyun.flamelauncher.presentation.ui.components.MinecraftSurface
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.flamelauncher.presentation.util.dns.DnsHookNative
+import kr.co.donghyun.flamelauncher.presentation.util.forge.startBuilderAndWaitExitBlocking
 import kr.co.donghyun.flamelauncher.presentation.util.jni.JavaNativeLauncher
 import kr.co.donghyun.flamelauncher.presentation.util.minecraft.MinecraftJREPreparer
 import kr.co.donghyun.flamelauncher.presentation.util.resources.ResourcePackImporter
@@ -124,6 +127,11 @@ class MinecraftActivity : BaseActivity() {
 
     private var jvmStarted = false
     private var javaMajor: Int = 21
+
+    // ── 디스플레이 설정(전체화면 / 해상도 배율) — onCreated 에서 1회 로드 ──
+    private var fullscreenEnabled = true
+    private var renderScalePercent = 100
+    private var renderScaleApplied = false
 
     // ── 부팅 로딩 오버레이 상태 ──
     // showBootOverlay 가 true 인 동안 게임 surface 위에 "부팅 중" 다이얼로그를 표시한다.
@@ -259,6 +267,14 @@ class MinecraftActivity : BaseActivity() {
                 .build()
         }
 
+        // ── 전체 화면 토글 ──
+        // hideNavigation() 으로 기본은 몰입형(전체화면)이지만, 사용자가 전체화면을 끄면
+        // 시스템 바를 다시 보여준다. 해상도 배율 값도 여기서 함께 읽어 둔다.
+        val displaySettings = JvmSettingsManager.load(this)
+        fullscreenEnabled = displaySettings.fullscreen
+        renderScalePercent = displaySettings.resolutionScalePercent
+        applyFullscreen(fullscreenEnabled)
+
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() { return }
         })
@@ -269,6 +285,7 @@ class MinecraftActivity : BaseActivity() {
                     MinecraftSurface(
                         onSurfaceCreated = { surface, _ ->
                             currentSurface = surface
+                            applyRenderResolutionScale()   // 렌더 해상도 배율(축소 시 FPS↑)
                             if (!jvmStarted) {
                                 jvmStarted = true
                                 setupAndLaunch(surface)
@@ -692,6 +709,46 @@ class MinecraftActivity : BaseActivity() {
         } catch (_: Exception) {}
     }
 
+    /**
+     * 전체 화면(몰입형) on/off.
+     *  - on  : 상태바·내비게이션바 숨김(가장자리 스와이프하면 잠깐 나타남). hideNavigation() 과 동일 상태.
+     *  - off : 시스템 바를 다시 표시. (게임은 edge-to-edge 라 바 뒤로 그려짐)
+     */
+    private fun applyFullscreen(enable: Boolean) {
+        val controller = WindowCompat.getInsetsController(window, window.decorView)
+        if (enable) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    /**
+     * 렌더 해상도 배율 적용. SurfaceView 버퍼를 줄이면 GPU 가 더 적은 픽셀을 그려 FPS 가 오르고,
+     * SurfaceView 가 화면 크기로 다시 늘려서 보여준다. (ZalithLauncher2 의 Resolution 과 동일 방식)
+     * 버퍼가 작아지면 onSurfaceChanged 로 축소된 크기가 전달되어 sendScreenSize 도 자동으로 맞춰진다.
+     * 100% 면 네이티브 그대로라 손대지 않는다. (서피스당 1회만 적용)
+     */
+    private fun applyRenderResolutionScale() {
+        if (renderScaleApplied) return
+        if (renderScalePercent >= 100) { renderScaleApplied = true; return }
+
+        val sv = window.decorView.findViewWithTag<View>("minecraft_surface") as? SurfaceView
+        if (sv == null) {
+            Log.w("FLAME_LAUNCHER", "⚠️ 해상도 배율: SurfaceView(minecraft_surface) 를 못 찾음 — 스킵")
+            return
+        }
+        val dm = resources.displayMetrics
+        val (w, h) = JvmSettings(resolutionScalePercent = renderScalePercent)
+            .scaledResolution(dm.widthPixels, dm.heightPixels)
+        sv.holder.setFixedSize(w, h)
+        renderScaleApplied = true
+        Log.d("FLAME_LAUNCHER",
+            "🔍 렌더 해상도 ${renderScalePercent}% → ${w}x${h} (화면 ${dm.widthPixels}x${dm.heightPixels})")
+    }
+
     internal var currentCursorX = 1280f  // 화면 중앙 근처
     internal var currentCursorY = 720f
     internal val MOUSE_SENSITIVITY = 1.5f
@@ -963,6 +1020,128 @@ class MinecraftActivity : BaseActivity() {
                 mv.visitInsn(Opcodes.RETURN)
                 mv.visitMaxs(0, 2)   // long = 2 slot
                 mv.visitEnd()
+            }
+        }
+        reader.accept(visitor, 0)
+        return writer.toByteArray()
+    }
+
+    /**
+     * Sodium 의 "전체화면 해상도" 슬라이더(SodiumGameOptionPages.general 라인 98)는
+     *   new SliderControl(option, 0, monitor.getModeCount(), 1, ...)
+     * 로 만들어진다. Android(가상 디스플레이)에서는 monitor 의 video mode 리스트가 비어
+     * getModeCount()==0 이 되고, SliderControl 생성자의
+     *   Validate.isTrue(max > min)   // 0 > 0  → false
+     * 에서 IllegalArgumentException 으로 죽는다(ESC → 비디오 설정 진입 시 크래시).
+     *
+     * 이 옵션은 어차피 Windows 전용(setEnabled OS==WIN)이라 Android 에선 의미가 없으므로,
+     * SliderControl.class 생성자 맨 앞에서 max 를 보정한다:
+     *   if (max <= min) max = min + interval;
+     * → max > min, (max-min)%interval==0 둘 다 만족 → 어떤 슬라이더든(향후 0-범위 케이스 포함)
+     *   터지지 않는다. 람다 구조/난독화/Sodium 버전과 무관한 가장 견고한 지점.
+     *
+     * sodium / podium 두 jar 모두에 SliderControl 이 들어올 수 있으므로 mods 전체를 훑는다.
+     */
+    private fun patchSodiumSliderIfNeeded(modsDir: File) {
+        if (!modsDir.isDirectory) return
+        val SLIDER_ENTRY =
+            "net/caffeinemc/mods/sodium/client/gui/options/control/SliderControl.class"
+        modsDir.listFiles()?.forEach { f ->
+            if (!f.isFile) return@forEach
+            if (!f.name.endsWith(".jar", ignoreCase = true)) return@forEach
+            val lower = f.name.lowercase()
+            // sodium 본체 + podium(sodium 재패키징) 만 대상. 불필요한 jar 스캔 회피.
+            if (!(lower.startsWith("sodium") || lower.startsWith("podium"))) return@forEach
+
+            val marker = File(f.parentFile, "${f.name}.patched_slider")
+            if (marker.exists()) return@forEach
+
+            // 이 jar 가 SliderControl 을 품고 있는지 먼저 확인(없으면 스킵)
+            val hasSlider = try {
+                ZipFile(f).use { it.getEntry(SLIDER_ENTRY) != null }
+            } catch (e: Exception) {
+                Log.w("FLAME_LAUNCHER", "slider 스캔 실패 (${f.name}): ${e.message}"); false
+            }
+            if (!hasSlider) { marker.createNewFile(); return@forEach }
+
+            Log.w("FLAME_LAUNCHER", "🩹 Sodium SliderControl 패치: ${f.name}")
+            try {
+                patchSodiumSliderJar(f, SLIDER_ENTRY)
+                marker.createNewFile()
+                Log.d("FLAME_LAUNCHER", "✅ SliderControl 패치 완료: ${f.name}")
+            } catch (e: Exception) {
+                Log.e("FLAME_LAUNCHER", "❌ SliderControl 패치 실패: ${e.message}", e)
+            }
+        }
+    }
+
+    private fun patchSodiumSliderJar(jar: File, sliderEntry: String) {
+        val tmp = File(jar.parent, jar.name + ".tmp")
+        ZipFile(jar).use { zin ->
+            ZipOutputStream(tmp.outputStream()).use { zout ->
+                val entries = zin.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    val bytes = zin.getInputStream(entry).readBytes()
+                    val finalBytes = if (entry.name == sliderEntry)
+                        patchSliderControlClass(bytes) else bytes
+                    val newEntry = ZipEntry(entry.name).apply { method = ZipEntry.DEFLATED }
+                    zout.putNextEntry(newEntry)
+                    zout.write(finalBytes)
+                    zout.closeEntry()
+                }
+            }
+        }
+        if (!jar.delete()) throw IOException("기존 jar 삭제 실패: ${jar.absolutePath}")
+        if (!tmp.renameTo(jar)) throw IOException("임시 jar rename 실패")
+    }
+
+    /**
+     * SliderControl 생성자
+     *   (Lnet/caffeinemc/mods/sodium/client/gui/options/Option;IILnet/caffeinemc/mods/sodium/client/gui/options/control/ControlValueFormatter;)V
+     * 의 맨 앞(첫 명령 이전)에 다음을 prepend:
+     *   if (max <= min) max = min + interval;
+     * 슬롯: this=0, option=1, min=2, max=3, interval=4, mode=5.
+     */
+    private fun patchSliderControlClass(bytes: ByteArray): ByteArray {
+        val ASM = Opcodes.ASM9
+        // (Option option, int min, int max, int interval, ControlValueFormatter mode)
+        //  → int 가 3개(min,max,interval)이므로 III. (이전에 II 로 잘못 적어 매칭 실패했었음)
+        val ctorDesc =
+            "(Lnet/caffeinemc/mods/sodium/client/gui/options/Option;IIIL" +
+                    "net/caffeinemc/mods/sodium/client/gui/options/control/ControlValueFormatter;)V"
+
+        val reader = ClassReader(bytes)
+        val writer = ClassWriter(reader, ClassWriter.COMPUTE_FRAMES)
+        val visitor = object : ClassVisitor(ASM, writer) {
+            override fun visitMethod(
+                access: Int, name: String, descriptor: String,
+                signature: String?, exceptions: Array<out String>?
+            ): org.objectweb.asm.MethodVisitor? {
+                val mv = super.visitMethod(access, name, descriptor, signature, exceptions)
+                if (name == "<init>" && descriptor == ctorDesc) {
+                    Log.d("FLAME_LAUNCHER", "  ~ SliderControl.<init> max 보정 prepend")
+                    return object : org.objectweb.asm.MethodVisitor(ASM, mv) {
+                        override fun visitCode() {
+                            super.visitCode()
+                            // max = Math.max(max, min + interval);
+                            // 분기(if)를 쓰지 않아 새 stack-map frame 이 생기지 않으므로
+                            // <init> + COMPUTE_FRAMES 조합에서도 안전하다.
+                            // 슬롯: this=0, option=1, min=2, max=3, interval=4, mode=5
+                            visitVarInsn(Opcodes.ILOAD, 3)          // max
+                            visitVarInsn(Opcodes.ILOAD, 2)          // min
+                            visitVarInsn(Opcodes.ILOAD, 4)          // interval
+                            visitInsn(Opcodes.IADD)                 // (min + interval)
+                            visitMethodInsn(
+                                Opcodes.INVOKESTATIC, "java/lang/Math",
+                                "max", "(II)I", false
+                            )                                       // Math.max(max, min+interval)
+                            visitVarInsn(Opcodes.ISTORE, 3)         // max =
+                            // 이후 원본 생성자 바디(aload_0; super(); Validate.isTrue ...)가 그대로 실행됨
+                        }
+                    }
+                }
+                return mv
             }
         }
         reader.accept(visitor, 0)
@@ -1319,6 +1498,174 @@ class MinecraftActivity : BaseActivity() {
     }
 
     /**
+     * forge-install-data.properties 에서 patched client jar(=binarypatcher 출력,
+     * net/minecraft/client/Minecraft.class 포함) 의 경로를 읽어 반환한다.
+     *
+     * 이 파일은 Forge 설치 단계에서 생성되어 "첫 게임 실행" 시점에도 항상 존재하므로, 아직 디스크에
+     * 만들어지지 않은 patched client jar 의 정확한 "미래 경로" 를 추측 없이 알 수 있다.
+     * ProcessorLauncher 가 이 파일을 user.dir(=mcDir)에서 읽으므로 여기서도 mcDir/instanceBase 순으로 찾는다.
+     *
+     * outputs.keys 는 \u0001(SOH) 로 구분된 경로 목록이며, 그 중 net/minecraftforge/forge/ 아래의
+     * -client.jar 만 고른다(= 최종 patched 게임 jar). client-<ver>-official.jar 같은 패치 전 중간
+     * 산출물은 /net/minecraft/client/ 아래라 자연히 제외된다.
+     */
+    private fun forgeClientJarsFromInstallData(vararg dirs: File): List<String> {
+        val file = dirs.asSequence()
+            .map { File(it, "forge-install-data.properties") }
+            .firstOrNull { it.isFile } ?: return emptyList()
+        return try {
+            val props = java.util.Properties()
+            file.inputStream().use { props.load(it.reader(Charsets.UTF_8)) }
+            val count = props.getProperty("processorCount", "0").toIntOrNull() ?: 0
+            val result = LinkedHashSet<String>()
+
+            // 1순위: binarypatcher 프로세서의 출력 = patched client jar(Minecraft.class 포함).
+            //   경로/이름이 Forge 버전마다 달라도(예: 1.21.4 vs 1.21.6) '도구'로 식별하므로 버전 무관.
+            //   binarypatcher 의 입력은 client-official.jar(--clean), 출력은 패치된 게임 jar 이므로
+            //   패치 전 중간물을 잘못 집을 위험이 없다.
+            for (i in 0 until count) {
+                val tool = props.getProperty("processor.$i.jar") ?: ""
+                if (!tool.contains("binarypatcher", ignoreCase = true)) continue
+                (props.getProperty("processor.$i.outputs.keys") ?: "")
+                    .split('\u0001').forEach { raw ->
+                        val path = raw.trim()
+                        if (path.endsWith(".jar")) result.add(File(path).absolutePath)
+                    }
+            }
+
+            // 2순위(보강): binarypatcher 식별 실패 시에만, forge/ 아래 -client.jar 출력을 잡는다.
+            if (result.isEmpty()) {
+                for (i in 0 until count) {
+                    (props.getProperty("processor.$i.outputs.keys") ?: "")
+                        .split('\u0001').forEach { raw ->
+                            val path = raw.trim()
+                            if (path.endsWith("-client.jar")
+                                && path.replace('\\', '/').contains("/net/minecraftforge/forge/")) {
+                                result.add(File(path).absolutePath)
+                            }
+                        }
+                }
+            }
+
+            if (result.isNotEmpty())
+                Log.d("FLAME_LAUNCHER", "📄 install-data patched client jar(${result.size}): $result")
+            result.toList()
+        } catch (e: Exception) {
+            Log.w("FLAME_LAUNCHER", "forge-install-data.properties 파싱 실패(무시): ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Forge/NeoForge 의 patched client jar(forge-<ver>-client.jar 등, net/minecraft/client/Minecraft.class 포함)가
+     * 디스크에 있는지 확인하고, 없으면 :forgebuilder 별도 프로세스로 ProcessorLauncher 를 돌려 생성한다. (ZL2 방식)
+     *
+     * 게임 JVM(이 프로세스)이 부팅되기 전에 호출해야 한다. 빌더 JVM 은 별도 프로세스에서 JNI_CreateJavaVM 을
+     * 쓰므로, 이 프로세스의 게임 JVM 부팅과 충돌하지 않는다. ZL2 runJvmRetryRuntimes 처럼 JRE 8→17→21 재시도.
+     *
+     * @return jar 가 (이미 있거나, 빌더로) 준비되면 true. 모든 JRE 로 실패하면 false.
+     */
+    private fun ensureForgePatchedJar(
+        mcDir: File,
+        instanceBase: File?,
+        dedupedJars: List<String>
+    ): Boolean {
+        // 이미 존재하면 빌더 불필요
+        val clientJars = forgeClientJarsFromInstallData(mcDir, instanceBase ?: mcDir)
+        val alreadyOk = clientJars.isNotEmpty() &&
+                clientJars.all { File(it).let { f -> f.exists() && f.length() > 0 } }
+        if (alreadyOk) {
+            Log.i("FLAME_LAUNCHER", "ℹ️ Forge patched jar 이미 존재 — 빌더 생략")
+            return true
+        }
+        Log.i("FLAME_LAUNCHER", "🔨 Forge patched jar 없음 → 빌더 프로세스로 생성 시작")
+
+        // 빌더 cp: ProcessorLauncher.jar + 게임 cp(dedupedJars).
+        //   ProcessorLauncher 는 forge-install-data.properties 의 processor.N.classpath 를 자체
+        //   ChildFirstClassLoader 로 다시 들기 때문에, 빌더 cp 에는 ProcessorLauncher 자신을 로드할 수
+        //   있는 cp 만 있으면 된다. 게임 cp + launcher jar 로 충분.
+        val launcherJar = findProcessorLauncherJar(instanceBase, dedupedJars)
+        if (launcherJar == null) {
+            Log.e("FLAME_LAUNCHER", "❌ ProcessorLauncher.jar 를 찾지 못함 — 빌더 불가")
+            return false
+        }
+        val builderCp = buildList {
+            add(launcherJar)
+            addAll(dedupedJars)
+        }.distinct()
+
+        val builderProcMain = "kr.co.donghyun.flamelauncher.forge.ProcessorLauncher"
+        fun buildBuilderArgs(jreMajor: Int): Array<String> {
+            val modular = jreMajor >= 9
+            return buildList {
+                if (!modular) add("-XX:+IgnoreUnrecognizedVMOptions")
+                add("-Djava.awt.headless=true")
+                add("-Dping.main.class=$builderProcMain")
+                add("-Duser.dir=${mcDir.absolutePath}")
+                add("-Djava.class.path=" + builderCp.joinToString(File.pathSeparator))
+            }.toTypedArray()
+        }
+
+        // ZL2 runJvmRetryRuntimes 와 동일: JRE 8 → 17 → 21 순서로 재시도.
+        val retryMajors = listOf(javaMajor, 21, 17, 8).distinct()
+
+        for ((idx, major) in retryMajors.withIndex()) {
+            val builderLibJvm = try {
+                MinecraftJREPreparer.prepareJreMajorAndGetPath(this, major, "forge-builder")
+            } catch (e: Exception) {
+                Log.w("FLAME_LAUNCHER", "빌더 JRE $major 준비 실패: ${e.message}")
+                continue
+            }
+            Log.i("FLAME_LAUNCHER", "🔨 빌더 시도 ${idx + 1}/${retryMajors.size} (JRE $major)")
+            val code = startBuilderAndWaitExitBlocking(
+                context = this,
+                libJvmPath = builderLibJvm,
+                jvmArgs = buildBuilderArgs(major),
+                userDir = mcDir.absolutePath,
+                rendererEnv = emptyMap(),   // processor 는 렌더러 불필요
+                postSummary = "Forge 구성 요소 생성 중 (JRE $major)"
+            )
+            val nowOk = forgeClientJarsFromInstallData(mcDir, instanceBase ?: mcDir)
+                .let { it.isNotEmpty() && it.all { p -> File(p).let { f -> f.exists() && f.length() > 0 } } }
+            if (code == 0 && nowOk) {
+                Log.i("FLAME_LAUNCHER", "✅ 빌더 성공 (JRE $major). patched jar 생성 완료")
+                return true
+            }
+            Log.w("FLAME_LAUNCHER", "빌더 실패 (JRE $major, code=$code, jarExists=$nowOk) → 다음 JRE 시도")
+        }
+        Log.e("FLAME_LAUNCHER", "❌ 모든 JRE 로 빌더 실패")
+        return false
+    }
+
+    /**
+     * ProcessorLauncher(빌더 진입점) jar 의 절대경로를 찾는다.
+     *   1순위: dedupedJars 중 launcher jar 파일명과 일치하는 항목
+     *   2순위: instanceBase/libraries 아래를 재귀 탐색
+     *
+     * ⚠️ 실제 산출물명 주의: ForgeInstaller.copyProcessorLauncherJar 는 에셋
+     *   forge-runtime/processor-launcher.jar 를 Maven 경로
+     *   libraries/kr/co/donghyun/flamelauncher/processor-launcher/1.0/processor-launcher-1.0.jar
+     *   로 복사한다. 과거 하드코딩 "ProcessorLauncher.jar" 와 이름이 달라(하이픈·버전) 매칭에
+     *   실패했고, 그 결과 빌더가 launcher jar 를 못 찾아 ensureForgePatchedJar 가 항상 false 를
+     *   반환 → "Forge 구성 요소 생성 실패" 로 부팅이 중단됐다.
+     *   → 실제 산출물명(processor-launcher*.jar)과 구(舊) 이름(ProcessorLauncher.jar)을 모두 허용한다.
+     */
+    private fun findProcessorLauncherJar(instanceBase: File?, dedupedJars: List<String>): String? {
+        fun isLauncherJar(name: String): Boolean {
+            val n = name.lowercase()
+            return n == "processorlauncher.jar" ||
+                    (n.startsWith("processor-launcher") && n.endsWith(".jar"))
+        }
+        dedupedJars.firstOrNull { isLauncherJar(File(it).name) }
+            ?.let { return it }
+        val libRoot = instanceBase?.let { File(it, "libraries") } ?: return null
+        if (!libRoot.exists()) return null
+        return libRoot.walkTopDown()
+            .firstOrNull { it.isFile && isLauncherJar(it.name) }
+            ?.absolutePath
+    }
+
+    /**
      * JLI(java 커맨드 파서)는 "--add-opens X" 같은 두-토큰 형식을 "--add-opens=X" 로
      * 합쳐 JVM에 넘기지만, JNI_CreateJavaVM 직접 호출 경로엔 JLI 가 없다.
      * 두 토큰 그대로 들어가면 JVM 은 "--add-opens" 만 보고 값을 못 찾아 그냥 무시한다
@@ -1485,10 +1832,21 @@ class MinecraftActivity : BaseActivity() {
 
         // ★ 추가 — Forge/NeoForge 의 BootstrapLauncher 경유 부팅 감지
         //   libraries 워커 / versionJar 분기에서 동시에 쓰기 위해 여기서 한 번만 계산
+        //   ⚠️ Forge 1.20.x+ 는 게임 진입점을 cpw.mods.bootstraplauncher.BootstrapLauncher 에서
+        //      자체 포크인 net.minecraftforge.bootstrap.ForgeBootstrap 으로 교체했다. 이 클래스명이
+        //      아래 패턴(cpw.mods / BootstrapLauncher / ProcessorLauncher / net.neoforged) 어디에도
+        //      안 걸려 isModernLoader=false 가 되면, Forge 전용 처리(중간 산출물 제외 · 바닐라 jar 제외 ·
+        //      forge-client.jar 선등록 · :forgebuilder 빌더 실행)가 통째로 스킵된다. 그러면 바닐라/중간
+        //      산출물 jar 가 net.minecraft 패키지를 선점하고 패치된 client jar 가 cp 에서 빠져,
+        //      SECURE-BOOTSTRAP 에서 Minecraft.class 를 못 찾고 죽는다.
+        //      (NeoForge 는 여전히 cpw.mods.bootstraplauncher 라 정상 → 'NeoForge 는 되는데 Forge 만
+        //       막힘' 증상으로 나타났다.)
         val isModernLoader = (instanceMeta?.loaderType == "forge"
                 || instanceMeta?.loaderType == "neoforge")
                 && (mainClass.startsWith("cpw.mods")
+                || mainClass.startsWith("net.minecraftforge.bootstrap")   // ★ Forge 1.20.x+ 자체 포크
                 || mainClass.contains("BootstrapLauncher", ignoreCase = true)
+                || mainClass.contains("ForgeBootstrap", ignoreCase = true) // ★ 보강(패키지 외 클래스명도 매칭)
                 || mainClass.contains("ProcessorLauncher", ignoreCase = true)
                 || mainClass.contains("net.neoforged", ignoreCase = true))
 
@@ -1722,15 +2080,41 @@ class MinecraftActivity : BaseActivity() {
         //   이미 존재한다. NeoForge 는 좌표 자동로드라 해당 없음 → Forge 에만 적용.
         if (isModernLoader && !isNeoForge) {
             val forgeRoot = File(File(instanceBase, "libraries"), "net/minecraftforge/forge")
+
+            // 🔧 FIX(첫 실행 크래시): 패치된 게임 jar(forge-<ver>-client.jar, Minecraft.class 포함)는
+            //   binarypatcher 가 JVM 안에서 만들기 때문에 "첫 실행" 시점엔 디스크에 아직 없다.
+            //   기존엔 instanceMeta.loaderVersion 으로 경로를 합성했는데, 그게 null/형식불일치면 합성이
+            //   실패해 첫 실행 cp 에서 이 jar 가 통째로 빠졌다(=첫 실행만 크래시, 2번째부터는 파일이 생겨
+            //   walk 가 주워서 정상). → 추측 대신, 설치 단계에서 생성되어 첫 실행에도 항상 존재하는
+            //   forge-install-data.properties 의 binarypatcher 출력 경로를 직접 읽어 선등록한다.
+            val installDataClientJars = forgeClientJarsFromInstallData(mcDir, instanceBase)
+            installDataClientJars.forEach { path ->
+                if (!jarList.contains(path)) {
+                    jarList.add(path)
+                    Log.d("FLAME_LAUNCHER", "✅ Forge client jar 선등록(install-data 기준): $path")
+                } else {
+                    Log.d("FLAME_LAUNCHER", "ℹ️ Forge client jar 이미 classpath 에 있음(install-data): ${File(path).name}")
+                }
+            }
+
+            // 디스크에 이미 생성돼 있으면 그것도 포함(2번째 이후 실행/재설치 등).
             val forgeClientJars: List<File> = (forgeRoot.listFiles()?.toList() ?: emptyList())
                 .filter { it.isDirectory }
                 .flatMap { verDir ->
                     (verDir.listFiles()?.toList() ?: emptyList())
                         .filter { it.name.endsWith("-client.jar") }
                 }
+            forgeClientJars.forEach { cj ->
+                if (!jarList.contains(cj.absolutePath)) {
+                    jarList.add(cj.absolutePath)
+                    Log.d("FLAME_LAUNCHER", "✅ Forge client jar classpath 포함: ${cj.absolutePath}")
+                } else {
+                    Log.d("FLAME_LAUNCHER", "ℹ️ Forge client jar 이미 classpath 에 있음: ${cj.name}")
+                }
+            }
 
-            if (forgeClientJars.isEmpty()) {
-                // 디스크에 아직 디렉터리/파일이 없으면 메타의 loaderVersion 으로 경로를 합성해 등록.
+            // 최후 보루: install-data 도 못 읽고 디스크에도 없을 때만 loaderVersion 으로 합성.
+            if (installDataClientJars.isEmpty() && forgeClientJars.isEmpty()) {
                 val lv = instanceMeta?.loaderVersion
                 if (lv != null) {
                     // loaderVersion 이 "54.1.14" 또는 "1.21.4-54.1.14" 둘 다 올 수 있으므로 정규화.
@@ -1738,19 +2122,10 @@ class MinecraftActivity : BaseActivity() {
                     val synth = File(forgeRoot, "$full/forge-$full-client.jar")
                     if (!jarList.contains(synth.absolutePath)) {
                         jarList.add(synth.absolutePath)
-                        Log.d("FLAME_LAUNCHER", "✅ Forge client jar 선등록(합성 경로, 아직 미생성): ${synth.absolutePath}")
+                        Log.d("FLAME_LAUNCHER", "✅ Forge client jar 선등록(합성 경로, 최후 보루): ${synth.absolutePath}")
                     }
                 } else {
-                    Log.w("FLAME_LAUNCHER", "⚠️ Forge client jar 경로를 합성할 loaderVersion 이 없음 — getMinecraftPaths 실패 위험")
-                }
-            } else {
-                forgeClientJars.forEach { cj ->
-                    if (!jarList.contains(cj.absolutePath)) {
-                        jarList.add(cj.absolutePath)
-                        Log.d("FLAME_LAUNCHER", "✅ Forge client jar classpath 포함: ${cj.absolutePath}")
-                    } else {
-                        Log.d("FLAME_LAUNCHER", "ℹ️ Forge client jar 이미 classpath 에 있음: ${cj.name}")
-                    }
+                    Log.w("FLAME_LAUNCHER", "⚠️ Forge client jar 경로를 확정할 수 없음(install-data·디스크·loaderVersion 모두 없음) — getMinecraftPaths 실패 위험")
                 }
             }
         }
@@ -2087,6 +2462,11 @@ class MinecraftActivity : BaseActivity() {
         // Android(bionic)에서 로드 불가 → 부팅 직전 .jar 확장자를 바꿔 로드에서 제외한다.
         disableUnsupportedMods(File(mcDir, "mods"))
 
+        // Sodium 전체화면 해상도 슬라이더가 Android 가상 디스플레이(getModeCount()==0)에서
+        // ESC → 비디오 설정 진입 시 IllegalArgumentException 으로 죽는 것을 방지.
+        // SliderControl.<init> 의 max 를 보정해 어떤 0-범위 슬라이더도 안전하게 만든다.
+        patchSodiumSliderIfNeeded(File(mcDir, "mods"))
+
         Log.d("FLAME_LAUNCHER", "═══ mods/ 폴더 ═══")
         File(mcDir, "mods").listFiles()?.forEach {
             Log.d("FLAME_LAUNCHER", "  ${it.name} (${it.length()}B)")
@@ -2094,6 +2474,29 @@ class MinecraftActivity : BaseActivity() {
 
         Thread {
             try {
+                // ── Forge/NeoForge: patched client jar 가 없으면 게임 JVM 부팅 "전"에 빌더로 생성 (ZL2 방식) ──
+                //   flamejvm 의 JNI_CreateJavaVM 은 프로세스당 1회뿐이라, 게임 JVM 안에서 processor 를 돌려
+                //   forge-<ver>-client.jar 를 만들고 같은 JVM 에서 ForgeBootstrap 을 부르면, 부팅 시점에 그 jar 가
+                //   없어 모듈 인덱스가 죽고 getMinecraftPaths 가 Minecraft.class 를 못 찾는다(첫 실행만 크래시).
+                //   → processor 실행을 :forgebuilder 별도 프로세스에서 먼저 끝내 jar 를 디스크에 만든 뒤,
+                //     이 프로세스의 게임 JVM 은 ForgeBootstrap 진입점으로 깨끗하게 부팅한다.
+                if (isModernLoader && !mainClass.contains("ProcessorLauncher", ignoreCase = true)) {
+                    val ensured = ensureForgePatchedJar(
+                        mcDir = mcDir,
+                        instanceBase = instanceBase,
+                        dedupedJars = dedupedJars
+                    )
+                    if (!ensured) {
+                        Log.e("FLAME_LAUNCHER", "❌ Forge 구성 요소 생성 실패 — 게임 부팅 중단")
+                        runOnUiThread {
+                            Toast.makeText(this@MinecraftActivity,
+                                "Forge 구성 요소 생성에 실패했습니다.", Toast.LENGTH_LONG).show()
+                            finish()
+                        }
+                        return@Thread
+                    }
+                }
+
                 val session = MicrosoftAuthManager.loadSession(this)
                 val validSession = if (session != null && !MicrosoftAuthManager.isSessionValid(session)) {
                     try {
@@ -2196,6 +2599,7 @@ class MinecraftActivity : BaseActivity() {
                     }
                 }
 
+                startShowingWindowWatchdog()   // 빌드 끝난 "뒤"부터 120s 카운트
                 launcher.bootMinecraftJVM(libJvmPath, normalizedJvmArgs, mcArgs)
             } catch (e: Exception) {
                 Log.e("FLAME_LAUNCHER", "MC 실행 예외: ${e.message}")
@@ -2213,7 +2617,10 @@ class MinecraftActivity : BaseActivity() {
                 }
             }
         }.start()
+    }
 
+
+    private fun startShowingWindowWatchdog() {
         Thread {
             Log.d("FLAME_LAUNCHER", "🔵 showingWindow 워치독 시작")
             val deadline = System.currentTimeMillis() + 120_000
@@ -2962,6 +3369,9 @@ class MinecraftActivity : BaseActivity() {
         window.decorView.findViewWithTag<View>("minecraft_surface")
             ?.let { it.requestFocus() }
             ?: window.decorView.requestFocus()
+
+        // 키보드/다이얼로그 등으로 포커스가 돌아온 뒤에도 전체화면 상태를 유지
+        applyFullscreen(fullscreenEnabled)
 
         Log.d("FLAME_LAUNCHER", "onResume — surface 재바인딩 대기")
     }

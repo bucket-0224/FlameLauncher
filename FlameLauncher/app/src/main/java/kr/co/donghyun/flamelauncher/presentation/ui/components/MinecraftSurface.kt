@@ -55,6 +55,10 @@ fun MinecraftSurface(
     AndroidView(
         factory = { ctx ->
             val activity = ctx as MinecraftActivity
+            // 현재 surface 버퍼 크기(해상도 배율 적용 후). 100% 면 뷰 크기와 같다.
+            //   터치(뷰) 좌표를 게임 창 좌표로 변환할 때 buf/view 비율로 사용한다.
+            var surfaceBufW = 0
+            var surfaceBufH = 0
             object : SurfaceView(ctx) {
                 override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection? {
                     val config = resources.configuration
@@ -81,8 +85,11 @@ fun MinecraftSurface(
                 holder.addCallback(object : SurfaceHolder.Callback {
                     override fun surfaceCreated(holder: SurfaceHolder) =
                         onSurfaceCreated(holder.surface, holder)
-                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) =
+                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, w: Int, h: Int) {
+                        surfaceBufW = w
+                        surfaceBufH = h
                         onSurfaceChanged(w, h)
+                    }
                     override fun surfaceDestroyed(holder: SurfaceHolder) {
                         onSurfaceDestroyed()
                     }
@@ -98,6 +105,12 @@ fun MinecraftSurface(
 
                 setOnTouchListener { _, event ->
                     Log.d("FLAME_LAUNCHER", "Surface 터치: ${event.actionMasked}, isGrabbing=${activity.isGrabbing}, combat=${activity.combatMode}")
+                    // ── 해상도 배율 보정 ──
+                    // surface 버퍼가 화면보다 작으면(해상도<100%) 터치(뷰) 좌표를 게임 창 좌표로 줄여야
+                    // UI(메뉴/인벤토리) 클릭 위치가 맞는다. 100% 면 buf==뷰라 1.0 → 기존과 동일.
+                    // (인게임 카메라는 델타 기반이라 변환하지 않는다 → 감도/조준 그대로)
+                    val coordScaleX = if (width > 0 && surfaceBufW > 0) surfaceBufW.toFloat() / width else 1f
+                    val coordScaleY = if (height > 0 && surfaceBufH > 0) surfaceBufH.toFloat() / height else 1f
                     try {
                         when (event.actionMasked) {
                             MotionEvent.ACTION_DOWN -> {
@@ -126,8 +139,8 @@ fun MinecraftSurface(
 
                                 if (!activity.isGrabbing) {
                                     // ── UI 모드 (인벤토리/메뉴) — 기존 동작 유지 ──
-                                    activity.currentCursorX = event.x
-                                    activity.currentCursorY = event.y
+                                    activity.currentCursorX = event.x * coordScaleX
+                                    activity.currentCursorY = event.y * coordScaleY
                                     activity.sendCursorPos(activity.currentCursorX, activity.currentCursorY)
                                     activity.sendMouseButton(0, 1)
                                 } else {
@@ -203,8 +216,8 @@ fun MinecraftSurface(
                                         activity.currentCursorY += dy2 * activity.MOUSE_SENSITIVITY
                                     } else {
                                         // UI — 절대 좌표
-                                        activity.currentCursorX = px
-                                        activity.currentCursorY = py
+                                        activity.currentCursorX = px * coordScaleX
+                                        activity.currentCursorY = py * coordScaleY
                                     }
                                     activity.sendCursorPos(activity.currentCursorX, activity.currentCursorY)
                                 }

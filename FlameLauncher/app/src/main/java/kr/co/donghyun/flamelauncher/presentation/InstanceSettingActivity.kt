@@ -18,12 +18,16 @@ import kr.co.donghyun.flamelauncher.presentation.ui.screen.InstanceSettingsScree
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.util.maps.MapImporter
 import kr.co.donghyun.flamelauncher.presentation.util.mods.ModImporter
+import kr.co.donghyun.flamelauncher.presentation.util.mods.ModpackExporter
+import kr.co.donghyun.flamelauncher.presentation.util.mods.ModpackImporter
 import java.io.File
 
 /**
  * 인스턴스별 설정 화면.
  *   - 모드(.jar) 추가     : SAF 로 .jar (여러 개) 선택 → mods/ 로 복사 (로더 설치된 인스턴스만)
  *   - 월드(맵) 가져오기   : SAF 로 zip 선택 → 진행 다이얼로그 → saves/ 로 압축 해제
+ *   - 모드팩 가져오기      : SAF 로 모드팩 zip 선택 → mods/·config/ 를 이 인스턴스에 풀어넣음
+ *   - 모드팩으로 추출      : 현재 mods/·config/ 를 manifest 와 함께 zip 으로 묶어 SAF 로 저장
  *   - 인스턴스 삭제       : 확인 다이얼로그 후 삭제하고 화면 종료
  *
  * 모든 UI 상태(진행 중 여부, 메시지, 종료 플래그)는 InstanceSettingsScreen 이 remember 로 소유한다.
@@ -43,6 +47,14 @@ class InstanceSettingsActivity : BaseActivity() {
     // 모드(.jar) 피커가 돌려준 결과를 처리할 때 갱신할 상태.
     private var pendingModMessage: MutableState<String>? = null
     private var pendingModImporting: MutableState<Boolean>? = null
+
+    // 모드팩 추출(CreateDocument) 결과를 처리할 때 갱신할 상태.
+    private var pendingExportMessage: MutableState<String>? = null
+    private var pendingExportImporting: MutableState<Boolean>? = null
+
+    // 모드팩 가져오기(OpenDocument) 결과를 처리할 때 갱신할 상태.
+    private var pendingMpImportMessage: MutableState<String>? = null
+    private var pendingMpImportImporting: MutableState<Boolean>? = null
 
     // ── 월드(맵) zip SAF 피커 (단일) ──
     private val mapPicker = registerForActivityResult(
@@ -70,6 +82,32 @@ class InstanceSettingsActivity : BaseActivity() {
         importMods(importMessage = message, importing = importing, jarUris = uris)
     }
 
+    // ── 모드팩 추출 SAF 피커 (CreateDocument) ──
+    private val modpackExporter = registerForActivityResult(
+        ActivityResultContracts.CreateDocument("application/zip")
+    ) { uri: Uri? ->
+        val message = pendingExportMessage
+        val importing = pendingExportImporting
+        pendingExportMessage = null
+        pendingExportImporting = null
+
+        if (uri == null || message == null || importing == null) return@registerForActivityResult
+        exportModpackToUri(importMessage = message, importing = importing, outputUri = uri)
+    }
+
+    // ── 모드팩 가져오기 SAF 피커 (OpenDocument) ──
+    private val modpackImportPicker = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        val message = pendingMpImportMessage
+        val importing = pendingMpImportImporting
+        pendingMpImportMessage = null
+        pendingMpImportImporting = null
+
+        if (uri == null || message == null || importing == null) return@registerForActivityResult
+        importModpackFromUri(importMessage = message, importing = importing, zipUri = uri)
+    }
+
     override fun onCreated() {
         instanceId = intent.getStringExtra(EXTRA_INSTANCE_ID) ?: run {
             finish(); return
@@ -94,6 +132,16 @@ class InstanceSettingsActivity : BaseActivity() {
                         pendingModMessage = importMessage
                         pendingModImporting = importing
                         launchModPicker()
+                    },
+                    importModpack = { importMessage, importing ->
+                        pendingMpImportMessage = importMessage
+                        pendingMpImportImporting = importing
+                        launchModpackImporter()
+                    },
+                    exportModpack = { importMessage, importing ->
+                        pendingExportMessage = importMessage
+                        pendingExportImporting = importing
+                        launchModpackExporter()
                     },
                     deleteInstance = { finish ->
                         deleteInstance(finish)
@@ -183,6 +231,46 @@ class InstanceSettingsActivity : BaseActivity() {
         }
     }
 
+    /**
+     * 모드팩 추출 SAF(CreateDocument)를 띄운다.
+     * 빈 mods 면 SAF 로 빈 파일이 생성되는 걸 막기 위해 미리 거른다.
+     */
+    private fun launchModpackExporter() {
+        val modsDir = File(gameDirForInstance(), "mods")
+        val hasMods = modsDir
+            .listFiles { f -> f.isFile && f.extension.equals("jar", ignoreCase = true) }
+            ?.isNotEmpty() == true
+        if (!hasMods) {
+            pendingExportMessage = null
+            pendingExportImporting = null
+            Toast.makeText(this, "내보낼 모드가 없습니다. 먼저 모드를 추가하세요.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            val safeName = instanceName.ifBlank { instanceId }
+                .replace(Regex("[^a-zA-Z0-9가-힣_\\-]"), "_")
+                .take(40)
+            modpackExporter.launch("${safeName}-modpack.zip")
+        } catch (e: Exception) {
+            Log.e("FLAME_LAUNCHER", "모드팩 내보내기 피커 실행 실패: ${e.message}", e)
+            pendingExportMessage = null
+            pendingExportImporting = null
+            Toast.makeText(this, "저장 위치 선택기를 열 수 없습니다.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /** 모드팩 가져오기 SAF(OpenDocument)를 띄운다. */
+    private fun launchModpackImporter() {
+        try {
+            modpackImportPicker.launch(zipMimeTypes)
+        } catch (e: Exception) {
+            Log.e("FLAME_LAUNCHER", "모드팩 가져오기 피커 실행 실패: ${e.message}", e)
+            pendingMpImportMessage = null
+            pendingMpImportImporting = null
+            Toast.makeText(this, "파일 선택기를 열 수 없습니다.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     private fun importMap(
         importMessage: MutableState<String>,
         importing: MutableState<Boolean>,
@@ -235,6 +323,87 @@ class InstanceSettingsActivity : BaseActivity() {
                             append(" · ${result.skipped.size}개 건너뜀")
                     }
                     is ModImporter.Result.Failure -> result.reason
+                }
+                Toast.makeText(this@InstanceSettingsActivity, text, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun exportModpackToUri(
+        importMessage: MutableState<String>,
+        importing: MutableState<Boolean>,
+        outputUri: Uri,
+    ) {
+        val gameDir = gameDirForInstance()
+        val modsDir = File(gameDir, "mods")
+        val configDir = File(gameDir, "config").takeIf { it.isDirectory }
+        val meta = runCatching {
+            InstanceManager.loadMeta(InstanceManager.instanceDir(this, instanceId))
+        }.getOrNull()
+
+        importMessage.value = "모드팩으로 추출하는 중…"
+        importing.value = true
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = ModpackExporter.export(
+                context = applicationContext,
+                outputUri = outputUri,
+                modsDir = modsDir,
+                configDir = configDir,
+                meta = meta,
+                displayName = instanceName,
+            )
+            withContext(Dispatchers.Main) {
+                importing.value = false
+                val text = when (result) {
+                    is ModpackExporter.Result.Success -> buildString {
+                        append("모드 ${result.modCount}개")
+                        if (result.configCount > 0) append(" · 설정 ${result.configCount}개")
+                        append("를 모드팩으로 추출했습니다.")
+                    }
+                    is ModpackExporter.Result.Failure -> result.reason
+                }
+                Toast.makeText(this@InstanceSettingsActivity, text, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
+    private fun importModpackFromUri(
+        importMessage: MutableState<String>,
+        importing: MutableState<Boolean>,
+        zipUri: Uri,
+    ) {
+        val gameDir = gameDirForInstance()
+        val meta = runCatching {
+            InstanceManager.loadMeta(InstanceManager.instanceDir(this, instanceId))
+        }.getOrNull()
+        val currentMc = meta?.mcVersion
+        val currentLoader = meta?.loaderType
+
+        importMessage.value = "모드팩을 가져오는 중…"
+        importing.value = true
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = ModpackImporter.import(
+                context = applicationContext,
+                zipUri = zipUri,
+                gameDir = gameDir,
+                currentMcVersion = currentMc,
+                currentLoaderType = currentLoader,
+            )
+            withContext(Dispatchers.Main) {
+                importing.value = false
+                val text = when (result) {
+                    is ModpackImporter.Result.Success -> buildString {
+                        append("모드 ${result.modCount}개")
+                        if (result.configCount > 0) append(" · 설정 ${result.configCount}개")
+                        append(" 가져옴")
+                        if (result.mcMismatch) {
+                            val packMc = result.manifest?.mcVersion ?: "?"
+                            append("\n주의: 모드팩 버전($packMc)이 이 인스턴스와 달라 작동하지 않을 수 있어요.")
+                        }
+                    }
+                    is ModpackImporter.Result.Failure -> result.reason
                 }
                 Toast.makeText(this@InstanceSettingsActivity, text, Toast.LENGTH_LONG).show()
             }

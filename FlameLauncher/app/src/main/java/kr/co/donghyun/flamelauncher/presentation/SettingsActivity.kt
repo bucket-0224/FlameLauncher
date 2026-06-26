@@ -6,13 +6,13 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
-import kr.co.donghyun.flamelauncher.presentation.ui.screen.RendererSettingsScreen
+import kr.co.donghyun.flamelauncher.presentation.ui.screen.SettingsScreen
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
 
-class RendererSettingsActivity : BaseActivity() {
+class SettingsActivity : BaseActivity() {
     companion object {
         fun start(context: Context) {
-            context.startActivity(Intent(context, RendererSettingsActivity::class.java))
+            context.startActivity(Intent(context, SettingsActivity::class.java))
         }
     }
 
@@ -22,7 +22,7 @@ class RendererSettingsActivity : BaseActivity() {
         )
         setContent {
             PingLauncherTheme {
-                RendererSettingsScreen(onBack = { finish() })
+                SettingsScreen(onBack = { finish() })
             }
         }
     }

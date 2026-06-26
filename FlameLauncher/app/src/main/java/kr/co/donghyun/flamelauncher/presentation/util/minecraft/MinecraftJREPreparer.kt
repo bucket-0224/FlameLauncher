@@ -57,16 +57,29 @@ class MinecraftJREPreparer {
                 ?: throw Exception("assets/jre/에 jre{8,17,21,25}.zip이 하나도 없습니다.")
         }
 
-        @JvmStatic
+
         fun prepareJreAndGetPath(context: Context, mcVersion: String): String {
             val requestedMajor = pickJavaMajor(mcVersion)
+            return prepareJreMajorAndGetPath(context, requestedMajor, "mcVersion=$mcVersion")
+        }
+
+        /**
+         * 지정한 JRE 메이저를 압축 해제(최초 1회)하고 libjvm.so 절대경로를 반환한다.
+         * 요청 메이저의 jre/jre{major}.zip 이 없으면 resolveAvailableMajor 로 폴백.
+         *
+         * Forge/NeoForge patched jar 빌더가 JRE 8 을 직접 요청할 때(ZL2 와 동일)와,
+         * 게임 실행이 mcVersion 으로 고른 메이저를 요청할 때 모두 이 함수를 쓴다.
+         */
+        fun prepareJreMajorAndGetPath(
+            context: Context,
+            requestedMajor: Int,
+            reasonForLog: String = ""
+        ): String {
             val major = resolveAvailableMajor(context, requestedMajor)
             if (major != requestedMajor) {
-                Log.w(TAG, "jre/jre${requestedMajor}.zip 없음 → jre/jre${major}.zip 로 폴백 (mcVersion=$mcVersion)")
+                Log.w(TAG, "jre/jre${requestedMajor}.zip 없음 → jre/jre${major}.zip 로 폴백 ($reasonForLog)")
             }
-
             val targetDir = File(context.filesDir, "jre${major}_runtime")
-
             if (!targetDir.exists() || targetDir.listFiles()?.isEmpty() == true) {
                 targetDir.mkdirs()
                 Log.i(TAG, "📦 JRE $major 최초 압축 해제 시작...")
@@ -87,18 +100,14 @@ class MinecraftJREPreparer {
                 }
                 Log.i(TAG, "✅ JRE $major 압축 해제 완료!")
             }
-
-
             if (major == 8) {
                 val cacioDir = File(context.filesDir, "caciocavallo")
                 cacioDir.mkdirs()
-
                 val cacioJars = listOf(
                     "cacio-shared-1.10-SNAPSHOT.jar",
                     "cacio-androidnw-1.10-SNAPSHOT.jar",
                     "ResConfHack.jar"
                 )
-
                 val needsCopy = cacioJars.any { !File(cacioDir, it).exists() }
                 if (needsCopy) {
                     Log.i(TAG, "📦 Caciocavallo 복사 시작...")
@@ -108,13 +117,13 @@ class MinecraftJREPreparer {
                     Log.i(TAG, "✅ Caciocavallo 복사 완료 (${cacioJars.size}개)")
                 }
             }
-
             val libJvm = targetDir.walkTopDown().firstOrNull { it.name == "libjvm.so" }
                 ?: throw Exception("❌ jre${major}_runtime 안에 libjvm.so 없음")
             libJvm.setExecutable(true, false)
             Log.i(TAG, "🎯 libjvm.so: ${libJvm.absolutePath}")
             return libJvm.absolutePath
         }
+
 
         fun findJreLibDir(context: Context, mcVersion: String): File? {
             val major = pickJavaMajor(mcVersion)

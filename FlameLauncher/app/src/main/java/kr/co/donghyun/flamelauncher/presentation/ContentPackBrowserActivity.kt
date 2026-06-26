@@ -1465,9 +1465,9 @@ class ContentPackBrowserActivity : BaseActivity() {
 
         if (fr.requiresProcessors) {
             Log.i("FLAME_LAUNCHER",
-                "Forge 1.13+ — ProcessorLauncher 경유로 부팅합니다. " +
-                        "최초 실행 시 BinaryPatcher 등이 돌아가서 시간이 걸릴 수 있습니다.")
-            _statusMessage.value = "Modern Forge — 최초 실행 시 client jar 패칭이 수행됩니다."
+                "Forge 1.13+ — 최초 실행 시 별도 빌더 프로세스가 client jar 를 생성합니다(BinaryPatcher 등). " +
+                        "시간이 걸릴 수 있습니다.")
+            _statusMessage.value = "Modern Forge — 최초 실행 시 client jar 생성이 수행됩니다."
         }
         File(instanceDir, "mods").mkdirs()
 
@@ -1653,7 +1653,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     return
                 }
                 if (fr.requiresProcessors) {
-                    Log.i("FLAME_LAUNCHER", "ℹ️ Modern $label — 첫 실행 시 ProcessorLauncher 가 client jar 패칭")
+                    Log.i("FLAME_LAUNCHER", "ℹ️ Modern $label — 첫 실행 시 별도 빌더 프로세스가 client jar 생성")
                 }
                 InstanceMeta(
                     id = instanceId,

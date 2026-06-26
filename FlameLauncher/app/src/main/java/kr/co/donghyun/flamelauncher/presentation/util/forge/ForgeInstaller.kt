@@ -17,6 +17,7 @@ import java.util.zip.ZipFile
  * Forge / NeoForge 설치 결과. FabricInstallResult 와 같은 모양으로 맞춰서
  * InstanceMeta 채울 때 동일 흐름을 쓸 수 있게 한다.
  */
+
 data class ForgeInstallResult(
     val success: Boolean,
     val mainClass: String = "",
@@ -27,9 +28,14 @@ data class ForgeInstallResult(
     val gameArgs: List<String> = emptyList(),
     val isLegacy: Boolean = false,
     val requiresProcessors: Boolean = false,
+    // 🆕 빌더(:forgebuilder)가 ProcessorLauncher 를 띄울 때 쓸 전용 classpath.
+    //   = install_profile.json processor 라이브러리 + ProcessorLauncher.jar.
+    //   게임 cp(extraJars)와 분리해, 게임 JVM 은 ForgeBootstrap 으로 직행하게 한다.
+    val processorClasspath: List<String> = emptyList(),
+    // 🆕 빌더 진입점(보통 ProcessorLauncher FQN). requiresProcessors=true 일 때만 의미.
+    val processorMainClass: String = "",
     val error: String? = null
 )
-
 
 /**
  * Forge installer.jar 를 직접 파싱해서 라이브러리와 launch profile 을 추출한다.
@@ -179,11 +185,16 @@ class ForgeInstaller(
                 ?.let { jarList.add(0, it.absolutePath) }
         }
 
-        var effectiveMainClass = profile.mainClass
+        // 게임 진입점은 항상 실제 게임 메인(ForgeBootstrap 등). 가로채지 않는다.
+        val gameMainClass = profile.mainClass
+        // 빌더 전용 cp/진입점 (requiresProcessors 일 때만 채움)
+        val processorCp = mutableListOf<String>()
+        var processorMain = ""
+
         if (profile.requiresProcessors) {
             try {
                 onProgress("Mojang mappings 사전 다운로드 중...", 0, 0)
-                preDownloadMojmaps(installerFile, librariesDir, mcVersion)   // ← 추가
+                val resolvedMojmapsSha = preDownloadMojmaps(installerFile, librariesDir, mcVersion)
 
                 onProgress("Processor 메타 준비 중...", 0, 0)
                 extractInstallerDataDir(installerFile, instanceDir)
@@ -192,12 +203,20 @@ class ForgeInstaller(
                     instanceDir = instanceDir,
                     librariesDir = librariesDir,
                     mcVersion = mcVersion,
-                    realMainClass = profile.mainClass
+                    realMainClass = profile.mainClass,
+                    mojmapsShaOverride = resolvedMojmapsSha
                 )
                 val launcherJar = copyProcessorLauncherJar(context = context, librariesDir = librariesDir)
-                jarList.add(0, launcherJar.absolutePath)   // classpath 맨 앞
-                effectiveMainClass = "kr.co.donghyun.flamelauncher.forge.ProcessorLauncher"
-                Log.i("FLAME_LAUNCHER", "✅ Forge processors 메타 준비 완료")
+
+                // 🆕 빌더 cp = 게임 cp 사본(version.json libs 포함) + processor 라이브러리(디스크에 이미 받아둠) + ProcessorLauncher.jar.
+                //   ProcessorLauncher 는 forge-install-data.properties 의 processor.N.classpath 를
+                //   자체 ChildFirstClassLoader 로 다시 구성하므로, 여기 빌더 cp 에는 "ProcessorLauncher 자신을
+                //   로드할 수 있는 최소 cp + 진입점"만 있으면 된다. 안전하게 게임 cp 전체 + launcher jar 로 둔다.
+                processorCp.addAll(jarList)               // 게임 cp 사본
+                processorCp.add(0, launcherJar.absolutePath)
+                processorMain = "kr.co.donghyun.flamelauncher.forge.ProcessorLauncher"
+
+                Log.i("FLAME_LAUNCHER", "✅ Forge processors 메타 준비 완료 (빌더 cp=${processorCp.size}개, 게임 진입점=$gameMainClass)")
             } catch (e: Exception) {
                 Log.e("FLAME_LAUNCHER", "Processor 메타 준비 실패", e)
                 return ForgeInstallResult(success = false,
@@ -209,14 +228,17 @@ class ForgeInstaller(
 
         return ForgeInstallResult(
             success = true,
-            mainClass = effectiveMainClass,
-            extraJars = jarList,
+            mainClass = gameMainClass,            // ← 게임은 항상 ForgeBootstrap 직행
+            extraJars = jarList,                  // ← ProcessorLauncher.jar 미포함(깨끗한 게임 cp)
             mcVersion = mcVersion,
             forgeVersion = forgeVersion,
+            processorClasspath = processorCp,     // 🆕 빌더 전용
+            processorMainClass = processorMain,   // 🆕 빌더 전용
             gameJvmArgs = profile.jvmArgs,
             gameArgs = profile.gameArgs,
             isLegacy = profile.isLegacy,
             requiresProcessors = profile.requiresProcessors
+            // ... (나머지 기존 필드 그대로: gameJvmArgs, gameArgs, isLegacy, requiresProcessors=profile.requiresProcessors)
         )
     }
 
@@ -274,26 +296,33 @@ class ForgeInstaller(
      * 임베디드 OpenJDK 의 TLS 가 Mojang CDN 과 핸드셰이크 실패하는 케이스가 있어서,
      * 미리 받아둠으로써 ProcessorLauncher 의 outputsValid 체크에 걸려 DOWNLOAD_MOJMAPS 가 skip 된다.
      */
+    /**
+     * @return 디스크에 확보된 client_mappings 의 실제 SHA-1(소문자 hex). 확보 실패 시 null.
+     *   이 값이 install_profile.json 의 stale 한 MOJMAPS_SHA 와 다르면, 호출측이
+     *   serializeProcessors 에 넘겨 processor 인자의 {MOJMAPS_SHA} 를 이 값으로 덮어쓴다.
+     *   (그러지 않으면 installertools 의 DOWNLOAD_MOJMAPS 가 stale SHA 로 입력 검증하다 throw → 빌드 실패)
+     */
     private fun preDownloadMojmaps(
         installerFile: File,
         librariesDir: File,
         mcVersion: String,
-    ) {
+    ): String? {
         val ipObj = try {
             ZipFile(installerFile).use { zip ->
-                val entry = zip.getEntry("install_profile.json") ?: return
+                val entry = zip.getEntry("install_profile.json")
+                    ?: return@use null
                 JsonParser.parseString(zip.getInputStream(entry).bufferedReader().readText())
                     .asJsonObject
             }
         } catch (e: Exception) {
             Log.w("FLAME_LAUNCHER", "🗺 install_profile.json 재파싱 실패: ${e.message}")
-            return
-        }
+            null
+        } ?: return null
 
-        val data = ipObj["data"]?.asJsonObject ?: return
+        val data = ipObj["data"]?.asJsonObject ?: return null
         val mojmapsRaw = data["MOJMAPS"]?.asJsonObject?.get("client")?.asString ?: run {
             Log.d("FLAME_LAUNCHER", "🗺 MOJMAPS data 항목 없음")
-            return
+            return null
         }
         // ★ install_profile 의 expected SHA — 작은따옴표/큰따옴표 둘 다 제거
         val installProfileExpectedSha = data["MOJMAPS_SHA"]?.asJsonObject
@@ -302,7 +331,7 @@ class ForgeInstaller(
 
         if (!mojmapsRaw.startsWith("[") || !mojmapsRaw.endsWith("]")) {
             Log.w("FLAME_LAUNCHER", "🗺 MOJMAPS 좌표 형식 이상: $mojmapsRaw")
-            return
+            return null
         }
         val coord = mojmapsRaw.substring(1, mojmapsRaw.length - 1)
         val target = File(mavenCoordToPath(coord, librariesDir))
@@ -313,15 +342,15 @@ class ForgeInstaller(
                 .fetchVersionList()
                 .firstOrNull { it.id == mcVersion }
         } catch (_: Exception) { null } ?: run {
-            Log.w("FLAME_LAUNCHER", "🗺 version manifest 에서 $mcVersion 못 찾음"); return
+            Log.w("FLAME_LAUNCHER", "🗺 version manifest 에서 $mcVersion 못 찾음"); return null
         }
 
         val versionJson = try {
             client.newCall(Request.Builder().url(versionEntry.url).build())
                 .execute().use { it.body?.string() }
         } catch (e: Exception) {
-            Log.e("FLAME_LAUNCHER", "🗺 version.json 실패: ${e.message}"); return
-        } ?: return
+            Log.e("FLAME_LAUNCHER", "🗺 version.json 실패: ${e.message}"); return null
+        } ?: return null
 
         val cm = try {
             JsonParser.parseString(versionJson).asJsonObject["downloads"]?.asJsonObject
@@ -330,45 +359,44 @@ class ForgeInstaller(
 
         if (cm == null) {
             Log.w("FLAME_LAUNCHER", "🗺 client_mappings 없음 (구버전?)")
-            return
+            return null
         }
-        val url = cm["url"]?.asString ?: return
-        val mojangSha = cm["sha1"]?.asString
+        val url = cm["url"]?.asString ?: return null
+        val mojangSha = cm["sha1"]?.asString?.trim('\'', '"')
         val mojangSize = cm["size"]?.asLong ?: -1L
 
         Log.i("FLAME_LAUNCHER",
             "🗺 MOJMAPS expected SHA — install_profile=$installProfileExpectedSha  " +
                     "mojang_version_json=$mojangSha")
 
-        if (installProfileExpectedSha != null && mojangSha != null
-            && !installProfileExpectedSha.equals(mojangSha, ignoreCase = true)) {
+        val staleSha = installProfileExpectedSha != null && mojangSha != null
+                && !installProfileExpectedSha.equals(mojangSha, ignoreCase = true)
+        if (staleSha) {
             Log.w("FLAME_LAUNCHER",
                 "🗺 ⚠️ install_profile 의 MOJMAPS_SHA 가 Mojang 현재 client_mappings 와 다름. " +
-                        "Forge installer 가 stale 한 SHA 를 박아둔 상황 — Mojang 측이 mappings 재배포한 듯.")
-            // 이 경우 Mojang 의 현재 SHA 를 우선 신뢰. ProcessorLauncher 의 outputsValid 는
-            // install_profile SHA 로 검증하기 때문에 어차피 fail 하므로, 사용자에게 명확히 알린다.
+                        "Forge installer 가 stale 한 SHA 를 박아둔 상황 — Mojang 측이 mappings 재배포한 듯. " +
+                        "→ serializeProcessors 에서 processor 인자의 {MOJMAPS_SHA} 를 Mojang 현재값으로 덮어쓴다.")
         }
 
-        // 이미 받아져 있으면 SHA 비교
+        // 이미 받아져 있으면 SHA 비교 — Mojang 현재 SHA 와 일치하면 그대로 재사용.
         if (target.exists() && target.length() > 0) {
             val current = sha1Hex(target)
             Log.i("FLAME_LAUNCHER",
                 "🗺 현재 디스크 mojmaps: size=${target.length()} (expected=$mojangSize) sha=$current")
-            val matchesInstallProfile = installProfileExpectedSha?.equals(current, ignoreCase = true) == true
-            val matchesMojang = mojangSha?.equals(current, ignoreCase = true) == true
-            if (matchesInstallProfile || matchesMojang) {
-                Log.i("FLAME_LAUNCHER", "🗺 ✅ mojmaps OK — pre-download skip")
-                return
+            if (mojangSha?.equals(current, ignoreCase = true) == true) {
+                Log.i("FLAME_LAUNCHER", "🗺 ✅ mojmaps(=Mojang 현재 SHA) OK — pre-download skip")
+                return current.lowercase()
             }
-            Log.w("FLAME_LAUNCHER", "🗺 mojmaps SHA 양쪽 모두 불일치 → 재다운로드")
+            // Mojang 현재값과 다르면(=stale 한 install_profile SHA 로 받아둔 구버전 등) 재다운로드.
+            Log.w("FLAME_LAUNCHER", "🗺 디스크 mojmaps 가 Mojang 현재 SHA 와 불일치 → 재다운로드")
         }
 
         Log.i("FLAME_LAUNCHER", "🗺 mojmaps pre-download: $url → ${target.absolutePath}")
         target.parentFile?.mkdirs()
-        try {
+        return try {
             client.newCall(Request.Builder().url(url).build()).execute().use { resp ->
                 if (!resp.isSuccessful) {
-                    Log.e("FLAME_LAUNCHER", "🗺 HTTP ${resp.code}"); return
+                    Log.e("FLAME_LAUNCHER", "🗺 HTTP ${resp.code}"); return null
                 }
                 resp.body?.byteStream()?.use { input ->
                     FileOutputStream(target).use { input.copyTo(it) }
@@ -382,14 +410,6 @@ class ForgeInstaller(
             when {
                 mojangSha?.equals(actual, ignoreCase = true) == true -> {
                     Log.i("FLAME_LAUNCHER", "🗺 ✅ Mojang version.json SHA 와 일치")
-                    if (installProfileExpectedSha != null
-                        && !installProfileExpectedSha.equals(actual, ignoreCase = true)) {
-                        Log.w("FLAME_LAUNCHER",
-                            "🗺 ⚠️ 하지만 install_profile.json 의 MOJMAPS_SHA 와는 불일치. " +
-                                    "ProcessorLauncher.outputsValid() 가 fail 처리할 것 — " +
-                                    "이건 Forge installer 의 stale SHA 문제로, " +
-                                    "더 최신 Forge 빌드를 쓰거나 Forge 측 수정이 필요.")
-                    }
                 }
                 installProfileExpectedSha?.equals(actual, ignoreCase = true) == true -> {
                     Log.i("FLAME_LAUNCHER", "🗺 ✅ install_profile SHA 일치")
@@ -399,8 +419,11 @@ class ForgeInstaller(
                         "🗺 ❌ 양쪽 SHA 모두 불일치 — 네트워크 손상 또는 redirect 문제")
                 }
             }
+            // 실제로 디스크에 확보된 파일의 SHA 를 반환(= processor 검증에 써야 할 진짜 값).
+            actual.lowercase()
         } catch (e: Exception) {
             Log.e("FLAME_LAUNCHER", "🗺 OkHttp 다운로드 예외: ${e.message}", e)
+            null
         }
     }
 
@@ -539,7 +562,8 @@ class ForgeInstaller(
         instanceDir: File,
         librariesDir: File,
         mcVersion: String,
-        realMainClass: String
+        realMainClass: String,
+        mojmapsShaOverride: String? = null
     ) {
         val ipObj = ZipFile(installerFile).use { zip ->
             val ipEntry = zip.getEntry("install_profile.json")!!
@@ -556,6 +580,22 @@ class ForgeInstaller(
         ipObj["data"]?.asJsonObject?.entrySet()?.forEach { (key, value) ->
             val raw = value.asJsonObject["client"]?.asString ?: return@forEach
             varMap[key] = resolveValue(raw, librariesDir, installerFile, instanceDir, varMap)
+        }
+
+        // ★ stale SHA 교정: install_profile.json 의 MOJMAPS_SHA 는 Forge 빌드 시점값이라
+        //   Mojang 이 client_mappings 를 재배포하면 현재 파일과 어긋난다. 이 stale 값이
+        //   processor 인자({MOJMAPS_SHA})에 그대로 박히면 installertools 의 DOWNLOAD_MOJMAPS 가
+        //   '디스크의 (올바른) mappings vs stale expected SHA' 를 비교하다 실패 → patched client jar
+        //   미생성 → ForgeBootstrap 이 Minecraft.class 를 못 찾아 무한 로딩.
+        //   preDownloadMojmaps 가 확보한 실제 SHA 로 덮어써, processor 가 올바른 값으로 검증하게 한다.
+        if (mojmapsShaOverride != null) {
+            val before = varMap["MOJMAPS_SHA"]
+            if (before == null || !before.equals(mojmapsShaOverride, ignoreCase = true)) {
+                varMap["MOJMAPS_SHA"] = mojmapsShaOverride
+                Log.i("FLAME_LAUNCHER",
+                    "🗺 processor 용 MOJMAPS_SHA 교정: $before → $mojmapsShaOverride " +
+                            "(stale install_profile SHA 무력화)")
+            }
         }
 
         // 2) processors 직렬화

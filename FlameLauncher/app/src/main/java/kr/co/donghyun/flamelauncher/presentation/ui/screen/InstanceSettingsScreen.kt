@@ -16,6 +16,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,10 +34,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import kr.co.donghyun.flamelauncher.data.jvm.JvmSettings
+import kr.co.donghyun.flamelauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgBorder
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgDark
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgSurface
@@ -42,12 +49,15 @@ import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlamePrimary
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.TextPrimary
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.TextSecondary
 import kr.co.donghyun.flamelauncher.presentation.util.window.isTablet
+import kotlin.math.roundToInt
 
 /**
  * 진행/결과 상태는 모두 이 Composable 이 소유한다(remember).
  * Activity 는 상태를 들고 있지 않고, 콜백으로 전달받은 MutableState 를 갱신만 한다.
  *  - launchMapPicker(message, importing) : 월드 zip 가져오기 시작/종료 시 importing 토글
  *  - launchModPicker(message, importing) : 모드 .jar 추가 시작/종료 시 importing 토글
+ *  - importModpack(message, importing)   : 모드팩(zip) 가져오기 시작/종료 시 importing 토글
+ *  - exportModpack(message, importing)   : 현재 mods/config 를 모드팩(zip)으로 추출 시작/종료 시 importing 토글
  *  - deleteInstance(finish)              : 삭제 완료 시 finish.value = true
  *
  * @param loaderInstalled 이 인스턴스에 Forge/NeoForge/Fabric 이 설치돼 있으면 true.
@@ -61,9 +71,14 @@ fun InstanceSettingsScreen(
     loaderLabel : String?,
     launchMapPicker : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
     launchModPicker : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
+    importModpack : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
+    exportModpack : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
     deleteInstance : (finish : MutableState<Boolean>) -> Unit,
     finish : () -> Unit
 ) {
+    val context = LocalContext.current
+    var settings by remember { mutableStateOf(JvmSettingsManager.load(context)) }
+
     // ── 화면이 살아있는 동안만 유지되는 상태 (진입할 때마다 false 로 초기화) ──
     val importing = remember { mutableStateOf(false) }
     val importMessage = remember { mutableStateOf("가져오는 중…") }
@@ -129,6 +144,30 @@ fun InstanceSettingsScreen(
 
             Spacer(Modifier.height(20.dp))
 
+            // ── 모드팩 ──
+            SectionLabel("모드팩")
+            Spacer(Modifier.height(8.dp))
+
+            // 모드팩 가져오기 — zip 의 mods/config 를 현재 인스턴스에 풀어넣음
+            SettingRow(
+                emoji = "📥",
+                title = "모드팩 가져오기",
+                subtitle = "모드팩(zip)의 모드·설정을 이 인스턴스에 추가합니다",
+                enabled = !isImporting,
+            ) { importModpack(importMessage, importing) }
+
+            Spacer(Modifier.height(10.dp))
+
+            // 모드팩으로 추출 — 현재 mods/config 를 manifest 와 함께 zip 으로 저장
+            SettingRow(
+                emoji = "📦",
+                title = "모드팩으로 추출",
+                subtitle = "현재 mods·config 를 모드팩(zip)으로 내보냅니다",
+                enabled = !isImporting,
+            ) { exportModpack(importMessage, importing) }
+
+            Spacer(Modifier.height(20.dp))
+
             // ── 관리 ──
             SectionLabel("관리")
             Spacer(Modifier.height(8.dp))
@@ -142,7 +181,7 @@ fun InstanceSettingsScreen(
             ) { showDeleteConfirm = true }
         }
 
-        // ── 가져오는 중 진행 다이얼로그 (모드/월드 공용) ──
+        // ── 진행 다이얼로그 (모드 추가/월드·모드팩 가져오기/모드팩 추출 공용) ──
         if (isImporting) {
             Dialog(onDismissRequest = { /* 진행 중에는 닫지 못함 */ }) {
                 Box(
@@ -194,13 +233,126 @@ fun InstanceSettingsScreen(
 }
 
 @Composable
-private fun SectionLabel(text: String) {
+fun SectionLabel(text: String) {
     Text(
         text,
         color = TextSecondary,
         fontSize = 11.sp,
         fontWeight = FontWeight.Bold,
     )
+}
+
+
+/**
+ * 전체화면 등 on/off 설정용 토글 행. 기존 SettingRow 와 같은 카드 스타일.
+ * 행 전체를 눌러도 토글되고, 우측 스위치로도 토글된다.
+ */
+@Composable
+fun SettingToggleRow(
+    emoji: String,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(BgSurface)
+            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled) { onCheckedChange(!checked) }
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(emoji, fontSize = 22.sp)
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(2.dp))
+            Text(subtitle, color = TextSecondary, fontSize = 11.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = Color.White,
+                checkedTrackColor = FlamePrimary,
+                checkedBorderColor = FlamePrimary,
+                uncheckedThumbColor = TextSecondary,
+                uncheckedTrackColor = BgDark,
+                uncheckedBorderColor = BgBorder,
+            ),
+        )
+    }
+}
+
+/**
+ * 렌더 해상도 배율 슬라이더 행. (ZalithLauncher2 의 Resolution 과 동일한 역할)
+ * 100% = 네이티브, 낮출수록 FPS 상승. 5% 단위로 스냅.
+ *
+ * @param percent          현재 배율(%) — JvmSettings.resolutionScalePercent
+ * @param onPercentChange  값이 바뀔 때 호출. 보통 여기서 settings.copy(...) + save 한다.
+ */
+@Composable
+fun ResolutionScaleRow(
+    percent: Int,
+    onPercentChange: (Int) -> Unit,
+    min: Int = JvmSettings.RES_SCALE_MIN_PERCENT,
+    max: Int = JvmSettings.RES_SCALE_MAX_PERCENT,
+    step: Int = 5,
+) {
+    val clamped = percent.coerceIn(min, max)
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(BgSurface)
+            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("🔍", fontSize = 22.sp)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text("렌더 해상도", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    if (clamped >= 100) "네이티브 해상도"
+                    else "낮출수록 FPS 상승 · 화면은 약간 흐려짐",
+                    color = TextSecondary,
+                    fontSize = 11.sp,
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Text("$clamped%", color = FlamePrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+
+        Spacer(Modifier.height(4.dp))
+
+        // 25~100 을 5% 단위로 → 선택 가능한 점 개수 - 2 = steps
+        val steps = (((max - min) / step) - 1).coerceAtLeast(0)
+        Slider(
+            value = clamped.toFloat(),
+            onValueChange = { v ->
+                val snapped = ((v / step).roundToInt() * step).coerceIn(min, max)
+                if (snapped != clamped) onPercentChange(snapped)
+            },
+            valueRange = min.toFloat()..max.toFloat(),
+            steps = steps,
+            colors = SliderDefaults.colors(
+                thumbColor = FlamePrimary,
+                activeTrackColor = FlamePrimary,
+                inactiveTrackColor = BgBorder,
+                activeTickColor = Color.Transparent,
+                inactiveTickColor = Color.Transparent,
+            ),
+        )
+    }
 }
 
 @Composable
