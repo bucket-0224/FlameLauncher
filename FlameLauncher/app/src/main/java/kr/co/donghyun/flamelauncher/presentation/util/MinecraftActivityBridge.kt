@@ -3,11 +3,14 @@ package kr.co.donghyun.flamelauncher.presentation.util
 import android.view.View
 import java.io.File
 import java.lang.ref.WeakReference
+import kotlin.math.roundToInt
 
 object MinecraftActivityBridge {
     @Volatile @JvmField var currentHotbarSlot: Int = 0  // 0-8
 
     @Volatile @JvmField var currentWorldName: String = "default"
+
+    @Volatile private var fpsListener: ((Int) -> Unit)? = null
 
     private var controllerShownOnce = false
 
@@ -38,6 +41,21 @@ object MinecraftActivityBridge {
         firstFrameListener?.invoke()
     }
 
+    // 네이티브(egl_bridge.c::reportFpsToJava)가 500ms마다 호출.
+// frames = 그 구간 동안 실제 스왑된 프레임 수, elapsedNanos = 구간 길이(ns).
+    @JvmStatic
+    fun onFramePresented(frames: Int, elapsedNanos: Long) {
+        val fps = if (elapsedNanos > 0L)
+            (frames * 1_000_000_000.0 / elapsedNanos).roundToInt()
+        else 0
+        notifyFps(fps)
+    }
+
+
+    fun setFpsListener(listener: ((Int) -> Unit)?) { fpsListener = listener }
+
+    // CallbackBridge.onFramePresented 에서 호출 (게임 스레드)
+    fun notifyFps(fps: Int) { fpsListener?.invoke(fps) }
 
     @JvmStatic
     fun onGrabStateChanged(grabbed: Boolean) {

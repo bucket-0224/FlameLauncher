@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <time.h>
 
 #include <EGL/egl.h>
 #include <GL/osmesa.h>
@@ -566,6 +567,64 @@ static void reportFirstFrameToJava() {
     printf("reportFirstFrame: notified Java (first frame rendered)\n");
 }
 
+// ── 실시간 FPS 콜백 ──
+// pojavSwapBuffers() 가 매 프레임 부르지만, 매번 JNI 호출하면 오버헤드가 크므로
+// 일정 주기(500ms)마다 누적 프레임 수를 모아 한 번씩 Dalvik 측에 보고한다.
+// (reportFirstFrameToJava 와 동일한 검증된 경로: dalvik VM env + bridgeClazz)
+static jmethodID s_method_onFramePresented = NULL;
+static int       s_fpsFrameAccum = 0;
+static int64_t   s_fpsLastReportNs = 0;
+
+static int64_t nowMonotonicNs() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+static void reportFpsToJava() {
+    s_fpsFrameAccum++;
+
+    int64_t now = nowMonotonicNs();
+    if (s_fpsLastReportNs == 0) { s_fpsLastReportNs = now; return; }
+
+    int64_t elapsed = now - s_fpsLastReportNs;
+    if (elapsed < 500000000LL) return;   // 500ms 미만이면 계속 누적
+
+    if (pojav_environ == NULL || pojav_environ->dalvikJavaVMPtr == NULL
+        || pojav_environ->bridgeClazz == NULL) {
+        s_fpsFrameAccum = 0; s_fpsLastReportNs = now; return;
+    }
+
+    JNIEnv* dalvikEnv = NULL;
+    jint envStat = (*pojav_environ->dalvikJavaVMPtr)->GetEnv(
+            pojav_environ->dalvikJavaVMPtr, (void**)&dalvikEnv, JNI_VERSION_1_6);
+    if (envStat == JNI_EDETACHED) {
+        (*pojav_environ->dalvikJavaVMPtr)->AttachCurrentThread(
+                pojav_environ->dalvikJavaVMPtr, &dalvikEnv, NULL);
+    }
+    if (dalvikEnv == NULL) { s_fpsFrameAccum = 0; s_fpsLastReportNs = now; return; }
+
+    if (s_method_onFramePresented == NULL) {
+        s_method_onFramePresented = (*dalvikEnv)->GetStaticMethodID(
+                dalvikEnv, pojav_environ->bridgeClazz, "onFramePresented", "(IJ)V");
+        if (s_method_onFramePresented == NULL) {
+            if ((*dalvikEnv)->ExceptionCheck(dalvikEnv)) (*dalvikEnv)->ExceptionClear(dalvikEnv);
+            printf("reportFps: onFramePresented(IJ)V not found on bridgeClazz\n");
+            s_fpsFrameAccum = 0; s_fpsLastReportNs = now;
+            return;
+        }
+    }
+
+    (*dalvikEnv)->CallStaticVoidMethod(dalvikEnv, pojav_environ->bridgeClazz,
+                                       s_method_onFramePresented,
+                                       (jint)s_fpsFrameAccum, (jlong)elapsed);
+    if ((*dalvikEnv)->ExceptionCheck(dalvikEnv)) (*dalvikEnv)->ExceptionClear(dalvikEnv);
+
+    s_fpsFrameAccum = 0;
+    s_fpsLastReportNs = now;
+    // DetachCurrentThread 안 함 (기존 콜백과 동일 — 게임 스레드 재사용)
+}
+
 EXTERNAL_API void pojavSwapBuffers() {
     static int counter = 0;
     if ((++counter % 60) == 0) {
@@ -580,6 +639,8 @@ EXTERNAL_API void pojavSwapBuffers() {
     if (!firstFrameReported) {
         reportFirstFrameToJava();
     }
+
+    reportFpsToJava();   // ★ 실제 스왑(=화면에 올라간 프레임)마다 집계 → 500ms 주기 보고
 }
 
 EXTERNAL_API void* pojavGetCurrentContext() {

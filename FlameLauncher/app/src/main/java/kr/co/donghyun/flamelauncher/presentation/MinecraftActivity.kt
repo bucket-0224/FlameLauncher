@@ -392,6 +392,10 @@ class MinecraftActivity : BaseActivity() {
             runOnUiThread { dismissBootOverlay("first-frame") }
         }
 
+        MinecraftActivityBridge.setFpsListener { fps ->
+            runOnUiThread { gameControllerView?.updateFps(fps) }
+        }
+
         // 타임아웃 안전망: 콜백이 어떤 이유로 안 와도 무한 로딩이 되지 않게.
         // 모드 수에 비례해 넉넉히 잡되(분→ms), 최소 30초.
         val timeoutMs = (bootMaxDelayMin.toLong() * 60_000L).coerceAtLeast(30_000L)
@@ -1519,18 +1523,47 @@ class MinecraftActivity : BaseActivity() {
             val count = props.getProperty("processorCount", "0").toIntOrNull() ?: 0
             val result = LinkedHashSet<String>()
 
-            // 1순위: binarypatcher 프로세서의 출력 = patched client jar(Minecraft.class 포함).
-            //   경로/이름이 Forge 버전마다 달라도(예: 1.21.4 vs 1.21.6) '도구'로 식별하므로 버전 무관.
-            //   binarypatcher 의 입력은 client-official.jar(--clean), 출력은 패치된 게임 jar 이므로
-            //   패치 전 중간물을 잘못 집을 위험이 없다.
+            // 1순위: binarypatcher 프로세서의 최종 출력 = patched client jar(Minecraft.class 포함).
+            //   ⚠️ NeoForge installer 는 install_profile 에 processor outputs 를 선언하지 않는다
+            //      (Forge 와 다름) → outputs.keys 가 비어 탐지에 실패했었다. binarypatcher 의 출력은
+            //      args 의 "--output <jar>" 에 항상 있으므로, outputs 가 없으면 그걸 직접 읽는다.
+            //      Forge:    --output .../net/minecraftforge/forge/<ver>/forge-<ver>-client.jar
+            //      NeoForge: --output .../net/neoforged/neoforge/<ver>/neoforge-<ver>-client.jar
+            //   '도구(binarypatcher)'로 식별하므로 버전/로더 무관하고 패치 전 중간물을 집을 위험이 없다.
             for (i in 0 until count) {
                 val tool = props.getProperty("processor.$i.jar") ?: ""
                 if (!tool.contains("binarypatcher", ignoreCase = true)) continue
-                (props.getProperty("processor.$i.outputs.keys") ?: "")
-                    .split('\u0001').forEach { raw ->
-                        val path = raw.trim()
-                        if (path.endsWith(".jar")) result.add(File(path).absolutePath)
+                val outs = (props.getProperty("processor.$i.outputs.keys") ?: "")
+                    .split('\u0001').map { it.trim() }.filter { it.endsWith(".jar") }
+                if (outs.isNotEmpty()) {
+                    outs.forEach { result.add(File(it).absolutePath) }
+                } else {
+                    // NeoForge: outputs 선언 없음 → args 의 --output 값에서 출력 jar 추출
+                    val pargs = (props.getProperty("processor.$i.args") ?: "").split('\u0001')
+                    val oi = pargs.indexOf("--output")
+                    if (oi >= 0 && oi + 1 < pargs.size) {
+                        val out = pargs[oi + 1].trim()
+                        if (out.endsWith(".jar")) result.add(File(out).absolutePath)
                     }
+                }
+            }
+
+            // 1.5순위(NeoForge): NeoForge 는 binarypatcher 대신 런타임 transformer 를 쓴다.
+            //   최종 게임 jar = net/neoforged/minecraft-client-patched/<ver>/minecraft-client-patched-<ver>.jar.
+            //   생성 도구 이름이 버전마다 달라(jarsplitter/AutoRenamingTool 등) 도구로 못 잡으므로 출력 '경로'로 식별.
+            //   (이 분기 없으면 NeoForge 는 항상 빈 리스트 → ensureForgePatchedJar 가 nowOk=false → '구성 실패')
+            if (result.isEmpty()) {
+                for (i in 0 until count) {
+                    (props.getProperty("processor.$i.outputs.keys") ?: "")
+                        .split('\u0001').forEach { raw ->
+                            val path = raw.trim()
+                            val norm = path.replace('\\', '/')
+                            if (path.endsWith(".jar")
+                                && (norm.contains("/net/neoforged/minecraft-client-patched/")
+                                        || File(path).name.startsWith("minecraft-client-patched"))
+                            ) result.add(File(path).absolutePath)
+                        }
+                }
             }
 
             // 2순위(보강): binarypatcher 식별 실패 시에만, forge/ 아래 -client.jar 출력을 잡는다.
@@ -3141,16 +3174,23 @@ class MinecraftActivity : BaseActivity() {
         return major <= 5
     }
 
+    /** simulationDistance 는 1.18+ 키. 그 이하 버전엔 주입하지 않는다. */
+    private fun isModernSimDistance(versionId: String): Boolean {
+        val m = Regex("""^1\.(\d+)""").find(versionId) ?: return true  // 스냅샷 등은 최신 가정
+        val major = m.groupValues[1].toIntOrNull() ?: return true
+        return major >= 18
+    }
+
     private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings, modCount: Int = 0, versionId: String = "") {
         val targetMaxFps   = if (settings.unlockFps) 260 else 120
         val targetVsync    = if (settings.unlockFps) "false" else "true"
-        val targetRenderD  = settings.renderDistance
+        val targetRenderD = if (modCount > 0) 2 else settings.renderDistance
         val targetGfxMode  = settings.graphicsMode
 
         // options.txt 가 아예 없으면 = 이 인스턴스 최초 실행.
         //   이때만 시스템 언어를 초기 lang 으로 심는다(이후 사용자가 게임 내에서 바꾼 값 보존).
         val brandNewInstance = !optionsFile.exists()
-
+        val supportsSimDistance = isModernSimDistance(versionId)
         val existing: MutableList<String> = if (optionsFile.exists())
             optionsFile.readLines().toMutableList()
         else
@@ -3171,6 +3211,9 @@ class MinecraftActivity : BaseActivity() {
         upsert("renderDistance", targetRenderD.toString())
         upsert("graphicsMode",   targetGfxMode.toString())
         upsert("renderClouds",   "false")
+        if (supportsSimDistance) {
+            upsert("simulationDistance", "5")          // 최소(마크 하한)
+        }
         // ⚠️ mipmapLevels 는 반드시 0 으로 강제.
         //   밉맵이 1 이상이면 blocks 텍스처 아틀라스가 2048x2048x4 같은 밉맵 포함 형태로 생성되는데,
         //   Mali-G57 + Zink(OSMesa) 조합에서 이 밉맵 아틀라스 처리 중 libGLES_mali 가
@@ -3388,6 +3431,7 @@ class MinecraftActivity : BaseActivity() {
         currentInstance = null
         // ★ 첫 프레임 리스너 해제 (Activity 누수 방지)
         MinecraftActivityBridge.setFirstFrameListener(null)
+        MinecraftActivityBridge.setFpsListener(null)
         // ★ 리스너 해제
         inputDeviceListener?.let { listener ->
             try {

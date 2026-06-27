@@ -77,6 +77,19 @@ public class CallbackBridge {
     }
 
     /**
+     * 네이티브(egl_bridge.c::reportFpsToJava)가 ~500ms 주기로 호출.
+     * frames = 그 구간 동안 실제 스왑된 프레임 수, elapsedNanos = 구간 길이(ns).
+     * 렌더(게임) 스레드에서 불리므로 dispatch 만 한다.
+     */
+    public static void onFramePresented(int frames, long elapsedNanos) {
+        try {
+            MinecraftActivityBridge.onFramePresented(frames, elapsedNanos);
+        } catch (Throwable t) {
+            Log.w(TAG, "onFramePresented dispatch failed", t);
+        }
+    }
+
+    /**
      * 게임이 첫 프레임을 화면에 그린 직후 네이티브(egl_bridge.c::pojavSwapBuffers)가 호출.
      * 부팅 로딩 다이얼로그를 닫는 신호로 쓴다. 렌더 스레드에서 불리므로 dispatch 만 한다.
      */

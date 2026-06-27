@@ -4,7 +4,9 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.RectF
+import android.os.SystemClock
 import android.util.Log
 import android.view.MotionEvent
 import android.view.View
@@ -13,6 +15,8 @@ import kr.co.donghyun.flamelauncher.data.key.KeyLayoutManager
 import kr.co.donghyun.flamelauncher.presentation.MinecraftActivity
 import androidx.core.content.edit
 import kr.co.donghyun.flamelauncher.presentation.util.MinecraftActivityBridge
+import kotlin.math.atan2
+import kotlin.math.hypot
 
 private const val GLFW_PRESS = 1
 private const val GLFW_RELEASE = 0
@@ -23,6 +27,13 @@ private const val GLFW_RELEASE = 0
 private const val BASE_BUTTON_UNIT = 52f
 private const val TARGET_DP_PHONE = 48f
 private const val TARGET_DP_TABLET = 76f
+
+// WASD 이동키 — 개별 버튼 대신 조이스틱 하나로 통합한다.
+private const val KEY_W = 87
+private const val KEY_A = 65
+private const val KEY_S = 83
+private const val KEY_D = 68
+private val MOVE_KEYS = setOf(KEY_W, KEY_A, KEY_S, KEY_D)
 
 
 // 폰/가로화면용 게임패드 프리셋 (GLFW 코드 → x, y 비율)
@@ -48,12 +59,16 @@ private val PHONE_LAYOUT_PRESETS: Map<Int, Pair<Float, Float>> = mapOf(
 class GameControllerView(context: Context) : View(context) {
     private var imeVisible: Boolean = false
 
+    // 앉기(Shift, 340) 토글 상태 — true 면 Shift 가 눌린 상태로 유지된다.
+    private var sneakToggled: Boolean = false
+
     // ESC 전용 모드: grab/IME 가 아닐 때(인벤토리/메뉴/타이틀) ESC 버튼만 표시·입력.
     private var escOnlyMode: Boolean = false
 
     fun setEscOnlyMode(enabled: Boolean) {
         if (escOnlyMode != enabled) {
             escOnlyMode = enabled
+            if (enabled) resetJoystick()   // 메뉴/인벤토리 진입 시 이동 입력 정리
             invalidate()
         }
     }
@@ -94,6 +109,13 @@ class GameControllerView(context: Context) : View(context) {
 
     /** 현재 눌려있는 모든 버튼을 release 처리(토글 OFF 전환 시 안전 정리). */
     private fun releaseAllPressed() {
+        // 조이스틱 이동키도 해제 (컨트롤러를 숨기면 스틱으로 끌 수 없으므로)
+        resetJoystick()
+        // 토글된 앉기(Shift)도 함께 해제 — 컨트롤러를 숨기면 버튼으로 끌 수 없으므로
+        if (sneakToggled) {
+            sneakToggled = false
+            activity.sendKey(340, GLFW_RELEASE)
+        }
         if (pressedButtons.isEmpty()) return
         pressedButtons.forEach { (id, _) ->
             buttons.find { it.id == id }?.let { handlePress(it.glfwCode, GLFW_RELEASE) }
@@ -131,6 +153,41 @@ class GameControllerView(context: Context) : View(context) {
         color = Color.WHITE; textAlign = Paint.Align.CENTER; isFakeBoldText = true
     }
     private val cornerRadius = 20f
+
+    // ──────────────────────────────────────────────────────────────────
+    // 이동(WASD) 조이스틱 — WASD 버튼 자리에 끌어서 조종하는 가상 스틱.
+    //   base(바깥 원)는 WASD 키들의 중심에 배치되고, knob(손잡이)이 손가락을 따라온다.
+    //   knob 방향을 8방위로 양자화해 W/A/S/D 키 누름으로 변환한다.
+    // ──────────────────────────────────────────────────────────────────
+    private var joystickEnabled = false
+    private var joystickPointerId = -1
+    private val joystickBase = PointF()
+    private val joystickKnob = PointF()
+    private var joystickRadius = 0f
+    private var joystickKnobRadius = 0f
+    private var joystickDeadZone = 0f
+    private var activeMoveKeys: Set<Int> = emptySet()
+    private val joystickArrowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(120, 255, 255, 255); textAlign = Paint.Align.CENTER; isFakeBoldText = true
+    }
+
+    // ──────────────────────────────────────────────────────────────────
+    // FPS 표시 — 화면 중앙 상단. F3 디버그 HUD 대신 가벼운 카운터.
+    //   값은 네이티브(egl_bridge.c::reportFpsToJava)가 실제 스왑 프레임 수로 계산해
+    //   MinecraftActivityBridge → MinecraftActivity → updateFps(fps) 로 흘려보낸다.
+    //   콜백이 아직 안 오면 currentFps = -1 → "-- FPS" 로 표시.
+    // ──────────────────────────────────────────────────────────────────
+    private var fpsVisible = true
+    private var currentFps = -1
+    private val fpsTextSizePx = resources.displayMetrics.density * 14f
+    private val fpsTopMargin = resources.displayMetrics.density * 8f
+    private val fpsBgRect = RectF()
+    private val fpsBgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(140, 0, 0, 0); style = Paint.Style.FILL
+    }
+    private val fpsTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE; textAlign = Paint.Align.CENTER; isFakeBoldText = true
+    }
 
     private fun isTabletDevice(): Boolean =
         resources.configuration.smallestScreenWidthDp >= 600
@@ -251,8 +308,8 @@ class GameControllerView(context: Context) : View(context) {
         val pid = event.getPointerId(index)
         val px = event.getX(index)
         val py = event.getY(index)
-        // 🎮 토글 영역 또는 일반 버튼 위면 우리가 처리(keep), 아니면 surface 로 forward.
-        val onUs = toggleRect.contains(px, py) || findButton(px, py) != null
+        // 🎮 토글 영역, 일반 버튼, 또는 이동 조이스틱 위면 우리가 처리(keep), 아니면 surface 로 forward.
+        val onUs = toggleRect.contains(px, py) || findButton(px, py) != null || isInJoystick(px, py)
         if (!onUs) {
             forwardedPids.add(pid)
         } else {
@@ -389,12 +446,30 @@ class GameControllerView(context: Context) : View(context) {
         val toggleLeft = w - startMargin - drawSize          // endMargin = startMargin
         val toggleTop = escCenterY - (drawSize / 2f)         // ESC 와 같은 y(중심 높이)       // ESC 아래로 한 칸 + 간격
         toggleRect.set(toggleLeft, toggleTop, toggleLeft + drawSize, toggleTop + drawSize)
+
+        // ── 이동(WASD) 조이스틱 — x 는 이동키 중심, y 는 남은 앉기(Shift) 줄 기준으로 위로 띄움 ──
+        val moveBtns = buttons.filter { it.glfwCode in MOVE_KEYS }
+        joystickEnabled = moveBtns.isNotEmpty()
+        if (joystickEnabled) {
+            joystickRadius = drawSize * 1.2f          // 기존(1.6f)보다 작게
+            joystickKnobRadius = drawSize * 0.55f
+            joystickDeadZone = joystickRadius * 0.28f
+
+            val cx = (moveBtns.sumOf { it.x.toDouble() } / moveBtns.size).toFloat() * w
+            // 남은 앉기(Shift, 340) 버튼 y 를 바닥 기준선으로 삼아 스틱을 그 위로 띄운다.
+            val sneakY = (buttons.find { it.glfwCode == 340 }?.y ?: 0.88f) * h
+            val cy = sneakY - joystickRadius
+            joystickBase.set(cx, cy)
+            if (joystickPointerId == -1) joystickKnob.set(cx, cy)
+        }
     }
 
     override fun onDraw(canvas: Canvas) {
         // controllerVisible == false 면 일반 버튼은 그리지 않고 🎮 토글만 표시.
         if (controllerVisible) {
             buttons.forEach { button ->
+                // 이동키(WASD)는 개별 버튼 대신 조이스틱으로 그린다.
+                if (button.glfwCode in MOVE_KEYS) return@forEach
                 // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 그린다(나머지 숨김).
                 if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
                 val rect = buttonRects[button.id] ?: return@forEach
@@ -402,11 +477,14 @@ class GameControllerView(context: Context) : View(context) {
 
                 // ★ 전투 토글 버튼은 모드 상태에 따라 활성/비활성 표시
                 val isCombatToggleActive = (button.glfwCode == -7 && activity.combatMode)
+                // ★ 앉기(Shift) 토글도 상태에 따라 눌림 표시 유지
+                val isSneakActive = (button.glfwCode == 340 && sneakToggled)
+                val showPressed = isPressed || isSneakActive
 
                 val fill = when {
                     isCombatToggleActive -> bgAccentPressedPaint   // 활성 = 진한 핑크
-                    isPressed && button.isAccent -> bgAccentPressedPaint
-                    isPressed -> bgPressedPaint
+                    showPressed && button.isAccent -> bgAccentPressedPaint
+                    showPressed -> bgPressedPaint
                     button.isAccent -> bgAccentPaint
                     else -> bgPaint
                 }
@@ -430,10 +508,16 @@ class GameControllerView(context: Context) : View(context) {
                     textPaint
                 )
             }
+
+            // 이동 조이스틱 (메뉴 모드가 아닐 때만)
+            if (joystickEnabled && !escOnlyMode) drawJoystick(canvas)
         }
 
         // ── 🎮 컨트롤러 표시 토글 — 항상 그린다(꺼져 있어도 다시 켤 수 있도록) ──
         drawToggleButton(canvas)
+
+        // ── FPS 표시 (중앙 상단) ──
+        if (fpsVisible) drawFps(canvas)
     }
 
     /** 좌측 ☰ 인게임 메뉴 버튼 그리기. */
@@ -441,7 +525,7 @@ class GameControllerView(context: Context) : View(context) {
         canvas.drawRoundRect(toggleRect, cornerRadius, cornerRadius, bgPaint)
         canvas.drawRoundRect(toggleRect, cornerRadius, cornerRadius, borderPaint)
 
-        val fontSize = minOf(toggleRect.width(), toggleRect.height()) * 0.4f
+        val fontSize = minOf(toggleRect.width(), toggleRect.height()) * 0.23f
         textPaint.textSize = fontSize
         canvas.drawText(
             "⚙️",
@@ -449,6 +533,50 @@ class GameControllerView(context: Context) : View(context) {
             toggleRect.centerY() + fontSize * 0.35f,
             textPaint
         )
+    }
+
+    /** 이동 조이스틱(베이스 + 방향 화살표 + 손잡이) 그리기. */
+    private fun drawJoystick(canvas: Canvas) {
+        // 베이스 원
+        canvas.drawCircle(joystickBase.x, joystickBase.y, joystickRadius, bgPaint)
+        canvas.drawCircle(joystickBase.x, joystickBase.y, joystickRadius, borderPaint)
+
+        // 방향 화살표(연하게)
+        val arrowSize = joystickRadius * 0.24f
+        joystickArrowPaint.textSize = arrowSize
+        val r = joystickRadius * 0.72f
+        canvas.drawText("▲", joystickBase.x, joystickBase.y - r + arrowSize * 0.35f, joystickArrowPaint)
+        canvas.drawText("▼", joystickBase.x, joystickBase.y + r + arrowSize * 0.35f, joystickArrowPaint)
+        canvas.drawText("◀", joystickBase.x - r, joystickBase.y + arrowSize * 0.35f, joystickArrowPaint)
+        canvas.drawText("▶", joystickBase.x + r, joystickBase.y + arrowSize * 0.35f, joystickArrowPaint)
+
+        // 손잡이 — 잡고 있으면 진한 핑크, 아니면 기본 강조색
+        val active = joystickPointerId != -1
+        canvas.drawCircle(joystickKnob.x, joystickKnob.y, joystickKnobRadius,
+            if (active) bgPressedPaint else bgAccentPaint)
+        canvas.drawCircle(joystickKnob.x, joystickKnob.y, joystickKnobRadius, borderAccentPaint)
+    }
+
+    /** 중앙 상단 FPS 표시 — 값에 따라 색이 바뀐다(드랍 시 빨강). */
+    private fun drawFps(canvas: Canvas) {
+        val text = if (currentFps < 0) "-- FPS" else "$currentFps FPS"
+        fpsTextPaint.color = when {
+            currentFps < 0 -> Color.argb(255, 200, 200, 200)
+            currentFps >= 50 -> Color.argb(255, 120, 255, 140)   // 원활
+            currentFps >= 30 -> Color.argb(255, 255, 210, 90)    // 주의
+            else -> Color.argb(255, 255, 90, 90)                 // 드랍
+        }
+        fpsTextPaint.textSize = fpsTextSizePx
+        val tw = fpsTextPaint.measureText(text)
+        val padH = fpsTextSizePx * 0.6f
+        val padV = fpsTextSizePx * 0.35f
+        val cx = width / 2f
+        val boxW = tw + padH * 2f
+        val boxH = fpsTextSizePx + padV * 2f
+        val left = cx - boxW / 2f
+        fpsBgRect.set(left, fpsTopMargin, left + boxW, fpsTopMargin + boxH)
+        canvas.drawRoundRect(fpsBgRect, cornerRadius * 0.6f, cornerRadius * 0.6f, fpsBgPaint)
+        canvas.drawText(text, cx, fpsTopMargin + padV + fpsTextSizePx * 0.82f, fpsTextPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -464,6 +592,13 @@ class GameControllerView(context: Context) : View(context) {
                     onMenuClick?.invoke()
                     return true
                 }
+                // 이동 조이스틱 잡기 (isInJoystick 가 enabled/visible/escOnly 까지 검사)
+                if (joystickPointerId == -1 && isInJoystick(x, y)) {
+                    joystickPointerId = pointerId
+                    updateJoystick(x, y)
+                    invalidate()
+                    return true
+                }
                 val button = findButton(x, y) ?: return false
                 pressedButtons[button.id] = pointerId
                 handlePress(button.glfwCode, GLFW_PRESS)
@@ -471,63 +606,46 @@ class GameControllerView(context: Context) : View(context) {
                 return true
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP, MotionEvent.ACTION_CANCEL -> {
+                val isCancel = event.actionMasked == MotionEvent.ACTION_CANCEL
+                var handled = false
+                // 조이스틱 손가락이 떨어졌거나(또는 제스처 취소) → 손잡이 복귀 + 이동키 해제
+                if (joystickPointerId != -1 && (pointerId == joystickPointerId || isCancel)) {
+                    resetJoystick()
+                    handled = true
+                }
                 val buttonId = pressedButtons.entries.find { it.value == pointerId }?.key
                 if (buttonId != null) {
                     val button = buttons.find { it.id == buttonId }
                     pressedButtons.remove(buttonId)
                     if (button != null) handlePress(button.glfwCode, GLFW_RELEASE)
-                    invalidate()
-                    return true
+                    handled = true
                 }
+                if (handled) { invalidate(); return true }
                 return false
             }
             MotionEvent.ACTION_MOVE -> {
-                var changed = false
-                for (i in 0 until event.pointerCount) {
-                    val pid = event.getPointerId(i)
-                    val px = event.getX(i)
-                    val py = event.getY(i)
-
-                    // 이 포인터가 지금 잡고 있는 버튼 (없을 수도)
-                    val currentButtonId = pressedButtons.entries.find { it.value == pid }?.key
-                    val newButton = findButton(px, py)
-                    val newButtonId = newButton?.id
-
-                    // 같은 버튼이면 변화 없음
-                    if (currentButtonId == newButtonId) continue
-
-                    // 1) 기존 버튼이 있었다면 release
-                    if (currentButtonId != null) {
-                        val oldButton = buttons.find { it.id == currentButtonId }
-                        pressedButtons.remove(currentButtonId)
-                        if (oldButton != null) handlePress(oldButton.glfwCode, GLFW_RELEASE)
-                        changed = true
-                    }
-
-                    // 2) 새 버튼이 swipe 대상이고, 다른 손가락이 이미 잡고 있지 않다면 press
-                    if (newButton != null
-                        && newButton.isSwipeable()
-                        && !pressedButtons.containsKey(newButton.id)
-                    ) {
-                        pressedButtons[newButton.id] = pid
-                        handlePress(newButton.glfwCode, GLFW_PRESS)
-                        changed = true
+                // 조이스틱 손가락은 드래그를 따라간다(스틱 전용 — 일반 버튼은 정적 유지).
+                if (joystickPointerId != -1) {
+                    val idx = event.findPointerIndex(joystickPointerId)
+                    if (idx >= 0) {
+                        updateJoystick(event.getX(idx), event.getY(idx))
+                        invalidate()
                     }
                 }
-                if (changed) invalidate()
-                return pressedButtons.isNotEmpty()
+                // 스와이프로 일반 버튼이 눌리거나 풀리지 않게 한다.
+                // 버튼은 DOWN 시점에 눌린 채로 고정되고, 그 손가락이 UP 될 때만 풀린다.
+                return pressedButtons.isNotEmpty() || joystickPointerId != -1
             }
         }
         return false
     }
 
-    private fun KeyButton.isSwipeable(): Boolean =
-        glfwCode >= 0 || glfwCode in -3..-1
-
     private fun findButton(x: Float, y: Float): KeyButton? {
         // 컨트롤러가 꺼져 있으면 일반 버튼은 입력받지 않는다(🎮 토글만 별도 처리).
         if (!controllerVisible) return null
         buttons.forEach { button ->
+            // 이동키(WASD)는 조이스틱이 처리하므로 일반 버튼 탭에서 제외.
+            if (button.glfwCode in MOVE_KEYS) return@forEach
             // ESC 전용 모드면 ESC(256) + 키보드 토글(-6) 만 입력 받는다.
             if (escOnlyMode && button.glfwCode != 256 && button.glfwCode != -6) return@forEach
             val rect = buttonRects[button.id] ?: return@forEach
@@ -536,8 +654,76 @@ class GameControllerView(context: Context) : View(context) {
         return null
     }
 
+    // ── 이동 조이스틱 헬퍼 ───────────────────────────────────────────────
+
+    /** (x,y) 가 조이스틱 베이스 원 안인가 + 조이스틱이 활성/표시 상태인가. */
+    private fun isInJoystick(x: Float, y: Float): Boolean {
+        if (!joystickEnabled || !controllerVisible || escOnlyMode) return false
+        val dx = x - joystickBase.x
+        val dy = y - joystickBase.y
+        return dx * dx + dy * dy <= joystickRadius * joystickRadius
+    }
+
+    /** 손가락 위치로 손잡이를 옮기고, 방향을 WASD 키 누름으로 변환. */
+    private fun updateJoystick(x: Float, y: Float) {
+        val dx = x - joystickBase.x
+        val dy = y - joystickBase.y
+        val dist = hypot(dx, dy)
+
+        // 손잡이 위치 — 반경 안이면 그대로, 넘으면 원 둘레로 클램프
+        if (dist > joystickRadius && dist > 0f) {
+            val k = joystickRadius / dist
+            joystickKnob.set(joystickBase.x + dx * k, joystickBase.y + dy * k)
+        } else {
+            joystickKnob.set(x, y)
+        }
+
+        // 방향 → 이동키 집합 (데드존 안이면 정지)
+        val target = if (dist < joystickDeadZone) emptySet() else dirKeysFor(dx, dy)
+        if (target != activeMoveKeys) {
+            (activeMoveKeys - target).forEach { activity.sendKey(it, GLFW_RELEASE) }
+            (target - activeMoveKeys).forEach { activity.sendKey(it, GLFW_PRESS) }
+            activeMoveKeys = target
+        }
+    }
+
+    /** 방향 벡터를 8방위로 양자화해 W/A/S/D 조합으로 변환. (화면 y 는 아래가 +) */
+    private fun dirKeysFor(dx: Float, dy: Float): Set<Int> {
+        var angle = Math.toDegrees(atan2(-dy.toDouble(), dx.toDouble()))  // E=0, N=90, W=180, S=270
+        if (angle < 0) angle += 360.0
+        return when ((((angle + 22.5) / 45.0).toInt()) % 8) {
+            0 -> setOf(KEY_D)            // E
+            1 -> setOf(KEY_W, KEY_D)     // NE
+            2 -> setOf(KEY_W)            // N
+            3 -> setOf(KEY_W, KEY_A)     // NW
+            4 -> setOf(KEY_A)            // W
+            5 -> setOf(KEY_S, KEY_A)     // SW
+            6 -> setOf(KEY_S)            // S
+            7 -> setOf(KEY_S, KEY_D)     // SE
+            else -> emptySet()
+        }
+    }
+
+    /** 손잡이 중앙 복귀 + 눌려있던 이동키 전부 해제 + 포인터 해제. */
+    private fun resetJoystick() {
+        if (activeMoveKeys.isNotEmpty()) {
+            activeMoveKeys.forEach { activity.sendKey(it, GLFW_RELEASE) }
+            activeMoveKeys = emptySet()
+        }
+        joystickPointerId = -1
+        joystickKnob.set(joystickBase)
+    }
+
     private fun handlePress(glfwCode: Int, action: Int) {
         when {
+            // 앉기(Shift, 340)는 토글 — 누를 때마다 ON/OFF 전환, 손 떼는 동작은 무시
+            glfwCode == 340 -> {
+                if (action == GLFW_PRESS) {
+                    sneakToggled = !sneakToggled
+                    activity.sendKey(340, if (sneakToggled) GLFW_PRESS else GLFW_RELEASE)
+                    invalidate()  // 버튼 활성 표시 갱신
+                }
+            }
             glfwCode >= 0 -> activity.sendKey(glfwCode, action)
             glfwCode == -1 -> activity.sendMouseButton(0, action)
             glfwCode == -2 -> activity.sendMouseButton(1, action)
@@ -581,6 +767,12 @@ class GameControllerView(context: Context) : View(context) {
 
     override fun setVisibility(visibility: Int) {
         super.setVisibility(visibility)
+    }
+
+    // 네이티브가 계산해 보내준 실제 게임 FPS. MinecraftActivity 가 호출.
+    fun updateFps(fps: Int) {
+        currentFps = fps
+        if (fpsVisible) postInvalidateOnAnimation()   // 어느 스레드서 와도 안전
     }
 
     private val hotbarKey: String

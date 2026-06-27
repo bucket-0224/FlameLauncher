@@ -75,6 +75,23 @@ public final class ProcessorLauncher {
                 continue;
             }
 
+            // 🔧 DOWNLOAD_MOJMAPS 처럼 install_profile 에 outputs 선언이 없는 다운로드 task 는
+            //    위 skip(outKeys>0)에 안 걸려 매번 실행된다. 그런데 빌더(:forgebuilder) 프로세스는
+            //    DNS 후킹이 깨져 launchermeta.mojang.com 을 못 풀어(UnknownHostException → code -6)
+            //    빌드가 통째로 실패한다. 런처가 설치 때 preDownloadMojmaps 로 --output 경로에 매핑을
+            //    미리 받아두므로, 그 파일이 이미 있으면 네트워크 없이 이 task 를 건너뛴다.
+            if (outKeys.length == 0 && hasTask(pargs, "DOWNLOAD_MOJMAPS")) {
+                String out = argValue(pargs, "--output");
+                File outFile = (out == null) ? null : new File(out);
+                if (outFile != null && outFile.isFile() && outFile.length() > 0) {
+                    log("[" + i + "/" + count + "] SKIP (mojmaps 이미 존재, 네트워크 불필요): "
+                            + jarName + " → " + out);
+                    continue;
+                }
+                log("[" + i + "/" + count + "] ⚠️ DOWNLOAD_MOJMAPS 출력 없음(" + out
+                        + ") — 빌더에서 네트워크 시도 예정. preDownloadMojmaps 가 안 깔았을 수 있음.");
+            }
+
             // ⚠️ 버그 수정: 기존에 여기 "outputs 가 invalid 면 SKIP" 하는 블록이 있었음.
             //    그 블록은 outputsValid 의 true/false 를 양쪽 if 에서 모두 잡아버려
             //    출력이 유효하든 아니든 무조건 프로세서를 건너뛰게 만들었음.
@@ -426,6 +443,22 @@ public final class ProcessorLauncher {
         } catch (Exception ex) {
             return false;
         }
+    }
+
+    /** pargs 에 "--task <name>" 이 있는지. */
+    private static boolean hasTask(String[] args, String task) {
+        for (int i = 0; i + 1 < args.length; i++) {
+            if ("--task".equals(args[i]) && task.equals(args[i + 1])) return true;
+        }
+        return false;
+    }
+
+    /** pargs 에서 "--flag" 바로 뒤 값. 없으면 null. */
+    private static String argValue(String[] args, String flag) {
+        for (int i = 0; i + 1 < args.length; i++) {
+            if (flag.equals(args[i])) return args[i + 1];
+        }
+        return null;
     }
 
     private static String sha1(File f) throws Exception {
