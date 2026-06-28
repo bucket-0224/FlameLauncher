@@ -328,8 +328,11 @@ static gpu_probe_t detect_gpu() {
 }
 
 int pojavInitOpenGL() {
-    // Only affects GL4ES as of now
-    pojav_environ->force_vsync = true;
+    // VSync 강제 비활성화 — 게임이 요청하는 swap interval(0=무제한)을 그대로 존중한다.
+    //   true 로 두면 gl_swap_interval / swap 경로에서 무조건 1(=디스플레이 주사율 동기)로 덮어써
+    //   60fps(또는 패널 주사율)에 고정된다. 최대 프레임을 뽑기 위해 false.
+    //   (실제 상한은 게임 비디오 설정의 "최대 프레임 속도"가 결정한다 → 무제한으로 둘 것)
+    pojav_environ->force_vsync = false;
 
     const char *renderer = getenv("POJAV_RENDERER");
     if (!renderer) {

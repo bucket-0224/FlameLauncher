@@ -898,6 +898,31 @@ Java_kr_co_donghyun_flamelauncher_presentation_util_jni_JavaNativeLauncher_bootM
     // 이후 APK 버전 dlopen 은 no-op 가 되고, libfontmanager.so 는 미해결 심볼로 실패.
     const char* apk_native_dir = getenv("POJAV_NATIVEDIR");
 
+    // ── LD_LIBRARY_PATH 보강 (cacio CTCScreen 필수) ─────────────────
+    // cacio-tta 의 CTCScreen.<clinit> 은 System.getenv("LD_LIBRARY_PATH").split(":") 로
+    // 각 경로를 돌며 libpojavexec_awt.so 를 직접 찾아 System.load 한다.
+    // 이 환경변수가 null 이면 .split() 에서 NullPointerException 으로 cacio 초기화가
+    // 통째로 죽는다(시스템 클래스로더 CTCPreloadClassLoader.<clinit> 단계).
+    // 우리가 libpojavexec_awt.so 를 이미 preload 했더라도 cacio 는 별도로 재탐색하므로,
+    // libpojavexec_awt.so 가 있는 APK 네이티브 디렉토리를 반드시 포함시켜야 한다.
+    if (apk_native_dir) {
+        const char* old_ld = getenv("LD_LIBRARY_PATH");
+        std::string new_ld = apk_native_dir;
+        if (old_ld && *old_ld) {
+            // 이미 값이 있으면 중복 없이 앞에 붙인다.
+            std::string old_str_ld(old_ld);
+            if (old_str_ld.find(apk_native_dir) == std::string::npos) {
+                new_ld = std::string(apk_native_dir) + ":" + old_str_ld;
+            } else {
+                new_ld = old_str_ld;
+            }
+        }
+        setenv("LD_LIBRARY_PATH", new_ld.c_str(), 1);
+        LOGI("  🔗 LD_LIBRARY_PATH=%s (cacio CTCScreen 용)", getenv("LD_LIBRARY_PATH"));
+    } else {
+        LOGE("  ⚠️ POJAV_NATIVEDIR 미설정 — LD_LIBRARY_PATH 보강 불가, cacio 초기화가 NPE 로 죽을 수 있음");
+    }
+
     if (apk_native_dir) {
         std::string pojavexec_awt_apk = std::string(apk_native_dir) + "/libpojavexec_awt.so";
         preload(pojavexec_awt_apk, "libpojavexec_awt.so (Cacio AWT bridge)");

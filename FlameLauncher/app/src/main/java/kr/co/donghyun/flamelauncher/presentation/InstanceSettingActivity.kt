@@ -8,11 +8,14 @@ import android.widget.Toast
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.MutableState
+import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kr.co.donghyun.flamelauncher.data.instance.InstanceManager
+import kr.co.donghyun.flamelauncher.data.renderer.Renderer
+import kr.co.donghyun.flamelauncher.data.renderer.RendererPluginManager
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.screen.InstanceSettingsScreen
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
@@ -117,12 +120,30 @@ class InstanceSettingsActivity : BaseActivity() {
         // 이 인스턴스의 로더 종류 확인 (모드 메뉴 활성/비활성 판단용)
         val loaderLabel = detectLoaderLabel()
 
+        // 외부 렌더러 플러그인(MobileGlues) 설치 여부 스캔 — 화면 진입마다 갱신
+        // (설치/삭제 후 돌아왔을 때 즉시 반영되도록 force=true)
+        RendererPluginManager.refresh(this, force = true)
+
+        // 인스턴스에 저장된 렌더러 id. null 이면 전역 기본 사용.
+        val rendererState = mutableStateOf(
+            InstanceManager.loadRendererId(this, instanceId)
+        )
+
         setContent {
             PingLauncherTheme {
                 InstanceSettingsScreen(
                     instanceName = instanceName,
                     loaderInstalled = loaderLabel != null,
                     loaderLabel = loaderLabel,
+                    currentRendererId = rendererState.value,
+                    onRendererSelected = { id ->
+                        // 메타에 저장하고 화면 상태 갱신
+                        InstanceManager.updateRendererId(this, instanceId, id)
+                        rendererState.value = id
+                        val label = id?.let { Renderer.fromId(it).displayName } ?: "전역 기본"
+                        Toast.makeText(this, "렌더러: $label 으로 설정됨", Toast.LENGTH_SHORT).show()
+                    },
+                    onInstallMobileGlues = { openMobileGluesRelease() },
                     launchMapPicker = { importMessage, importing ->
                         pendingMapMessage = importMessage
                         pendingMapImporting = importing
@@ -154,6 +175,20 @@ class InstanceSettingsActivity : BaseActivity() {
 
 
     // ── 로더 감지 ──
+
+    /**
+     * MobileGlues 설치 안내 — 외부 브라우저로 릴리스 페이지를 연다.
+     */
+    private fun openMobileGluesRelease() {
+        try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW, Uri.parse(RendererPluginManager.MOBILEGLUES_RELEASE_URL))
+            )
+        } catch (e: Exception) {
+            Log.e("FLAME_LAUNCHER", "MobileGlues 안내 페이지 열기 실패: ${e.message}", e)
+            Toast.makeText(this, "브라우저를 열 수 없습니다.", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     /**
      * 인스턴스 메타의 loaderType 을 읽어 표시용 이름으로 변환한다.

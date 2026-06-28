@@ -254,14 +254,16 @@ void gl_setup_window() {
 }
 
 void gl_swap_interval(int swapInterval) {
+    // force_vsync 덮어쓰기 제거 — 게임이 요청한 interval 을 그대로 적용한다.
+    //   swapInterval==0 이면 VSync off(주사율 무관 최대 프레임), 1 이면 주사율 동기.
+    //   (force_vsync 는 기본 false 이므로 평소엔 아래 줄이 영향을 주지 않는다.)
     if(pojav_environ->force_vsync) swapInterval = 1;
-
     eglSwapInterval_p(g_EglDisplay, swapInterval);
 }
 
 JNIEXPORT void JNICALL
 Java_org_lwjgl_opengl_PojavRendererInit_nativeInitGl4esInternals(JNIEnv *env, jclass clazz,
-                                                            jobject function_provider) {
+                                                                 jobject function_provider) {
     LOGI("GL4ES internals initializing...");
     jclass funcProviderClass = (*env)->GetObjectClass(env, function_provider);
     jmethodID method_getFunctionAddress = (*env)->GetMethodID(env, funcProviderClass, "getFunctionAddress", "(Ljava/lang/CharSequence;)J");

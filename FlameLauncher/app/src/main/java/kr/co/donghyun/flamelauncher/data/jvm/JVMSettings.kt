@@ -138,11 +138,22 @@ data class JvmSettings(
                 "-Dsodium.checks.issue2561=false"
             )
         }
+        // ── Cacio (AWT 가상 백엔드) ──────────────────────────────────────────
+        // FancyMenu, Dice, JourneyMap 등 일부 모드가 java.awt.* 를 호출하는데,
+        // JRE 에 libawt_xawt.so(headful AWT)가 없어서 headless=true 여도 Toolkit.loadLibraries
+        // 가 libawt_xawt.so 로드를 시도하다 UnsatisfiedLinkError 로 죽는다.
+        // cacio 가 toolkit 을 가로채면 libawt_xawt.so 자체가 불필요해진다.
+        //
+        // ⚠️ JRE 버전별로 cacio 주입 방식이 완전히 다르다 (둘을 섞으면 안 됨):
+        //   - JRE8 : cacio-androidnw-1.10 + -Xbootclasspath/p:(prepend) + net.java.openjdk.cacio.ctc.*
+        //   - JRE9+: cacio-tta/shared-1.18 + -Xbootclasspath/a:(append) + CTCPreloadClassLoader
+        //            + com.github.caciocavallosilano.cacio.ctc.* + --add-exports/--add-opens 풀세트.
+        //            (JRE9+ 에 -Xbootclasspath/p: 를 주면 HotSpot 이 JNI_CreateJavaVM 단계에서
+        //             -6(JNI_EINVAL) 으로 JVM 생성을 거부한다. prepend 옵션이 제거됐기 때문.)
+        val javaMajor = resolveJavaMajor(versionId)
 
-        val isLegacy = isLegacyVersion(versionId)  // 1.12.2 이하 = legacy
-
-        if (isLegacy) {
-            // Cacio bootclasspath
+        if (javaMajor <= 8) {
+            // ── JRE8: 기존 검증된 방식 그대로 ──
             val cacioDir = "${context.filesDir}/caciocavallo"
             val cacioJars = listOf(
                 "$cacioDir/ResConfHack.jar",
@@ -150,12 +161,11 @@ data class JvmSettings(
                 "$cacioDir/cacio-shared-1.10-SNAPSHOT.jar"
             ).joinToString(":")
 
-            // 레거시(1.12.2-)는 AWT/Cacio 가상 화면 크기가 곧 렌더 해상도다.
-            // 여기에 resolutionScale 을 적용하면 모던과 동일하게 해상도 배율로 FPS 를 조절할 수 있다.
+            // 레거시: cacio 가상 화면 = 렌더 해상도. resolutionScale 적용해 FPS 조절.
             val dm = context.resources.displayMetrics
             val (cacioW, cacioH) = scaledResolution(dm.widthPixels, dm.heightPixels)
-            args += "-Dcacio.managed.screensize=${cacioW}x${cacioH}"
 
+            args += "-Dcacio.managed.screensize=${cacioW}x${cacioH}"
             args += "-Xbootclasspath/p:$cacioJars"
             args += "-Djava.awt.headless=false"
             args += "-Dcacio.font.fontmanager=sun.awt.X11FontManager"
@@ -165,9 +175,52 @@ data class JvmSettings(
             args += "-Djava.awt.graphicsenv=net.java.openjdk.cacio.ctc.CTCGraphicsEnvironment"
             args += "-Duser.home=${mcDir.parentFile.absolutePath}"
         } else {
-            // 모던: AWT 안 씀
-            args += "-Djava.awt.headless=true"
+            // ── JRE9+ (17/21/25): cacio17 정식 구성 ──
+            // PojavLauncher/FCL 이 검증한 방식. -Xbootclasspath/p:(prepend) 대신
+            //   1) -Xbootclasspath/a:(append) — JRE9+ 에서 살아있는 옵션이라 JNI -6 이 안 난다.
+            //   2) -Djava.system.class.loader=...CTCPreloadClassLoader — agent 없이도 toolkit 을
+            //      게임 클래스보다 먼저 가로채게 하는 핵심. (FancyMenu/Dice 가 java.awt.Color 를 불러도
+            //      cacio 가 이미 toolkit 을 점유 → libawt_xawt.so 로드 시도 자체가 사라진다.)
+            //   3) 신버전 클래스명 com.github.caciocavallosilano.cacio.ctc.*
+            //   4) java.desktop 내부 패키지 개방용 --add-exports / --add-opens 풀세트.
+            val cacio17Dir = "${context.filesDir}/caciocavallo17"
+            val cacio17Jars = listOf(
+                "$cacio17Dir/cacio-shared-1.18-SNAPSHOT.jar",
+                "$cacio17Dir/cacio-tta-1.18-SNAPSHOT.jar"
+            ).joinToString(":")
+
+            // 모던: 렌더링은 GL 이 담당. cacio 가상 화면은 AWT 호환용이라 실제 픽셀이면 충분.
+            val dm = context.resources.displayMetrics
+
+            args += "-Djava.awt.headless=false"
+            args += "-Dcacio.managed.screensize=${dm.widthPixels}x${dm.heightPixels}"
+            args += "-Dcacio.font.fontmanager=sun.awt.X11FontManager"
+            args += "-Dcacio.font.fontscaler=sun.font.FreetypeFontScaler"
+            args += "-Dswing.defaultlaf=javax.swing.plaf.nimbus.NimbusLookAndFeel"
+            args += "-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit"
+            args += "-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment"
+            args += "-Djava.system.class.loader=com.github.caciocavallosilano.cacio.ctc.CTCPreloadClassLoader"
+            args += "-Xbootclasspath/a:$cacio17Jars"
+
+            // java.desktop / java.base 내부 패키지 개방 (JRE17 모듈 캡슐화 우회). PojavLauncher 와 동일 세트.
+            args += "--add-exports=java.desktop/java.awt=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/sun.java2d=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/java.awt.dnd.peer=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/sun.awt=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/sun.awt.event=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/sun.awt.datatransfer=ALL-UNNAMED"
+            args += "--add-exports=java.desktop/sun.font=ALL-UNNAMED"
+            args += "--add-exports=java.base/sun.security.action=ALL-UNNAMED"
+            args += "--add-opens=java.base/java.util=ALL-UNNAMED"
+            args += "--add-opens=java.desktop/java.awt=ALL-UNNAMED"
+            args += "--add-opens=java.desktop/sun.font=ALL-UNNAMED"
+            args += "--add-opens=java.desktop/sun.java2d=ALL-UNNAMED"
+            args += "--add-opens=java.base/java.lang.reflect=ALL-UNNAMED"
+            args += "--add-opens=java.base/java.net=ALL-UNNAMED"
         }
+        // ─────────────────────────────────────────────────────────────────────
 
         // MobileGlues 사용 시 Sodium 자체 검증 우회 (1.21+ 셰이더 호환)
         if (renderer.id == "mobileglues") {
@@ -255,4 +308,22 @@ fun isLegacyVersion(versionId: String): Boolean {
     val parts = versionId.removePrefix("1.").split(".")
     val major = parts.getOrNull(0)?.toIntOrNull() ?: return false
     return major <= 12
+}
+
+/**
+ * 버전에 따라 사용할 Java major 를 추정한다.
+ *
+ * ⚠️ cacio 주입 방식 분기에만 쓰는 보수적 추정치다.
+ *    실제 JRE 선택은 MinecraftJREPreparer 가 하므로, 여기 값과 미세하게 다를 수 있어도
+ *    "8 인가 / 9+ 인가" 경계만 정확하면 -Xbootclasspath/p: 사고를 막는 목적은 달성된다.
+ *
+ *   - 1.12.2 이하         → 8  (legacy, cacio-androidnw-1.10 + bootclasspath/p)
+ *   - 그 외(1.13+/스냅샷)  → 17 (modern, bootclasspath/p 금지)
+ *
+ * 추후 1.20.5+ → 21, 26w+ 스냅샷 → 25 처럼 세분화해도 cacio 분기에는 영향 없다
+ * (모두 9+ 이므로 동일하게 bootclasspath/p 를 안 쓰는 쪽으로 간다).
+ */
+fun resolveJavaMajor(versionId: String): Int {
+    if (isLegacyVersion(versionId)) return 8
+    return 17
 }

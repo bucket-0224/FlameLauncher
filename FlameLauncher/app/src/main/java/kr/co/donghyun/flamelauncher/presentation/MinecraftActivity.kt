@@ -42,6 +42,7 @@ import kr.co.donghyun.flamelauncher.data.jvm.JvmSettingsManager
 import kr.co.donghyun.flamelauncher.data.jvm.isLegacyVersion
 import kr.co.donghyun.flamelauncher.data.renderer.Renderer
 import kr.co.donghyun.flamelauncher.data.renderer.RendererManager
+import kr.co.donghyun.flamelauncher.data.renderer.RendererPluginManager
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.components.GameControllerView
 import kr.co.donghyun.flamelauncher.presentation.ui.components.InGameMenuOverlay
@@ -153,6 +154,16 @@ class MinecraftActivity : BaseActivity() {
         private const val EXTRA_GAME_DIR = "game_dir"
         private const val EXTRA_INSTANCE_DIR = "instance_dir"
 
+        /**
+         * MobileGlues 렌더러가 선택됐는데 플러그인 APK 가 설치돼 있지 않을 때,
+         * MinecraftActivity 는 게임을 띄우지 않고 이 결과 코드로 종료한다.
+         * MainActivity 는 Activity Result 로 이 값을 받아 설치 안내 팝업을 띄운다.
+         */
+        const val RESULT_MOBILEGLUES_MISSING = 1001
+
+        /** 안내 팝업에서 쓸, 사용자가 고른 렌더러 표시명(선택). */
+        const val EXTRA_RESULT_RENDERER_ID = "result_renderer_id"
+
         @JvmStatic
         var currentInstance: MinecraftActivity? = null
 
@@ -165,20 +176,51 @@ class MinecraftActivity : BaseActivity() {
             customGameDir: String? = null,
             instanceDir: String? = null
         ) {
-            Log.d("FLAME_LAUNCHER", "MC 시작: mainClass=$mainClass, extraJars=${extraJars.size}개")
-            Log.d("FLAME_LAUNCHER", "instanceDir 전달: $instanceDir")  // ← 추가
-            Log.d("FLAME_LAUNCHER", "customGameDir 전달: $customGameDir")  // ← 추가
-
             context.startActivity(
-                Intent(context, MinecraftActivity::class.java).apply {
-                    instanceDir?.let { putExtra(EXTRA_INSTANCE_DIR, it) }
-                    putExtra(EXTRA_VERSION_ID, versionId)
-                    putExtra(EXTRA_ASSET_INDEX, assetIndex)
-                    putStringArrayListExtra(EXTRA_EXTRA_JARS, ArrayList(extraJars))
-                    putExtra(EXTRA_MAIN_CLASS, mainClass)
-                    customGameDir?.let { putExtra(EXTRA_GAME_DIR, it) }
-                }
+                buildIntent(context, versionId, assetIndex, extraJars, mainClass, customGameDir, instanceDir)
             )
+        }
+
+        /**
+         * Activity Result 방식 실행. MobileGlues 미설치 등으로 게임이 안 뜨고 종료될 때
+         * 호출 측(MainActivity)이 결과(RESULT_MOBILEGLUES_MISSING)를 받아 안내 팝업을 띄울 수 있다.
+         * 동작은 [start] 와 동일하되 startActivity 대신 전달받은 런처로 실행한다.
+         */
+        fun startForResult(
+            context: Context,
+            launcher: androidx.activity.result.ActivityResultLauncher<Intent>,
+            versionId: String,
+            assetIndex: String,
+            extraJars: List<String> = emptyList(),
+            mainClass: String = "net.minecraft.client.main.Main",
+            customGameDir: String? = null,
+            instanceDir: String? = null
+        ) {
+            launcher.launch(
+                buildIntent(context, versionId, assetIndex, extraJars, mainClass, customGameDir, instanceDir)
+            )
+        }
+
+        private fun buildIntent(
+            context: Context,
+            versionId: String,
+            assetIndex: String,
+            extraJars: List<String>,
+            mainClass: String,
+            customGameDir: String?,
+            instanceDir: String?
+        ): Intent {
+            Log.d("FLAME_LAUNCHER", "MC 시작: mainClass=$mainClass, extraJars=${extraJars.size}개")
+            Log.d("FLAME_LAUNCHER", "instanceDir 전달: $instanceDir")
+            Log.d("FLAME_LAUNCHER", "customGameDir 전달: $customGameDir")
+            return Intent(context, MinecraftActivity::class.java).apply {
+                instanceDir?.let { putExtra(EXTRA_INSTANCE_DIR, it) }
+                putExtra(EXTRA_VERSION_ID, versionId)
+                putExtra(EXTRA_ASSET_INDEX, assetIndex)
+                putStringArrayListExtra(EXTRA_EXTRA_JARS, ArrayList(extraJars))
+                putExtra(EXTRA_MAIN_CLASS, mainClass)
+                customGameDir?.let { putExtra(EXTRA_GAME_DIR, it) }
+            }
         }
     }
 
@@ -244,6 +286,27 @@ class MinecraftActivity : BaseActivity() {
         mainClass = intent.getStringExtra(EXTRA_MAIN_CLASS) ?: "net.minecraft.client.main.Main"
         instanceDir = intent.getStringExtra(EXTRA_INSTANCE_DIR)
         Log.d("FLAME_LAUNCHER", "instanceDir 수신: $instanceDir")  // ← 추가
+
+        // 외부 렌더러 플러그인(MobileGlues) 설치 여부 스캔 — 인스턴스 렌더러 해석/실행 전에 1회.
+        RendererPluginManager.refresh(this)
+
+        // ── MobileGlues 선택됐는데 플러그인 APK 미설치 → 게임을 띄우지 않고 종료, MainActivity 가 안내 ──
+        //   인스턴스별 렌더러(또는 전역 기본)가 mobileglues 인지 확인. 미설치면 setResult 후 finish.
+        run {
+            val selectedRendererId = instanceDir
+                ?.let { runCatching { InstanceManager.loadMeta(File(it))?.rendererId }.getOrNull() }
+                ?: RendererManager.load(this).id
+            if (selectedRendererId == "mobileglues" && !RendererPluginManager.isMobileGluesAvailable()) {
+                Log.w("FLAME_LAUNCHER",
+                    "⚠️ MobileGlues 선택됐으나 플러그인 APK 미설치 → 게임 실행 중단, MainActivity 안내")
+                setResult(
+                    RESULT_MOBILEGLUES_MISSING,
+                    Intent().putExtra(EXTRA_RESULT_RENDERER_ID, "mobileglues")
+                )
+                finish()
+                return
+            }
+        }
         customGameDir = intent.getStringExtra(EXTRA_GAME_DIR)
         Log.d("FLAME_LAUNCHER", "customGameDir 수신: $customGameDir")  // ← 추가
 
@@ -597,12 +660,18 @@ class MinecraftActivity : BaseActivity() {
 
         when (renderer.id) {
             "mobileglues" -> {
-                // info_getter 가 먼저! libmobileglues.so 의 의존성임
-                loadSoSafely(File(nativesDir, "libmobileglues_info_getter.so"), required = false)
-                if (loadSoSafely(File(nativesDir, "libmobileglues.so"), required = false)) {
-                    Log.d("FLAME_LAUNCHER", "✅ 렌더러: MobileGlues")
+                // MobileGlues 의 .so 는 런처가 아니라 외부 플러그인 APK 의 nativeLibraryDir 에 있다.
+                // 절대경로로 직접 로드한다(info_getter 가 libmobileglues.so 의 의존성이므로 먼저).
+                val mg = RendererPluginManager.mobileGlues
+                if (mg != null) {
+                    val dir = mg.nativeLibraryDir
+                    runCatching { System.load("$dir/libmobileglues_info_getter.so") }
+                        .onFailure { Log.d("FLAME_LAUNCHER", "info_getter 로드 스킵: ${it.message}") }
+                    runCatching { System.load(mg.glLibAbsolutePath) }
+                        .onSuccess { Log.d("FLAME_LAUNCHER", "✅ 렌더러: MobileGlues (${mg.glLibAbsolutePath})") }
+                        .onFailure { Log.w("FLAME_LAUNCHER", "⚠️ libmobileglues.so 로드 실패: ${it.message}") }
                 } else {
-                    Log.w("FLAME_LAUNCHER", "⚠️ libmobileglues.so 없음 — RendererManager 선택만 됐고 .so 미배포")
+                    Log.w("FLAME_LAUNCHER", "⚠️ MobileGlues 플러그인 미감지 — env 폴백에 의존")
                 }
             }
             "zink" -> {
@@ -2233,6 +2302,8 @@ class MinecraftActivity : BaseActivity() {
         // 메모리/로딩 부담은 "설치된 모드 수" 기준으로 보는 게 안전하므로 .jar / .jar.pingdisabled 둘 다 센다.
         val installedModCount = countInstalledMods(File(mcDir, "mods"))
         syncOptionsTxt(File(mcDir, "options.txt"), jvmSettings, installedModCount, versionId)
+        // Iris 셰이더 그림자 렌더 거리 최소(최초 1회) — config/iris.properties 의 maxShadowRenderDistance.
+        syncIrisProperties(File(mcDir, "config/iris.properties"))
         // Forge/NeoForge early loading window(망치/여우 로딩 화면) 설정.
         // ZL2 와 동일하게 켜는 게 기본. 단, 모드팩(특히 Sinytra Connector 포함)은 early window 의
         //   acceptGameLayer → DisplayWindow.updateModuleReads 단계에서 게임 클래스
@@ -2331,11 +2402,17 @@ class MinecraftActivity : BaseActivity() {
 // ── Modern Forge fallback: 모듈 안 로드돼도 reflection 통과시키는 ALL-UNNAMED opens ──
         val modernForgeArgs: Array<String> = if (isModularJre && isModernLoader) {
             arrayOf(
-                // ── Forge early window(망치/여우 로딩 창) ──
-                // 켜고 끄는 것은 syncFmlConfig() 의 ENABLE_EARLY_WINDOW 토글이 fml.toml 로 단일 제어.
-                // 여기서 -Dfml.earlyWindowControl 을 강제하지 않아야 fml.toml 설정이 그대로 적용된다.
-                // (과거엔 OSMesa 크래시 회피용으로 여기서 false 를 강제했으나, ZL2 와 동일하게
-                //  GLFW stub 이 GL 컨텍스트 버전을 렌더러에 맞춰 고정하므로 더는 필요 없음.)
+                // ── Forge/NeoForge EarlyWindow(망치/여우 로딩 창) 비활성화 ──
+                //   ZL2 와 동일하게 -Dfml.earlyprogresswindow=false 로 EarlyWindow 자체를 끈다.
+                //   EarlyWindow(net.neoforged.fml.earlydisplay.DisplayWindow)는 자기 전용 스레드에서
+                //   glfwMakeContextCurrent 없이 GL.createCapabilities() 를 호출하는데, PojavLauncher/
+                //   OSMesa/MobileGlues 의 단일 EGL 컨텍스트 모델에선 그 스레드에 컨텍스트가 없어
+                //   "no OpenGL context current in the current thread" 로 죽는다(확인됨).
+                //   fml.toml 의 earlyWindowControl 이 아니라 이 시스템 프로퍼티가 실제 차단 스위치다.
+                "-Dfml.earlyprogresswindow=false",
+                "-Dfml.ignoreInvalidMinecraftCertificates=true",
+                "-Dfml.ignorePatchDiscrepancies=true",
+                "-Dloader.disable_forked_guis=true",
                 "-Djava.awt.headless=true",
                 // ── 진단: BootstrapLauncher 가 어떤 jar 를 모듈로 만들고 어떤 걸 제외하는지
                 //   stdout 으로 출력하게 한다(bsl.debug). forge-client.jar 가 BOOTSTRAP 모듈
@@ -2371,13 +2448,29 @@ class MinecraftActivity : BaseActivity() {
 
 
         val glLibName = when (renderer.id) {
-            "mobileglues" -> "libmobileglues.so"
+            "mobileglues" -> RendererPluginManager.mobileGlues?.glLibAbsolutePath ?: "libmobileglues.so"
             "gl4es", "gl4es_desktop" -> "libgl4es_114.so"
             "zink" -> "libOSMesa.so"
             else   -> "libgl4es_114.so"
         }
 
         Log.i("PingLauncherJVM", "🎨 Selected glLibName=$glLibName (renderer=${renderer.id})")
+
+        // ── LWJGL 렌더러 라이브러리 지정 (ZL2 GameLauncher.loadGraphicsLibrary 와 동일) ──
+        //   LWJGL 의 GL.createCapabilities() 는 GL 함수 포인터를 이 시스템 프로퍼티가 가리키는
+        //   라이브러리에서 가져온다(org.lwjgl.opengl.PojavRendererInit.onCreateCapabilities).
+        //   MobileGlues 는 GL 함수를 자기 .so(libmobileglues.so)가 직접 제공하므로 그 절대경로를
+        //   반드시 넘겨야 한다. 이게 없으면 EGL 컨텍스트가 있어도 함수 로딩이 실패해
+        //   "no OpenGL context current in the current thread" 로 죽는다(MobileGlues 한정).
+        //   native env 의 LIBGL_NAME 과는 별개의 경로다(그쪽은 C 브리지가, 이쪽은 LWJGL Java 가 본다).
+        val rendererLibArgs: Array<String> =
+            if (renderer.id == "zink") {
+                // Zink(OSMesa)는 LWJGL 이 OSMesa 전용 경로로 로드하므로 지정 불필요(넘겨도 무해하나 생략).
+                emptyArray()
+            } else {
+                arrayOf("-Dorg.lwjgl.opengl.libname=$glLibName")
+            }
+        Log.i("PingLauncherJVM", "🎨 org.lwjgl.opengl.libname=${rendererLibArgs.joinToString()}")
 
         // ── classpath 중복 제거 ─────────────────────────────────────
         val seenAbs = HashSet<String>()
@@ -2481,6 +2574,7 @@ class MinecraftActivity : BaseActivity() {
                     versionId = versionId
                 ) +
                 dnsArgs +
+                rendererLibArgs +     // ★ -Dorg.lwjgl.opengl.libname (MobileGlues GL 함수 로딩에 필수)
                 launchWrapperArgs +
                 fabricJvmArgs +
                 modernForgeArgs +     // ★ 추가 — metaJvmArgs 보다 앞에 둬서 version.json 인자가 덮어쓰도록
@@ -2592,7 +2686,9 @@ class MinecraftActivity : BaseActivity() {
                 val launcher = JavaNativeLauncher()
                 val rendererEnv = renderer.buildEnv(
                     cacheDir = applicationContext.cacheDir.absolutePath,
-                    nativeDir = applicationInfo.nativeLibraryDir
+                    nativeDir = applicationInfo.nativeLibraryDir,
+                    // MobileGlues 면 감지된 플러그인 .so 경로를 넘긴다(내부 렌더러는 null).
+                    plugin = if (renderer.id == "mobileglues") RendererPluginManager.mobileGlues else null
                 ).toMutableMap().apply {
                     if (jvmSettings.unlockFps) {
                         this["FORCE_VSYNC"]       = "false"
@@ -2993,7 +3089,20 @@ class MinecraftActivity : BaseActivity() {
      * pre-1.13 레거시는 Zink 가 불가능하므로 GL4ES 로 강제 오버라이드한다.
      */
     private fun resolveRendererForVersion(): Renderer {
-        val base = RendererManager.load(this)
+        // 1) 인스턴스별 렌더러가 있으면 그것을, 없으면 전역 기본.
+        val instanceRendererId = instanceDir
+            ?.let { runCatching { InstanceManager.loadMeta(File(it))?.rendererId }.getOrNull() }
+        var base = instanceRendererId?.let { Renderer.fromId(it) } ?: RendererManager.load(this)
+        Log.d("FLAME_LAUNCHER",
+            "렌더러 해석: instance=${instanceRendererId ?: "-"}, 결정=${base.id}")
+
+        // 2) MobileGlues 선택했는데 플러그인 미설치면 폴백.
+        if (base.id == "mobileglues" && !RendererPluginManager.isMobileGluesAvailable()) {
+            Log.w("FLAME_LAUNCHER",
+                "⚠️ MobileGlues 선택됐지만 플러그인 APK 미설치 → 폴백")
+            base = Renderer.ZINK
+        }
+
         if (isPre113Version(versionId) && base.id != "gl4es" && base.id != "gl4es_desktop") {
             Log.w("FLAME_LAUNCHER",
                 "🕹️ pre-1.13 레거시($versionId) 감지 → 렌더러 GL4ES 강제 폴백 (기존: ${base.id})")
@@ -3182,15 +3291,8 @@ class MinecraftActivity : BaseActivity() {
     }
 
     private fun syncOptionsTxt(optionsFile: File, settings: JvmSettings, modCount: Int = 0, versionId: String = "") {
-        val targetMaxFps   = if (settings.unlockFps) 260 else 120
-        val targetVsync    = if (settings.unlockFps) "false" else "true"
-        val targetRenderD = if (modCount > 0) 2 else settings.renderDistance
-        val targetGfxMode  = settings.graphicsMode
-
-        // options.txt 가 아예 없으면 = 이 인스턴스 최초 실행.
-        //   이때만 시스템 언어를 초기 lang 으로 심는다(이후 사용자가 게임 내에서 바꾼 값 보존).
-        val brandNewInstance = !optionsFile.exists()
         val supportsSimDistance = isModernSimDistance(versionId)
+
         val existing: MutableList<String> = if (optionsFile.exists())
             optionsFile.readLines().toMutableList()
         else
@@ -3206,80 +3308,79 @@ class MinecraftActivity : BaseActivity() {
             existing.firstOrNull { it.startsWith("$key:") }
                 ?.substringAfter("$key:")?.trim()?.toIntOrNull()
 
-        upsert("maxFps",         targetMaxFps.toString())
-        upsert("enableVsync",    targetVsync)
-        upsert("renderDistance", targetRenderD.toString())
-        upsert("graphicsMode",   targetGfxMode.toString())
-        upsert("renderClouds",   "false")
-        if (supportsSimDistance) {
-            upsert("simulationDistance", "5")          // 최소(마크 하한)
-        }
-        // ⚠️ mipmapLevels 는 반드시 0 으로 강제.
-        //   밉맵이 1 이상이면 blocks 텍스처 아틀라스가 2048x2048x4 같은 밉맵 포함 형태로 생성되는데,
-        //   Mali-G57 + Zink(OSMesa) 조합에서 이 밉맵 아틀라스 처리 중 libGLES_mali 가
-        //   힙을 손상시켜 Scudo "corrupted chunk header" 로 강제 종료됨(렌더 스레드).
-        //   밉맵 0 이면 아틀라스가 ...x0 으로 생성되어 크래시가 사라짐.
-        upsert("mipmapLevels",   "0")
-
-        // ── 최초 실행 시 시스템 언어를 마인크래프트 언어로 설정 ──
-        //   options.txt 가 없던 경우(brandNewInstance)에만 1회 적용.
-        //   이미 lang 키가 있으면(이전 실행/사용자 설정) 절대 덮어쓰지 않는다.
-        //
-        //   ⚠️ pre-1.6(1.5.x 이하)은 제외한다. 그 시절 StringTranslate(난독화명 adn)는
-        //   options.txt 의 lang 코드로 jar 내 /lang/<code>.lang 을 getResourceAsStream 으로 읽는데,
-        //     1) 1.5 이하 lang 파일명은 대문자 국가(ko_KR.lang, en_US.lang)인데 우리는 소문자(ko_kr)를 심고,
-        //     2) 1.5 이하는 제공 언어가 적어 미지원 코드면 스트림이 null → InputStreamReader(null) → NPE 로
-        //   타이틀 진입 직전 죽는다(Minecraft.a → adn.a). 그래서 pre-1.6 은 lang 을 건드리지 않고
-        //   게임 기본값(en_US)으로 두는 게 안전하다. 사용자는 게임 내 언어 메뉴에서 바꿀 수 있다.
-        val isPre16 = isPre16Version(versionId)
-        if (brandNewInstance && existing.none { it.startsWith("lang:") } && !isPre16) {
-            val mcLang = systemMinecraftLang()
-            upsert("lang", mcLang)
-            Log.d("FLAME_LAUNCHER", "🌐 최초 실행 — 시스템 언어로 lang=$mcLang 설정")
-        } else if (isPre16) {
-            // pre-1.6 은 lang 을 주입하지 않을 뿐 아니라, 이전 (버그 있던) 실행에서 이미 박힌
-            //   소문자/미지원 lang 줄이 있으면 제거한다. 그래야 StringTranslate 가 내장 기본값으로
-            //   폴백해 NPE 없이 타이틀까지 진입한다. (사용자는 게임 내 메뉴에서 언어 변경 가능)
-            val before = existing.size
-            existing.removeAll { it.startsWith("lang:") }
-            if (existing.size != before) {
-                Log.d("FLAME_LAUNCHER", "🌐 pre-1.6($versionId) — 기존 lang 줄 제거(StringTranslate NPE 회피)")
-            } else {
-                Log.d("FLAME_LAUNCHER", "🌐 pre-1.6($versionId) — 시스템 언어 주입 건너뜀 (기본 언어 사용)")
-            }
-        }
-
-        // ── 첫 실행 + 무거운 모드팩 → 렌더 설정 강제 하향 ──
-        val tier = computePerfTier(modCount)
+        // ── "최초 1회" 판정: options.txt 와 같은 폴더의 마커 파일 부재 ──
+        //   마커가 있으면 이 인스턴스는 이미 1회 초기화됨 → 사용자가 게임 안에서 바꾼 설정을
+        //   절대 덮어쓰지 않는다(아래 mipmapLevels 만 예외).
         val marker = File(optionsFile.parentFile, ".flame_perf_applied")
         val isFirstLaunch = !marker.exists()
 
-        if (isFirstLaunch && tier != PerfTier.VANILLA) {
-            val floor = perfFloorOptions(tier)
-            if (floor != null) {
-                floor.forEach { (key, value) ->
-                    // 정수형 렌더 옵션은 "사용자/기존 값이 더 낮으면 그 값 유지"(절대 높이지 않음).
+        if (isFirstLaunch) {
+            // ── 최초 실행에만 적용하는 기본값 (이후 사용자 설정 보존) ──
+            val targetMaxFps = if (settings.unlockFps) 260 else 120
+            val targetVsync  = if (settings.unlockFps) "false" else "true"
+            val targetRenderD = if (modCount > 0) 2 else settings.renderDistance
+            val targetGfxMode = settings.graphicsMode
+
+            upsert("maxFps",         targetMaxFps.toString())
+            upsert("enableVsync",    targetVsync)
+            upsert("renderDistance", targetRenderD.toString())
+            upsert("graphicsMode",   targetGfxMode.toString())
+            upsert("renderClouds",   "false")
+            if (supportsSimDistance) {
+                upsert("simulationDistance", "5")          // 최소(마크 하한) — 시뮬레이션 거리 최소
+            }
+
+            // ── 최초 실행 시 시스템 언어를 마인크래프트 언어로 설정 ──
+            //   이미 lang 키가 있으면(이전 실행/사용자 설정) 절대 덮어쓰지 않는다.
+            //   ⚠️ pre-1.6(1.5.x 이하)은 StringTranslate NPE 때문에 lang 을 건드리지 않는다.
+            val isPre16 = isPre16Version(versionId)
+            if (existing.none { it.startsWith("lang:") } && !isPre16) {
+                val mcLang = systemMinecraftLang()
+                upsert("lang", mcLang)
+                Log.d("FLAME_LAUNCHER", "🌐 최초 실행 — 시스템 언어로 lang=$mcLang 설정")
+            } else if (isPre16) {
+                val before = existing.size
+                existing.removeAll { it.startsWith("lang:") }
+                if (existing.size != before) {
+                    Log.d("FLAME_LAUNCHER", "🌐 pre-1.6($versionId) — 기존 lang 줄 제거(StringTranslate NPE 회피)")
+                }
+            }
+
+            // ── 첫 실행 + 무거운 모드팩 → 렌더 설정 강제 하향 ──
+            val tier = computePerfTier(modCount)
+            if (tier != PerfTier.VANILLA) {
+                perfFloorOptions(tier)?.forEach { (key, value) ->
+                    // 정수형 렌더 옵션은 "기존 값이 더 낮으면 그 값 유지"(절대 높이지 않음).
                     val flInt = value.toIntOrNull()
                     if (flInt != null) {
                         val cur = currentInt(key)
                         val applied = if (cur != null) minOf(cur, flInt) else flInt
                         upsert(key, applied.toString())
                     } else {
-                        // 불리언/문자열 옵션(renderClouds, fancyGraphics 등)은 그대로 강제.
                         upsert(key, value)
                     }
                 }
-                // 한 번만 적용되도록 마커 남김.
-                runCatching {
-                    marker.parentFile?.mkdirs()
-                    marker.writeText("tier=$tier\nmodCount=$modCount\n")
-                }
-                Log.d("FLAME_LAUNCHER",
-                    "⚙️ 첫 실행 성능 하향 적용: tier=$tier modCount=$modCount floor=$floor")
+                Log.d("FLAME_LAUNCHER", "⚙️ 첫 실행 성능 하향 적용: tier=$tier modCount=$modCount")
             }
-        } else if (tier != PerfTier.VANILLA) {
-            Log.d("FLAME_LAUNCHER",
-                "⚙️ 성능 하향 건너뜀(이미 적용됨): tier=$tier modCount=$modCount")
+
+            // 한 번만 적용되도록 마커 남김 (이후 실행은 사용자 설정 보존).
+            runCatching {
+                marker.parentFile?.mkdirs()
+                marker.writeText("tier=$tier\nmodCount=$modCount\n")
+            }
+            Log.d("FLAME_LAUNCHER", "📝 options.txt 최초 1회 초기화 완료")
+        } else {
+            Log.d("FLAME_LAUNCHER", "📝 options.txt 이미 초기화됨 — 사용자 설정 보존(mipmapLevels 만 보정)")
+        }
+
+        // ── mipmapLevels 만 예외: 매 실행 강제 0 (최초/이후 무관) ──
+        //   밉맵이 1 이상이면 blocks 텍스처 아틀라스가 밉맵 포함 형태로 생성되는데,
+        //   Mali-G57 + Zink(OSMesa) 조합에서 libGLES_mali 가 힙을 손상시켜 Scudo
+        //   "corrupted chunk header" 로 강제 종료된다(렌더 스레드). 0 이면 크래시가 사라진다.
+        //   → 크래시 방지는 타협 불가이므로 사용자 설정 보존 대상에서 제외하고 항상 0 으로 강제.
+        if (currentInt("mipmapLevels") != 0) {
+            upsert("mipmapLevels", "0")
+            Log.d("FLAME_LAUNCHER", "🛡️ mipmapLevels=0 강제(Mali-G57 힙 손상 크래시 방지)")
         }
 
         // 핫바 영역 계산용 — options.txt 의 guiScale 을 읽어둔다(없으면 0=자동).
@@ -3290,10 +3391,47 @@ class MinecraftActivity : BaseActivity() {
         loadHotbarTouchScale()
 
         optionsFile.writeText(existing.joinToString("\n"))
-        Log.d("FLAME_LAUNCHER",
-            "📝 options.txt sync: maxFps=$targetMaxFps vsync=$targetVsync " +
-                    "renderDist=${currentInt("renderDistance")} simDist=${currentInt("simulationDistance")} " +
-                    "tier=$tier mipmap=0")
+    }
+
+    /**
+     * Iris 셰이더 전역 설정(config/iris.properties)에 그림자 렌더 거리를 최소로 주입한다.
+     *
+     * Iris 의 IrisConfig 는 iris.properties 의 `maxShadowRenderDistance`(기본 32)를 읽어
+     * 그림자 패스 렌더 반경을 결정한다. 이 값이 클수록 그림자 패스에서 렌더하는 청크가 많아져
+     * 모바일/Zink·MobileGlues 환경에서 큰 부하가 된다. 최소(=1)로 낮춰 부하를 줄인다.
+     *
+     * options.txt 와 동일하게 **최초 1회만** 적용한다(.flame_iris_applied 마커).
+     * 이후엔 사용자가 게임 내 Iris 설정에서 바꾼 값을 보존한다.
+     * 셰이더를 한 번도 안 켰으면 iris.properties 가 없을 수 있는데, 그 경우에도 미리 만들어 둔다
+     * (Iris 가 로드되며 자기 키들을 추가하고, 우리가 심은 maxShadowRenderDistance 는 그대로 존중됨).
+     */
+    private fun syncIrisProperties(irisFile: File) {
+        // Iris(셰이더)는 Fabric/NeoForge 양쪽에서 동작하므로 로더로 거르지 않는다.
+        // 셰이더 미사용 인스턴스면 단지 iris.properties 가 미리 생길 뿐 부작용은 없다.
+        val marker = File(irisFile.parentFile, ".flame_iris_applied")
+        if (marker.exists()) {
+            Log.d("FLAME_LAUNCHER", "🌑 iris.properties 이미 초기화됨 — 사용자 그림자 설정 보존")
+            return
+        }
+
+        val lines: MutableList<String> = if (irisFile.exists())
+            irisFile.readLines().toMutableList()
+        else
+            mutableListOf()
+
+        val key = "maxShadowRenderDistance"
+        val idx = lines.indexOfFirst { it.startsWith("$key=") }
+        val line = "$key=1"   // 최소 — 그림자 렌더 거리 최소(부하 최소화)
+        if (idx >= 0) lines[idx] = line else lines.add(line)
+
+        runCatching {
+            irisFile.parentFile?.mkdirs()
+            irisFile.writeText(lines.joinToString("\n"))
+            marker.writeText("maxShadowRenderDistance=1\n")
+            Log.d("FLAME_LAUNCHER", "🌑 iris.properties 최초 1회 — maxShadowRenderDistance=1(그림자 거리 최소)")
+        }.onFailure {
+            Log.w("FLAME_LAUNCHER", "🌑 iris.properties 쓰기 실패: ${it.message}")
+        }
     }
 
     /**

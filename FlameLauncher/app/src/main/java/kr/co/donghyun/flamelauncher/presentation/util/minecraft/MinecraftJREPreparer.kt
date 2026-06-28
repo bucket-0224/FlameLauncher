@@ -116,12 +116,84 @@ class MinecraftJREPreparer {
                     }
                     Log.i(TAG, "✅ Caciocavallo 복사 완료 (${cacioJars.size}개)")
                 }
+            } else {
+                // ── JRE9+ (17/21/25): modern 버전 AWT 지원 ────────────────────────────
+                // (1) cacio17 jar 복사 (JVMSettings 의 JRE9+ 분기가 -Xbootclasspath/a: 로 참조)
+                val cacio17Dir = File(context.filesDir, "caciocavallo17")
+                cacio17Dir.mkdirs()
+                val cacio17Jars = listOf(
+                    "cacio-shared-1.18-SNAPSHOT.jar",
+                    "cacio-tta-1.18-SNAPSHOT.jar"
+                )
+                val needsCopy17 = cacio17Jars.any { !File(cacio17Dir, it).exists() }
+                if (needsCopy17) {
+                    Log.i(TAG, "📦 Caciocavallo17 복사 시작...")
+                    for (jar in cacio17Jars) {
+                        copyAsset(context, "caciocavallo17/$jar", File(cacio17Dir, jar))
+                    }
+                    Log.i(TAG, "✅ Caciocavallo17 복사 완료 (${cacio17Jars.size}개)")
+                }
+
+                // (2) JRE 의 libawt_xawt.so 를 APK 의 X11-free 스텁으로 교체
+                //
+                // 왜 필요한가:
+                //   FancyMenu/Dice 등이 java.awt.Color 를 호출하면 Toolkit.loadLibraries 가
+                //   System.loadLibrary("awt_xawt") 를 실행하는데, 이건 SONAME 점유와 무관하게
+                //   JRE 의 절대경로(jre17/lib/libawt_xawt.so)에서 파일을 다시 찾아 로드한다.
+                //   JRE 본 libawt_xawt.so 는 X11(libXrender 등) 의존이라 Android 에서 로드 실패 →
+                //   UnsatisfiedLinkError 로 게임이 죽는다.
+                //   cacio 가 toolkit 을 가로채도 이 "로드 시도" 자체는 일어나므로,
+                //   JRE 의 libawt_xawt.so 를 APK 의 의존성 없는 스텁으로 덮어써서 로드를 성공시킨다.
+                //   (cacio 가 그 위에서 toolkit 을 점유하므로 실제 X11 호출은 발생하지 않는다.)
+                replaceJreXawtWithStub(context, targetDir)
             }
             val libJvm = targetDir.walkTopDown().firstOrNull { it.name == "libjvm.so" }
                 ?: throw Exception("❌ jre${major}_runtime 안에 libjvm.so 없음")
             libJvm.setExecutable(true, false)
             Log.i(TAG, "🎯 libjvm.so: ${libJvm.absolutePath}")
             return libJvm.absolutePath
+        }
+
+        /**
+         * JRE 의 libawt_xawt.so 를 APK 에 들어있는 X11-free 스텁으로 덮어쓴다.
+         * modern(JRE9+) 에서 AWT 의존 모드(FancyMenu/Dice 등)가 Toolkit.loadLibraries 로
+         * libawt_xawt.so 를 절대경로 로드할 때 UnsatisfiedLinkError 가 나지 않게 한다.
+         *
+         * 멱등(idempotent): 이미 스텁으로 바뀐 경우 파일 크기로 감지해 재복사를 건너뛴다.
+         */
+        private fun replaceJreXawtWithStub(context: Context, jreRuntimeDir: File) {
+            // APK 의 네이티브 라이브러리 디렉토리. 추출된 .so 들이 위치한다.
+            val nativeDir = File(context.applicationInfo.nativeLibraryDir)
+            val stub = File(nativeDir, "libawt_xawt.so")
+            if (!stub.exists()) {
+                Log.w(TAG, "⚠️ APK 스텁 libawt_xawt.so 없음 (${stub.absolutePath}) — xawt 교체 건너뜀")
+                return
+            }
+
+            // JRE lib 디렉토리는 libawt.so 가 있는 곳(libawt_xawt.so 와 같은 폴더).
+            val jreLibDir = jreRuntimeDir.walkTopDown()
+                .firstOrNull { it.name == "libawt.so" }
+                ?.parentFile
+            if (jreLibDir == null) {
+                Log.w(TAG, "⚠️ JRE lib 디렉토리(libawt.so 위치)를 못 찾음 — xawt 교체 건너뜀")
+                return
+            }
+
+            val target = File(jreLibDir, "libawt_xawt.so")
+
+            // 이미 스텁과 동일 크기면(=교체 완료) 건너뛴다.
+            if (target.exists() && target.length() == stub.length()) {
+                Log.i(TAG, "ℹ️ JRE libawt_xawt.so 이미 스텁으로 교체됨 — 건너뜀")
+                return
+            }
+
+            try {
+                stub.copyTo(target, overwrite = true)
+                target.setExecutable(true, false)
+                Log.i(TAG, "✅ JRE libawt_xawt.so 를 APK 스텁으로 교체: ${target.absolutePath} (${target.length()}B)")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ JRE libawt_xawt.so 교체 실패: ${e.message}")
+            }
         }
 
 

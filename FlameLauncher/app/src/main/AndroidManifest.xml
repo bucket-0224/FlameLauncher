@@ -19,6 +19,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- VpnService 자체는 별도 uses-permission 불필요(서비스에 BIND_VPN_SERVICE 로 보호) -->
 
+    <!-- (A-2) Android 11+(targetSdk 30+) 패키지 가시성 ─────────────────
+         외부 렌더러 플러그인(MobileGlues) APK 를 queryIntentActivities(MAIN) 로
+         감지하려면 아래 <queries> 가 있어야 한다. MobileGlues 패키지를 명시하고,
+         FCL/Zalith 계열 렌더러 플러그인을 폭넓게 보기 위해 MAIN intent 도 함께 둔다. -->
+    <queries>
+        <package android:name="com.fcl.plugin.mobileglues" />
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:allowNativeHeapPointerTagging="false"

@@ -20,6 +20,11 @@ data class InstanceMeta(
     val gameJvmArgs: List<String> = emptyList(), // Fabric profile의 arguments.jvm
     val gameArgs: List<String> = emptyList(),    // Fabric profile의 arguments.game
     val sourceModId: Int? = null,
+    /**
+     * 이 인스턴스에 사용할 렌더러 id ("zink" / "gl4es" / "mobileglues").
+     * null 이면 전역 기본 렌더러(RendererManager.load)를 따른다 — 하위호환(기존 인스턴스 json엔 키 없음).
+     */
+    val rendererId: String? = null,
 )
 
 object InstanceManager {
@@ -57,6 +62,26 @@ object InstanceManager {
 
     fun deleteInstance(context: Context, id: String) {
         instanceDir(context, id).deleteRecursively()
+    }
+
+    // ── 인스턴스별 렌더러 ───────────────────────────────────────────
+
+    /**
+     * 이 인스턴스에 설정된 렌더러 id 를 읽는다. 설정 안 했으면 null.
+     * (null 이면 호출 측에서 전역 기본 렌더러로 폴백)
+     */
+    fun loadRendererId(context: Context, id: String): String? =
+        loadMeta(instanceDir(context, id))?.rendererId
+
+    /**
+     * 이 인스턴스의 렌더러 id 를 갱신·저장한다. 메타가 없으면 무시(false).
+     * @param rendererId "zink"/"gl4es"/"mobileglues", 또는 null(전역 기본 사용)
+     * @return 저장 성공 여부
+     */
+    fun updateRendererId(context: Context, id: String, rendererId: String?): Boolean {
+        val meta = loadMeta(instanceDir(context, id)) ?: return false
+        saveMeta(context, meta.copy(rendererId = rendererId))
+        return true
     }
 
     fun vanillaId(versionId: String) = "vanilla_$versionId"

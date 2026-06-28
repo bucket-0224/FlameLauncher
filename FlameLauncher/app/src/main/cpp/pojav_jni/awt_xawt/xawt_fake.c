@@ -210,6 +210,9 @@ Java_sun_awt_UNIXToolkit_unload_1gtk(JNIEnv *env, jclass klass)
     return JNI_FALSE;
 }
 
+JNIEXPORT void JNICALL Java_java_awt_Font_initIDs(JNIEnv *env, jclass cls) {}
+
+
 // ============================================================
 // X11FontScaler stubs
 // libfontmanager.so가 X11FontScaler.c와 함께 빌드되어 17개 AWT*

@@ -31,6 +31,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -41,6 +43,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kr.co.donghyun.flamelauncher.data.jvm.JvmSettings
 import kr.co.donghyun.flamelauncher.data.jvm.JvmSettingsManager
+import kr.co.donghyun.flamelauncher.data.renderer.Renderer
+import kr.co.donghyun.flamelauncher.data.renderer.RendererPluginManager
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgBorder
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgDark
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgSurface
@@ -63,12 +67,20 @@ import kotlin.math.roundToInt
  * @param loaderInstalled 이 인스턴스에 Forge/NeoForge/Fabric 이 설치돼 있으면 true.
  *                        false 면 모드 추가 메뉴를 비활성화한다(바닐라엔 모드 못 넣음).
  * @param loaderLabel     표시용 로더 이름("Forge"/"Fabric"/"NeoForge"). 없으면 null.
+ *
+ * @param currentRendererId 이 인스턴스에 저장된 렌더러 id. null 이면 전역 기본을 따른다.
+ * @param onRendererSelected 렌더러를 고르면 호출(저장은 Activity 가 InstanceManager 로 처리).
+ *                           null 을 넘기면 "전역 기본 사용"으로 되돌린다.
+ * @param onInstallMobileGlues MobileGlues 미설치 상태에서 설치 안내를 눌렀을 때(브라우저 등).
  */
 @Composable
 fun InstanceSettingsScreen(
     instanceName : String,
     loaderInstalled : Boolean,
     loaderLabel : String?,
+    currentRendererId : String?,
+    onRendererSelected : (rendererId : String?) -> Unit,
+    onInstallMobileGlues : () -> Unit,
     launchMapPicker : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
     launchModPicker : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
     importModpack : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
@@ -85,6 +97,7 @@ fun InstanceSettingsScreen(
     val deletedFinish = remember { mutableStateOf(false) }
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
+    var showRendererPicker by remember { mutableStateOf(false) }
     val isImporting by importing
     val msg by importMessage
     val finishNow by deletedFinish
@@ -102,7 +115,7 @@ fun InstanceSettingsScreen(
             .padding(16.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth()) {
-            // ── 헤더 ──
+            // ── 헤더 (상단 고정 — 스크롤되지 않음) ──
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = finish) {
                     Text("뒤로", color = TextSecondary, fontSize = if (tablet) 14.sp else 11.sp)
@@ -117,68 +130,97 @@ fun InstanceSettingsScreen(
 
             Spacer(Modifier.height(20.dp))
 
-            // ── 콘텐츠 추가 ──
-            SectionLabel("콘텐츠 추가")
-            Spacer(Modifier.height(8.dp))
+            // ── 헤더 아래 내용만 스크롤 ──
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
+            ) {
+                // ── 그래픽 ──
+                SectionLabel("그래픽")
+                Spacer(Modifier.height(8.dp))
 
-            // 모드(.jar) 추가 — 로더가 깔린 인스턴스에서만 활성
-            SettingRow(
-                emoji = "🧩",
-                title = "모드 추가 (.jar)",
-                subtitle = if (loaderInstalled)
-                    "${loaderLabel ?: "로더"} · .jar 모드 파일을 mods 에 추가"
-                else
-                    "Forge / Fabric / NeoForge 설치 시 사용 가능",
-                enabled = !isImporting && loaderInstalled,
-            ) { launchModPicker(importMessage, importing) }
+                // 렌더러 — 인스턴스별 설정. 탭하면 선택 다이얼로그.
+                val mgAvailable = RendererPluginManager.isMobileGluesAvailable()
+                val rendererLabel = rendererDisplayLabel(currentRendererId)
+                val rendererSub = when {
+                    currentRendererId == null -> "전역 기본값 사용 · 탭하여 이 인스턴스 전용으로 변경"
+                    currentRendererId == "mobileglues" && !mgAvailable ->
+                        "MobileGlues 미설치 — 실행 시 Zink로 폴백됩니다"
+                    else -> "이 인스턴스 전용 렌더러"
+                }
+                SettingRow(
+                    emoji = rendererEmoji(currentRendererId),
+                    title = "렌더러 · $rendererLabel",
+                    subtitle = rendererSub,
+                    enabled = !isImporting,
+                ) { showRendererPicker = true }
 
-            Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(20.dp))
 
-            // 월드(맵) 가져오기 — 기존
-            SettingRow(
-                emoji = "🗺",
-                title = "월드(맵) 가져오기",
-                subtitle = "zip 으로 받은 월드를 saves 에 추가",
-                enabled = !isImporting,
-            ) { launchMapPicker(importMessage, importing) }
+                // ── 콘텐츠 추가 ──
+                SectionLabel("콘텐츠 추가")
+                Spacer(Modifier.height(8.dp))
 
-            Spacer(Modifier.height(20.dp))
+                // 모드(.jar) 추가 — 로더가 깔린 인스턴스에서만 활성
+                SettingRow(
+                    emoji = "🧩",
+                    title = "모드 추가 (.jar)",
+                    subtitle = if (loaderInstalled)
+                        "${loaderLabel ?: "로더"} · .jar 모드 파일을 mods 에 추가"
+                    else
+                        "Forge / Fabric / NeoForge 설치 시 사용 가능",
+                    enabled = !isImporting && loaderInstalled,
+                ) { launchModPicker(importMessage, importing) }
 
-            // ── 모드팩 ──
-            SectionLabel("모드팩")
-            Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
 
-            // 모드팩 가져오기 — zip 의 mods/config 를 현재 인스턴스에 풀어넣음
-            SettingRow(
-                emoji = "📥",
-                title = "모드팩 가져오기",
-                subtitle = "모드팩(zip)의 모드·설정을 이 인스턴스에 추가합니다",
-                enabled = !isImporting,
-            ) { importModpack(importMessage, importing) }
+                // 월드(맵) 가져오기 — 기존
+                SettingRow(
+                    emoji = "🗺",
+                    title = "월드(맵) 가져오기",
+                    subtitle = "zip 으로 받은 월드를 saves 에 추가",
+                    enabled = !isImporting,
+                ) { launchMapPicker(importMessage, importing) }
 
-            Spacer(Modifier.height(10.dp))
+                Spacer(Modifier.height(20.dp))
 
-            // 모드팩으로 추출 — 현재 mods/config 를 manifest 와 함께 zip 으로 저장
-            SettingRow(
-                emoji = "📦",
-                title = "모드팩으로 추출",
-                subtitle = "현재 mods·config 를 모드팩(zip)으로 내보냅니다",
-                enabled = !isImporting,
-            ) { exportModpack(importMessage, importing) }
+                // ── 모드팩 ──
+                SectionLabel("모드팩")
+                Spacer(Modifier.height(8.dp))
 
-            Spacer(Modifier.height(20.dp))
+                // 모드팩 가져오기 — zip 의 mods/config 를 현재 인스턴스에 풀어넣음
+                SettingRow(
+                    emoji = "📥",
+                    title = "모드팩 가져오기",
+                    subtitle = "모드팩(zip)의 모드·설정을 이 인스턴스에 추가합니다",
+                    enabled = !isImporting,
+                ) { importModpack(importMessage, importing) }
 
-            // ── 관리 ──
-            SectionLabel("관리")
-            Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
 
-            SettingRow(
-                emoji = "🗑",
-                title = "인스턴스 삭제",
-                subtitle = "이 인스턴스와 모든 데이터를 삭제합니다",
-                enabled = !isImporting,
-                danger = true,
-            ) { showDeleteConfirm = true }
+                // 모드팩으로 추출 — 현재 mods/config 를 manifest 와 함께 zip 으로 저장
+                SettingRow(
+                    emoji = "📦",
+                    title = "모드팩으로 추출",
+                    subtitle = "현재 mods·config 를 모드팩(zip)으로 내보냅니다",
+                    enabled = !isImporting,
+                ) { exportModpack(importMessage, importing) }
+
+                Spacer(Modifier.height(20.dp))
+
+                // ── 관리 ──
+                SectionLabel("관리")
+                Spacer(Modifier.height(8.dp))
+
+                SettingRow(
+                    emoji = "🗑",
+                    title = "인스턴스 삭제",
+                    subtitle = "이 인스턴스와 모든 데이터를 삭제합니다",
+                    enabled = !isImporting,
+                    danger = true,
+                ) { showDeleteConfirm = true }
+            }
         }
 
         // ── 진행 다이얼로그 (모드 추가/월드·모드팩 가져오기/모드팩 추출 공용) ──
@@ -202,6 +244,22 @@ fun InstanceSettingsScreen(
                     }
                 }
             }
+        }
+
+        // ── 렌더러 선택 다이얼로그 ──
+        if (showRendererPicker) {
+            RendererPickerDialog(
+                currentRendererId = currentRendererId,
+                onDismiss = { showRendererPicker = false },
+                onSelect = { id ->
+                    showRendererPicker = false
+                    onRendererSelected(id)
+                },
+                onInstallMobileGlues = {
+                    showRendererPicker = false
+                    onInstallMobileGlues()
+                },
+            )
         }
 
         // ── 삭제 확인 다이얼로그 ──
@@ -390,5 +448,133 @@ private fun SettingRow(
             Text(subtitle, color = TextSecondary, fontSize = 11.sp)
         }
         Text("›", color = TextSecondary, fontSize = 20.sp)
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 렌더러 선택 UI
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** currentRendererId → 표시 라벨. null 이면 "전역 기본". */
+private fun rendererDisplayLabel(id: String?): String = when (id) {
+    null          -> "전역 기본"
+    else          -> Renderer.fromId(id).displayName
+}
+
+/** currentRendererId → 이모지. null 이면 일반 팔레트. */
+private fun rendererEmoji(id: String?): String = when (id) {
+    null -> "🎨"
+    else -> Renderer.fromId(id).emoji
+}
+
+/**
+ * 렌더러 선택 다이얼로그.
+ *  - "전역 기본 사용" + 내부 렌더러(Zink/GL4ES) + (설치 시) MobileGlues 를 라디오 형태로 나열.
+ *  - MobileGlues 가 미설치면 비활성 + "설치" 안내 버튼을 보여준다.
+ */
+@Composable
+private fun RendererPickerDialog(
+    currentRendererId: String?,
+    onDismiss: () -> Unit,
+    onSelect: (rendererId: String?) -> Unit,
+    onInstallMobileGlues: () -> Unit,
+) {
+    val mgAvailable = RendererPluginManager.isMobileGluesAvailable()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = BgSurface,
+        title = { Text("렌더러 선택", color = TextPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.fillMaxWidth()) {
+                // 전역 기본 사용 (rendererId = null)
+                RendererOption(
+                    emoji = "🎨",
+                    title = "전역 기본 사용",
+                    desc = "런처 전체 기본 렌더러 설정을 따릅니다.",
+                    selected = currentRendererId == null,
+                    enabled = true,
+                    onClick = { onSelect(null) },
+                )
+                Spacer(Modifier.height(8.dp))
+
+                // 내부 렌더러: Zink, GL4ES
+                Renderer.entries.filter { !it.isPlugin }.forEach { r ->
+                    RendererOption(
+                        emoji = r.emoji,
+                        title = r.displayName,
+                        desc = r.description,
+                        selected = currentRendererId == r.id,
+                        enabled = true,
+                        onClick = { onSelect(r.id) },
+                    )
+                    Spacer(Modifier.height(8.dp))
+                }
+
+                // 외부 플러그인 렌더러: MobileGlues
+                val mg = Renderer.MOBILEGLUES
+                RendererOption(
+                    emoji = mg.emoji,
+                    title = mg.displayName + if (!mgAvailable) " (미설치)" else "",
+                    desc = if (mgAvailable) mg.description
+                    else "별도 앱(MobileGlues)을 설치해야 사용할 수 있습니다.",
+                    selected = currentRendererId == mg.id,
+                    enabled = mgAvailable,
+                    onClick = { if (mgAvailable) onSelect(mg.id) },
+                )
+
+                if (!mgAvailable) {
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = onInstallMobileGlues) {
+                        Text("MobileGlues 설치 안내 열기 ›", color = FlamePrimary, fontSize = 12.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("닫기", color = TextSecondary) }
+        },
+    )
+}
+
+/** 라디오 형태의 렌더러 한 줄. */
+@Composable
+private fun RendererOption(
+    emoji: String,
+    title: String,
+    desc: String,
+    selected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    val borderColor = if (selected) FlamePrimary else BgBorder
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (enabled) 1f else 0.45f)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) Flame.copy(alpha = 0.12f) else BgDark)
+            .border(if (selected) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(10.dp))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(emoji, fontSize = 20.sp)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                title,
+                color = if (selected) FlamePrimary else TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(desc, color = TextSecondary, fontSize = 11.sp)
+        }
+        if (selected) {
+            Spacer(Modifier.width(8.dp))
+            Text("✓", color = FlamePrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        }
     }
 }
