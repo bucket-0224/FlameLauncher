@@ -190,18 +190,13 @@ void gl_make_current(gl_render_window_t* bundle) {
         if (cur_ctx == bundle->context && cur_surf == bundle->surface) {
             return;
         }
-        LOGI("gl_bridge: bundle stale — rebinding");
     }
 
     if(bundle->surface == NULL) {
         gl_swap_surface(bundle);
     }
-    EGLBoolean mc_result = eglMakeCurrent_p(g_EglDisplay, bundle->surface,
-                                            bundle->surface, bundle->context);
-    EGLint mc_error = eglGetError_p();
-    LOGI("eglMakeCurrent result=%d error=0x%04x", mc_result, mc_error);
-
-    // ★ 끝. LTW init 호출 절대 안 함.
+    eglMakeCurrent_p(g_EglDisplay, bundle->surface,
+                     bundle->surface, bundle->context);
 }
 
 void gl_swap_buffers() {

@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -46,9 +47,11 @@ import kr.co.donghyun.flamelauncher.data.renderer.RendererPluginManager
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.components.GameControllerView
 import kr.co.donghyun.flamelauncher.presentation.ui.components.InGameMenuOverlay
+import kr.co.donghyun.flamelauncher.presentation.ui.components.DisabledModsOverlay
+import kr.co.donghyun.flamelauncher.presentation.ui.components.DisabledModInfo
 import kr.co.donghyun.flamelauncher.presentation.ui.components.MinecraftBootOverlay
 import kr.co.donghyun.flamelauncher.presentation.ui.components.MinecraftSurface
-import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlameLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.util.MinecraftActivityBridge
 import kr.co.donghyun.flamelauncher.presentation.util.dns.DnsHookNative
 import kr.co.donghyun.flamelauncher.presentation.util.forge.startBuilderAndWaitExitBlocking
@@ -141,6 +144,11 @@ class MinecraftActivity : BaseActivity() {
 
     // ☰ 인게임 메뉴(설정/온라인 LAN) 표시 여부. GameControllerView 의 ☰ 버튼이 true 로 만든다.
     private var showInGameMenu by mutableStateOf(false)
+
+    // 기기 비호환으로 자동 비활성화된 모드 목록 + 첫 프레임 후 알림 팝업 표시 여부.
+    //   disableUnsupportedMods(실행 전) 가 채우고, 첫 프레임 콜백에서 비어있지 않으면 팝업을 띄운다.
+    private val disabledModsList = mutableStateListOf<DisabledModInfo>()
+    private var showDisabledModsPopup by mutableStateOf(false)
     private var bootModCount by mutableIntStateOf(0)
     private var bootMaxDelayMin by mutableIntStateOf(2)
     @Volatile private var bootOverlayDismissed = false
@@ -148,6 +156,8 @@ class MinecraftActivity : BaseActivity() {
 
     companion object {
         private const val EXTRA_VERSION_ID = "version_id"
+        // ELF e_machine 값: arm64. jar 내 .so 가 이 기기에서 로드 가능한지 판정에 사용.
+        private const val ELF_EM_AARCH64 = 183
         private const val EXTRA_ASSET_INDEX = "asset_index"
         private const val EXTRA_EXTRA_JARS = "extra_jars"
         private const val EXTRA_MAIN_CLASS = "main_class"
@@ -343,7 +353,7 @@ class MinecraftActivity : BaseActivity() {
         })
 
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 Box(modifier = Modifier.fillMaxSize()) {
                     MinecraftSurface(
                         onSurfaceCreated = { surface, _ ->
@@ -387,6 +397,14 @@ class MinecraftActivity : BaseActivity() {
                             controllerVisible = gameControllerView?.isControllerVisible ?: true,
                             onToggleController = { gameControllerView?.toggleControllerVisible() },
                             onClose = { showInGameMenu = false },
+                        )
+                    }
+
+                    // ⚠️ 기기 비호환으로 비활성화된 모드 안내(첫 프레임 후 1회).
+                    if (showDisabledModsPopup && disabledModsList.isNotEmpty()) {
+                        DisabledModsOverlay(
+                            disabled = disabledModsList.toList(),
+                            onClose = { showDisabledModsPopup = false },
                         )
                     }
                     // 🎮 컨트롤러 표시 토글은 GameControllerView 내부(좌상단 버튼)에서 자체 처리.
@@ -452,7 +470,13 @@ class MinecraftActivity : BaseActivity() {
 
         // 첫 프레임 콜백 등록 (렌더 스레드에서 불리므로 UI 스레드로 전환)
         MinecraftActivityBridge.setFirstFrameListener {
-            runOnUiThread { dismissBootOverlay("first-frame") }
+            runOnUiThread {
+                dismissBootOverlay("first-frame")
+                // 기기 비호환으로 비활성화된 모드가 있으면, 게임 진입 직후 1회 안내.
+                if (disabledModsList.isNotEmpty()) {
+                    showDisabledModsPopup = true
+                }
+            }
         }
 
         MinecraftActivityBridge.setFpsListener { fps ->
@@ -1798,26 +1822,143 @@ class MinecraftActivity : BaseActivity() {
      */
     private fun disableUnsupportedMods(modsDir: File) {
         if (!modsDir.isDirectory) return
-        // 로드 불가 모드의 파일명 prefix (소문자 비교). controlling 은 제외하기 위해 '-' 포함.
-        val blocked = listOf("controllable-forge", "controllable-sdl", "crashassistant")
+
+        // 비활성화 목록 초기화(재실행 대비)
+        disabledModsList.clear()
+
+        // ── (1) 파일명 prefix 블랙리스트 (소문자, startsWith) ──
+        //   네이티브 스캔으로 못 잡는 케이스를 보강한다.
+        //   - controllable-*: SDL/Forge 컨트롤러 네이티브 (안드로이드 미지원)
+        //   - crashassistant: 데스크탑 전용 크래시 UI
+        //   - axiom: imgui 네이티브를 System.loadLibrary 로 직접 로드(jar 밖) → 스캔 회피하므로 명시.
+        //     (x86_64 .so 동봉 또는 imgui-javaarm64 런타임 의존, 둘 다 이 기기에서 불가)
+        //   주의: "controlling"(옵션 검색 모드)은 네이티브 없이 정상 동작 → 제외 안 함. '-' 포함으로 구분.
+        val blockedPrefixes = listOf(
+            "controllable-forge", "controllable-sdl", "crashassistant",
+            "axiom", "flashback"
+        )
+        // 사유 라벨 매핑(접두사 → 설명). 매칭 안 되면 기본 문구.
+        fun prefixReason(lower: String): String = when {
+            lower.startsWith("axiom") -> "데스크톱 전용 ImGui 네이티브 필요 (arm64 미지원)"
+            lower.startsWith("controllable") -> "SDL 컨트롤러 네이티브 (arm64 미지원)"
+            lower.startsWith("crashassistant") -> "데스크톱 전용 모드"
+            else -> "안드로이드 미지원 모드"
+        }
+
         modsDir.listFiles()?.forEach { f ->
             if (!f.isFile) return@forEach
             val name = f.name
             if (!name.endsWith(".jar", ignoreCase = true)) return@forEach
             val lower = name.lowercase()
-            if (blocked.any { lower.startsWith(it) }) {
-                val disabled = File(f.parentFile, "$name.pingdisabled")
-                try {
-                    if (disabled.exists()) disabled.delete()
-                    if (f.renameTo(disabled)) {
-                        Log.d("FLAME_LAUNCHER", "🚫 모드 로드 제외 (Android 미지원): $name")
-                    } else {
-                        Log.w("FLAME_LAUNCHER", "⚠️ 모드 제외 실패 (rename): $name")
+
+            // (1) prefix 블랙리스트
+            val prefixHit = blockedPrefixes.any { lower.startsWith(it) }
+            // (2) jar 내부 네이티브 ABI 스캔: .so 가 있는데 arm64 가 하나도 없으면 데스크탑 전용으로 판정
+            val nativeVerdict = if (prefixHit) null else scanJarNativeAbi(f)
+
+            val reason: String? = when {
+                prefixHit -> prefixReason(lower)
+                nativeVerdict != null -> nativeVerdict
+                else -> null
+            }
+            if (reason == null) return@forEach  // 호환 → 그대로 둠
+
+            val disabled = File(f.parentFile, "$name.pingdisabled")
+            try {
+                if (disabled.exists()) disabled.delete()
+                if (f.renameTo(disabled)) {
+                    Log.d("FLAME_LAUNCHER", "🚫 모드 로드 제외 ($reason): $name")
+                    disabledModsList.add(DisabledModInfo(displayName = name, reason = reason))
+                } else {
+                    Log.w("FLAME_LAUNCHER", "⚠️ 모드 제외 실패 (rename): $name")
+                }
+            } catch (e: Exception) {
+                Log.w("FLAME_LAUNCHER", "⚠️ 모드 제외 중 오류: $name — ${e.message}")
+            }
+        }
+
+        if (disabledModsList.isNotEmpty()) {
+            Log.i("FLAME_LAUNCHER", "🚫 기기 비호환 모드 ${disabledModsList.size}개 비활성화됨")
+        }
+    }
+
+    /**
+     * jar 안의 네이티브 라이브러리(.so) ABI 를 스캔해 "데스크탑 전용" 여부를 판정한다.
+     *
+     * 판정 규칙:
+     *  - .so 엔트리가 하나도 없으면 → null (네이티브 없는 순수 자바 모드. 호환)
+     *  - .so 가 있는데 그중 arm64(EM_AARCH64) 가 하나라도 있으면 → null (이 기기에서 로드 가능)
+     *  - .so 가 있는데 arm64 가 전혀 없으면(x86_64/x86/arm32 등만) → 사유 문자열 반환(비호환)
+     *
+     * ELF 헤더만 읽으므로 가볍다(엔트리당 20바이트). 큰 jar 도 .so 만 골라 헤더만 본다.
+     * .dll/.dylib 만 있는 경우도 데스크탑 전용으로 본다.
+     */
+    private fun scanJarNativeAbi(jar: File): String? {
+        var sawSo = false
+        var sawArm64 = false
+        var sawForeignNative = false  // .dll/.dylib 또는 비-arm64 .so
+        try {
+            java.util.zip.ZipFile(jar).use { zf ->
+                val entries = zf.entries()
+                while (entries.hasMoreElements()) {
+                    val e = entries.nextElement()
+                    if (e.isDirectory) continue
+                    val en = e.name.lowercase()
+                    when {
+                        en.endsWith(".so") -> {
+                            sawSo = true
+                            val machine = readElfMachine(zf, e)
+                            if (machine == ELF_EM_AARCH64) sawArm64 = true
+                            else if (machine != null) sawForeignNative = true
+                            // machine == null(헤더 못읽음)은 판단 보류
+                        }
+                        en.endsWith(".dll") || en.endsWith(".dylib") || en.endsWith(".jnilib") -> {
+                            sawForeignNative = true
+                        }
                     }
-                } catch (e: Exception) {
-                    Log.w("FLAME_LAUNCHER", "⚠️ 모드 제외 중 오류: $name — ${e.message}")
                 }
             }
+        } catch (e: Exception) {
+            Log.w("FLAME_LAUNCHER", "⚠️ jar 네이티브 스캔 실패(무시): ${jar.name} — ${e.message}")
+            return null  // 스캔 실패 시 보수적으로 비활성화하지 않음
+        }
+
+        // arm64 .so 가 있으면 무조건 호환(다른 ABI 가 섞여 있어도 이 기기는 arm64 를 씀)
+        if (sawArm64) return null
+        // arm64 는 없는데 데스크탑/타 ABI 네이티브가 있으면 비호환
+        if (sawSo && sawForeignNative) return "데스크톱 전용 네이티브 포함 (arm64 .so 없음)"
+        if (!sawSo && sawForeignNative) return "데스크톱 전용 네이티브(.dll/.dylib) 포함"
+        // .so 가 있지만 전부 헤더를 못 읽은 애매한 경우 → 호환으로 둔다(오탐 방지)
+        return null
+    }
+
+    /**
+     * ZipEntry(=.so)의 ELF 헤더에서 e_machine(아키텍처) 값을 읽는다.
+     * ELF: 0~3 매직(0x7F 'E' 'L' 'F'), 18~19 e_machine(LE, 2바이트).
+     * @return e_machine 값, 또는 ELF 가 아니거나 읽기 실패 시 null
+     */
+    private fun readElfMachine(zf: java.util.zip.ZipFile, entry: java.util.zip.ZipEntry): Int? {
+        return try {
+            zf.getInputStream(entry).use { ins ->
+                val head = ByteArray(20)
+                var read = 0
+                while (read < 20) {
+                    val r = ins.read(head, read, 20 - read)
+                    if (r < 0) break
+                    read += r
+                }
+                if (read < 20) return null
+                // ELF 매직 확인
+                if (head[0].toInt() != 0x7F || head[1].toInt().toChar() != 'E' ||
+                    head[2].toInt().toChar() != 'L' || head[3].toInt().toChar() != 'F'
+                ) return null
+                // e_machine: offset 18, little-endian u16
+                val lo = head[18].toInt() and 0xFF
+                val hi = head[19].toInt() and 0xFF
+                (hi shl 8) or lo
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -1855,10 +1996,18 @@ class MinecraftActivity : BaseActivity() {
             val isBare = a in JLI_TWO_TOKEN_OPTS
             if (isBare && i + 1 < args.size) {
                 val v = args[i + 1]
+                // JNI_CreateJavaVM 경로(=JAVA_TOOL_OPTIONS 와 동일, JLI launcher 파싱 없음)에서는
+                // launcher 전용 옵션을 반드시 한-토큰 "옵션=값" 형식으로 줘야 인식된다.
+                //   • 두-토큰 "--add-opens" "A=B"  → JNI 에서 "Unrecognized option: --add-opens"
+                //   • 한-토큰 "--add-opens=A=B"     → 정상 (named 타겟 =cpw.mods.securejarhandler 포함)
+                // (ref: JDK-8320860 — JAVA_TOOL_OPTIONS 는 '=' 형식 필수)
+                // 따라서 -Djdk.module.* 로 변환하지 않고 단순히 '=' 로 결합만 한다.
+                //   (-Djdk.module.addOpens 프로퍼티는 named 타겟을 제대로 적용하지 못해 부적합)
                 val canonical = if (a == "-p") "--module-path" else a
                 out.add("$canonical=$v")
                 i += 2
             } else {
+                // 이미 "--add-opens=..." 처럼 '=' 가 붙은 한-토큰은 그대로 둔다(정상 형식).
                 out.add(a)
                 i++
             }
@@ -2454,23 +2603,22 @@ class MinecraftActivity : BaseActivity() {
             else   -> "libgl4es_114.so"
         }
 
-        Log.i("PingLauncherJVM", "🎨 Selected glLibName=$glLibName (renderer=${renderer.id})")
+        Log.i("FlameLauncherJVM", "🎨 Selected glLibName=$glLibName (renderer=${renderer.id})")
 
-        // ── LWJGL 렌더러 라이브러리 지정 (ZL2 GameLauncher.loadGraphicsLibrary 와 동일) ──
-        //   LWJGL 의 GL.createCapabilities() 는 GL 함수 포인터를 이 시스템 프로퍼티가 가리키는
-        //   라이브러리에서 가져온다(org.lwjgl.opengl.PojavRendererInit.onCreateCapabilities).
-        //   MobileGlues 는 GL 함수를 자기 .so(libmobileglues.so)가 직접 제공하므로 그 절대경로를
-        //   반드시 넘겨야 한다. 이게 없으면 EGL 컨텍스트가 있어도 함수 로딩이 실패해
-        //   "no OpenGL context current in the current thread" 로 죽는다(MobileGlues 한정).
-        //   native env 의 LIBGL_NAME 과는 별개의 경로다(그쪽은 C 브리지가, 이쪽은 LWJGL Java 가 본다).
-        val rendererLibArgs: Array<String> =
-            if (renderer.id == "zink") {
-                // Zink(OSMesa)는 LWJGL 이 OSMesa 전용 경로로 로드하므로 지정 불필요(넘겨도 무해하나 생략).
-                emptyArray()
-            } else {
-                arrayOf("-Dorg.lwjgl.opengl.libname=$glLibName")
-            }
-        Log.i("PingLauncherJVM", "🎨 org.lwjgl.opengl.libname=${rendererLibArgs.joinToString()}")
+        // ── LWJGL 렌더러 라이브러리 지정 (ZL2 GameLauncher.progressFinalUserArgs 와 동일) ──
+        //   ZL2 는 렌더러 종류와 무관하게 항상 -Dorg.lwjgl.opengl.libname 을 emit 한다
+        //   (zink 포함; VulkanZinkRenderer.getRendererLibrary() = libOSMesa_8.so).
+        //   이 프로퍼티가 없으면 LWJGL 의 GL.create() 가 시스템 기본(데스크탑 GLX) 경로로
+        //   폴백해 libGLX.so.0 을 찾다가 UnsatisfiedLinkError 로 죽는다(안드로이드엔 GLX 없음).
+        //   → zink 도 반드시 libOSMesa.so 를 명시해야 한다. (과거 zink 를 emptyArray 로
+        //     비웠던 것이 libGLX 크래시의 원인이었다.)
+        //   MobileGlues 는 GLES3 백엔드라 opengles 경로로도 GL 심볼을 찾을 수 있어 opengles 도 함께 준다
+        //   (zink/gl4es 에는 불필요하지만 무해).
+        val rendererLibArgs: Array<String> = arrayOf(
+            "-Dorg.lwjgl.opengl.libname=$glLibName",
+            "-Dorg.lwjgl.opengles.libname=$glLibName"
+        )
+        Log.i("FlameLauncherJVM", "🎨 lwjgl libname args=${rendererLibArgs.joinToString()}")
 
         // ── classpath 중복 제거 ─────────────────────────────────────
         val seenAbs = HashSet<String>()
@@ -2571,7 +2719,11 @@ class MinecraftActivity : BaseActivity() {
                     classPath = classPathStr,
                     libraryPath = nativesDir.absolutePath,
                     mainClass = mainClass,
-                    versionId = versionId
+                    versionId = versionId,
+                    // resolveRendererForVersion() 으로 이미 해석한 렌더러를 그대로 넘겨
+                    // JVMSettings 내부 RendererManager.load 와의 불일치를 없앤다.
+                    // (이 불일치가 opengl.libname 중복/충돌의 근본 원인이었다)
+                    rendererId = renderer.id
                 ) +
                 dnsArgs +
                 rendererLibArgs +     // ★ -Dorg.lwjgl.opengl.libname (MobileGlues GL 함수 로딩에 필수)
@@ -3071,16 +3223,32 @@ class MinecraftActivity : BaseActivity() {
      *   versionId 예: "1.12.2", "1.7.10", "1.5.2", "b1.7.3", "1.16.5"(→false)
      */
     private fun isPre113Version(versionId: String): Boolean {
-        // 베타(b1.x)/알파(a1.x)/인퍼니티 등 아주 옛 표기는 무조건 레거시.
-        val low = versionId.lowercase()
+        val v = versionId.trim()
+        val low = v.lowercase()
+
+        // ── 1) 아주 옛 표기 (베타/알파/인데브/클래식) → 무조건 레거시 ──
         if (low.startsWith("b1.") || low.startsWith("a1.") ||
             low.startsWith("c0.") || low.startsWith("inf-") || low.startsWith("rd-")) {
             return true
         }
-        // "1.<minor>(.patch)" 패턴에서 minor 추출.
-        val m = Regex("""\b1\.(\d+)(?:\.\d+)?""").find(versionId) ?: return false
-        val minor = m.groupValues[1].toIntOrNull() ?: return false
-        // 1.0 ~ 1.12 = pre-1.13 (레거시). 1.13 이상은 모던.
+
+        // ── 2) 주간 스냅샷 (YYwWWn, 예: 17w43a / 26w08b) ──
+        // 1.13 첫 스냅샷 = 17w43a. (year, week) < (17, 43) 이면 pre-1.13.
+        Regex("""^(\d{2})w(\d{2})[a-z~]""").find(low)?.let { mw ->
+            val year = mw.groupValues[1].toInt()
+            val week = mw.groupValues[2].toInt()
+            return when {
+                year != 17 -> year < 17       // 16w.. 이하=레거시, 18w.. 이상=모던
+                else        -> week < 43       // 17년이면 43주차가 경계
+            }
+        }
+
+        // ── 3) 정식 릴리스 / pre-release (예: 1.12.2, 1.13-pre7, 26.1.2) ──
+        // 맨 앞 major.minor 만 정수로 비교. major≠1 이면(2,21,26...) 전부 모던.
+        val m = Regex("""^(\d+)\.(\d+)""").find(v) ?: return false
+        val major = m.groupValues[1].toIntOrNull() ?: return false
+        val minor = m.groupValues[2].toIntOrNull() ?: return false
+        if (major != 1) return false
         return minor <= 12
     }
 

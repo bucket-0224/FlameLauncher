@@ -25,7 +25,7 @@ class ModrinthAPI {
     private val baseUrl = "https://api.modrinth.com/v2"
 
     // TODO: 연락처/리포 주소를 실제 값으로 바꾸면 차단 위험이 더 낮아진다.
-    private val userAgent = "donghyun/FlameLauncher/1.0 (kr.co.donghyun.pinglauncher)"
+    private val userAgent = "donghyun/FlameLauncher/1.0 (kr.co.donghyun.flamelauncher)"
 
     private fun buildRequest(url: String): Request =
         Request.Builder()

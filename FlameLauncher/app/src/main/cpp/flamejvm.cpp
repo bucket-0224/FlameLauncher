@@ -917,8 +917,16 @@ Java_kr_co_donghyun_flamelauncher_presentation_util_jni_JavaNativeLauncher_bootM
                 new_ld = old_str_ld;
             }
         }
+        // ★ JRE 의 lib 와 lib/jli 도 LD_LIBRARY_PATH 에 포함한다 (ZL2 getRuntimeLibraryPath 와 동일).
+        //   libinstrument.so / libjli.so 및 그 의존성이 dlopen 검색 경로에서 해결되도록 보장.
+        std::string jli_dir = java_lib_dir + "/jli";
+        for (const std::string& extra : { java_lib_dir, jli_dir }) {
+            if (new_ld.find(extra) == std::string::npos) {
+                new_ld += ":" + extra;
+            }
+        }
         setenv("LD_LIBRARY_PATH", new_ld.c_str(), 1);
-        LOGI("  🔗 LD_LIBRARY_PATH=%s (cacio CTCScreen 용)", getenv("LD_LIBRARY_PATH"));
+        LOGI("  🔗 LD_LIBRARY_PATH=%s (cacio CTCScreen + JRE jli/instrument 용)", getenv("LD_LIBRARY_PATH"));
     } else {
         LOGE("  ⚠️ POJAV_NATIVEDIR 미설정 — LD_LIBRARY_PATH 보강 불가, cacio 초기화가 NPE 로 죽을 수 있음");
     }
@@ -943,7 +951,27 @@ Java_kr_co_donghyun_flamelauncher_presentation_util_jni_JavaNativeLauncher_bootM
         preload(pojavexec_apk, "libpojavexec.so (APK)");
     }
 
-    // ── OpenJDK 의존성 체인 (verify → java → zip → net → nio) ──
+    // ── OpenJDK 의존성 체인 (jli → verify → java → zip → net → nio) ──
+    //
+    // ★ libjli.so 를 가장 먼저 dlopen 한다 (ZL2 dlopenJavaRuntime 와 동일 순서).
+    //   -javaagent 로 instrument agent 를 띄우면 JVM 이 libinstrument.so 를 로드하는데,
+    //   libinstrument.so 는 libjli.so 의 심볼에 의존한다. jli 가 먼저 RTLD_GLOBAL 로
+    //   올라와 있지 않으면 instrument 의 의존성이 안 풀려 dlopen 이 실패하고,
+    //   Android linker 는 이를 "library libinstrument.so not found" 로 뭉뚱그려 보고한다.
+    //   (NeoForge 처럼 --module-path/--add-modules 를 쓰는 경우 특히 두드러진다.)
+    //   jli 는 보통 lib/jli/libjli.so 에 있고, 없으면 lib/libjli.so 에 있다.
+    {
+        std::string jli_sub = java_lib_dir + "/jli/libjli.so";
+        std::string jli_flat = java_lib_dir + "/libjli.so";
+        if (!is_already_loaded("libjli.so")) {
+            if      (preload(jli_sub,  "libjli.so (jli/)")) {}
+            else if (preload(jli_flat, "libjli.so")) {}
+            else LOGE("  ⚠️ libjli.so 로드 실패 — -javaagent(cacio) 가 libinstrument.so 를 못 찾을 수 있음");
+        } else {
+            LOGI("  ℹ️ libjli.so 이미 로드됨");
+        }
+    }
+
     std::string verify_path = java_lib_dir + "/libverify.so";
     std::string java_path   = java_lib_dir + "/libjava.so";
     std::string zip_path    = java_lib_dir + "/libzip.so";
@@ -955,6 +983,19 @@ Java_kr_co_donghyun_flamelauncher_presentation_util_jni_JavaNativeLauncher_bootM
     preload(zip_path,    "libzip.so");
     preload(net_path,    "libnet.so");
     preload(nio_path,    "libnio.so");
+
+    // ★ libinstrument.so 를 명시적으로 preload 한다.
+    //   파일은 lib/libinstrument.so 에 존재하지만, JVM 의 agent 로더가 찾는 경로
+    //   (sun.boot.library.path)와 dlopen 검색 경로가 module-path 처리 중 어긋날 수 있어
+    //   미리 RTLD_GLOBAL 로 올려두면 agent 단계에서 확실히 해결된다. jli 다음에 둔다.
+    {
+        std::string instrument_path = java_lib_dir + "/libinstrument.so";
+        if (!is_already_loaded("libinstrument.so")) {
+            preload(instrument_path, "libinstrument.so (cacio agent 의존)");
+        } else {
+            LOGI("  ℹ️ libinstrument.so 이미 로드됨");
+        }
+    }
 
     // ── Legacy AWT 체인 (1.5.2 ~ 1.12.2 호환) ───────────────────
     // libawt → libawt_xawt(JRE, 이미 SONAME 점유됨) → libawt_headless → libfontmanager
@@ -1009,7 +1050,7 @@ Java_kr_co_donghyun_flamelauncher_presentation_util_jni_JavaNativeLauncher_bootM
     vm_args.version = JNI_VERSION_1_8;
     vm_args.nOptions = jvm_arg_count;
     vm_args.options = options.data();
-    vm_args.ignoreUnrecognized = JNI_TRUE;
+    vm_args.ignoreUnrecognized = JNI_FALSE;
 
     // user.dir 처리
     for (int i = 0; i < jvm_arg_count; i++) {

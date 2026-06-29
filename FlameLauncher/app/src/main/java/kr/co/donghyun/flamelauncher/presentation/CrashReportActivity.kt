@@ -50,7 +50,7 @@ class CrashReportActivity : BaseActivity() {
         modsDir = File(instanceDirFile, "mods")
 
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 val logPath by _logPath.asStateFlow().collectAsState()
                 val logContent by _logContent.asStateFlow().collectAsState()
                 val isLoading by _isLoading.asStateFlow().collectAsState()

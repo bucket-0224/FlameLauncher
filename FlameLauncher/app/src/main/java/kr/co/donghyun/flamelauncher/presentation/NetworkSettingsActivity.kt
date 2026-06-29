@@ -48,7 +48,7 @@ class NetworkSettingsActivity : BaseActivity() {
             statusBarStyle = SystemBarStyle.dark(scrim = android.graphics.Color.TRANSPARENT)
         )
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 NetworkSettingsScreen(onBack = { finish() })
             }
         }

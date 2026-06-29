@@ -18,7 +18,7 @@ import kr.co.donghyun.flamelauncher.data.renderer.Renderer
 import kr.co.donghyun.flamelauncher.data.renderer.RendererPluginManager
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.screen.InstanceSettingsScreen
-import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlameLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.util.maps.MapImporter
 import kr.co.donghyun.flamelauncher.presentation.util.mods.ModImporter
 import kr.co.donghyun.flamelauncher.presentation.util.mods.ModpackExporter
@@ -130,7 +130,7 @@ class InstanceSettingsActivity : BaseActivity() {
         )
 
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 InstanceSettingsScreen(
                     instanceName = instanceName,
                     loaderInstalled = loaderLabel != null,

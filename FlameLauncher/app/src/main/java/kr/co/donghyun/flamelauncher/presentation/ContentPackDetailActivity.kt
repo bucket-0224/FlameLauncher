@@ -51,6 +51,7 @@ import kr.co.donghyun.flamelauncher.data.jvm.isLegacyVersion
 import kr.co.donghyun.flamelauncher.data.mods.ContentSource
 import kr.co.donghyun.flamelauncher.data.mods.CurseForgeFile
 import kr.co.donghyun.flamelauncher.data.mods.CurseForgeListResponse
+import kr.co.donghyun.flamelauncher.data.mods.ModrinthVersion
 import kr.co.donghyun.flamelauncher.presentation.util.mods.ModrinthAPI
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -157,6 +158,13 @@ class ContentPackDetailActivity : BaseActivity() {
     private val _versionFiles = MutableStateFlow<List<CurseForgeFile>>(emptyList())
     private val _versionLoading = MutableStateFlow(false)
 
+    // ── Modrinth 모드팩 전용: 설치 전 버전 선택 단계 ──
+    //   CurseForge 와 동일한 흐름이지만 모델(ModrinthVersion)과 표시 필드(versionType/datePublished)가 달라
+    //   별도 다이얼로그(ModrinthVersionDialog)를 쓴다.
+    private val _showMrVersionDialog = MutableStateFlow(false)
+    private val _mrVersionList = MutableStateFlow<List<ModrinthVersion>>(emptyList())
+    private val _mrVersionLoading = MutableStateFlow(false)
+
     companion object {
         // "1.x" / "1.x.y" 형태만 매칭 (gameVersions 의 로더 태그와 MC 버전 구분)
         private val MC_VERSION_REGEX = Regex("""^\d+\.\d+(\.\d+)?$""")
@@ -176,7 +184,8 @@ class ContentPackDetailActivity : BaseActivity() {
         const val EXTRA_TARGET_VERSION = "target_version"           // 새 인스턴스 생성 시
         const val EXTRA_TARGET_LOADER = "target_loader"             // 새 인스턴스 생성 시 (ModLoader.name)
         const val EXTRA_TARGET_WORLD = "target_world"               // 데이터팩 설치 대상 월드명
-        const val EXTRA_TARGET_FILE_ID = "target_file_id"           // 모드팩: 사용자가 고른 파일(버전) id
+        const val EXTRA_TARGET_FILE_ID = "target_file_id"           // 모드팩(CurseForge): 사용자가 고른 파일(버전) id (Int)
+        const val EXTRA_TARGET_MR_VERSION_ID = "target_mr_version_id" // 모드팩(Modrinth): 사용자가 고른 버전 id (String)
 
         fun start(
             context: Context,
@@ -227,7 +236,7 @@ class ContentPackDetailActivity : BaseActivity() {
         _isInstalled.value = instanceDir.resolve("instance.json").exists()
 
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 val detail by _detail.asStateFlow().collectAsState()
                 val isLoading by _isLoading.asStateFlow().collectAsState()
                 val isInstalled by _isInstalled.asStateFlow().collectAsState()
@@ -421,6 +430,28 @@ class ContentPackDetailActivity : BaseActivity() {
                             }
                         )
                     }
+
+                    // Modrinth 모드팩 버전 선택 다이얼로그
+                    val showMrVersionDialog by _showMrVersionDialog.asStateFlow().collectAsState()
+                    val mrVersionList by _mrVersionList.asStateFlow().collectAsState()
+                    val mrVersionLoading by _mrVersionLoading.asStateFlow().collectAsState()
+                    if (showMrVersionDialog) {
+                        ModrinthVersionDialog(
+                            modName = modName,
+                            versions = mrVersionList,
+                            isLoading = mrVersionLoading,
+                            onDismiss = { _showMrVersionDialog.value = false },
+                            onSelect = { version ->
+                                _showMrVersionDialog.value = false
+                                setResult(RESULT_OK, Intent()
+                                    .putExtra(EXTRA_MOD_ID, modId)
+                                    .putExtra(EXTRA_MOD_KEY, modKey)
+                                    .putExtra("action", "install")
+                                    .putExtra(EXTRA_TARGET_MR_VERSION_ID, version.id))
+                                finish()
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -491,14 +522,24 @@ class ContentPackDetailActivity : BaseActivity() {
         modKey: String,
         modStringId: String,
     ) {
-        // Modrinth 모드팩: 버전 선택 없이 바로 설치 요청(브라우저가 최신 .mrpack 선택).
-        //   그 외 타입(모드/데이터팩/리소스팩/셰이더)은 아래 공통 설치-타겟 흐름으로 진행한다.
+        // Modrinth 모드팩: CurseForge 와 동일하게 "어떤 버전을 받을지" 사용자가 고르게 한다.
+        //   버전 목록을 받아 ModrinthVersionDialog 를 띄우고, 고른 version id(String)를 결과로 전달.
         if (source == ContentSource.MODRINTH && contentType == ContentType.MODPACK) {
-            setResult(RESULT_OK, Intent()
-                .putExtra(EXTRA_MOD_ID, modId)
-                .putExtra(EXTRA_MOD_KEY, modKey)
-                .putExtra("action", "install"))
-            finish()
+            _mrVersionLoading.value = true
+            _mrVersionList.value = emptyList()
+            _showMrVersionDialog.value = true
+            lifecycleScope.launch(Dispatchers.IO) {
+                // 모드팩(.mrpack) 파일을 가진 버전만. release > beta > alpha, 그다음 최신순.
+                val rank = mapOf("release" to 0, "beta" to 1, "alpha" to 2)
+                val versions = ModrinthAPI().getVersions(modStringId)
+                    .filter { v -> v.files.any { it.primary } || v.files.isNotEmpty() }
+                    .sortedWith(
+                        compareBy<ModrinthVersion> { rank[it.versionType] ?: 3 }
+                            .thenByDescending { it.datePublished ?: "" }
+                    )
+                _mrVersionList.value = versions
+                _mrVersionLoading.value = false
+            }
             return
         }
 
@@ -552,13 +593,18 @@ class ContentPackDetailActivity : BaseActivity() {
                     }
                 }
                 val includeVanilla = !contentType.requiresModLoader && loaderSet.isEmpty()
+                // _supportedMcVersions 는 데이터팩 안내 표기용으로만 노출(기존 동작 유지).
                 val supportedMcVersions = if (contentType == ContentType.DATAPACK) mcVersionSet else emptySet()
+                // 인스턴스 리스트 필터용 — MOD/데이터팩은 버전 민감하므로 이 모드가 지원하는
+                //   MC 버전 합집합으로 거른다. (리소스팩/셰이더는 버전 너그러워 미적용)
+                val mcVersionFilter = if (contentType == ContentType.MOD || contentType == ContentType.DATAPACK)
+                    mcVersionSet else emptySet()
 
                 _supportedLoaders.value = loaderSet
                 _supportedMcVersions.value = supportedMcVersions
                 _supportedCombos.value = combos.map { (v, l) -> VersionLoaderCombo(v, l, mcVersionSortKey(v)) }
                     .sortedByDescending { it.sortKey }
-                _loaderInstances.value = scanInstances(includeVanilla, loaderSet, supportedMcVersions)
+                _loaderInstances.value = scanInstances(includeVanilla, loaderSet, mcVersionFilter)
                 _showInstallTargetDialog.value = true
                 return@launch
             }
@@ -576,17 +622,23 @@ class ContentPackDetailActivity : BaseActivity() {
             val includeVanilla = !contentType.requiresModLoader && supported.isEmpty()
 
             // 3) 데이터팩은 MC 버전(pack_format)에 민감 → 호환 버전 인스턴스만 노출.
+            //    _supportedMcVersions 는 데이터팩 안내 표기용으로만 노출(기존 동작 유지).
             val supportedMcVersions = if (contentType == ContentType.DATAPACK)
                 extractSupportedMcVersions(files)
             else emptySet()
             _supportedMcVersions.value = supportedMcVersions
 
+            // 인스턴스 리스트 필터용 — MOD/데이터팩은 버전 민감하므로 이 모드가 지원하는
+            //   MC 버전 합집합으로 거른다. (리소스팩/셰이더는 버전 너그러워 미적용)
+            val mcVersionFilter = if (contentType == ContentType.MOD || contentType == ContentType.DATAPACK)
+                extractSupportedMcVersions(files) else emptySet()
+
             // 4) (MC 버전 × 로더) 조합 자동 감지 — 새 인스턴스 만들기에서 한 번에 선택
             //    로더가 필요 없는 콘텐츠(allowVanilla)는 로더 없는 버전-only 조합으로.
             _supportedCombos.value = extractVersionLoaderCombos(files, includeVanilla)
 
-            // 5) 인스턴스 목록 — 로더 + (데이터팩이면) MC 버전 필터 적용
-            _loaderInstances.value = scanInstances(includeVanilla, supported, supportedMcVersions)
+            // 5) 인스턴스 목록 — 로더 + (MOD/데이터팩이면) MC 버전 필터 적용
+            _loaderInstances.value = scanInstances(includeVanilla, supported, mcVersionFilter)
             _showInstallTargetDialog.value = true
         }
     }
@@ -1448,6 +1500,172 @@ private fun InfoChip(text: String, fg: Color, fontSize: androidx.compose.ui.unit
     ) {
         Text(text, color = fg, fontSize = fontSize, fontWeight = FontWeight.Medium, maxLines = 1)
     }
+}
+
+/**
+ * Modrinth 모드팩 "버전 선택" 다이얼로그.
+ *
+ * CurseForge 의 [ModpackVersionDialog] 와 레이아웃은 동일하지만,
+ * 모델이 ModrinthVersion 이고 표시 정보가 다르다:
+ *   - 표시 이름: 모델 표준 필드(versionNumber/name)가 모델에 없을 수 있어 파일명으로 폴백
+ *   - versionType (release/beta/alpha) 배지 — 문자열이라 [releaseTypeToInt] 로 변환해 기존 배지 재사용
+ *   - 타겟 MC 버전(gameVersions 중 "1.x[.y]")
+ *   - 모드로더(loaders 첫 항목)
+ *   - 게시 날짜(datePublished, ISO8601 → yyyy-MM-dd)
+ */
+@Composable
+private fun ModrinthVersionDialog(
+    modName: String,
+    versions: List<ModrinthVersion>,
+    isLoading: Boolean,
+    onDismiss: () -> Unit,
+    onSelect: (ModrinthVersion) -> Unit,
+) {
+    val tablet = isTablet()
+    val maxDialogHeight = (LocalConfiguration.current.screenHeightDp * 0.9f).dp
+
+    val titleSize    = if (tablet) 18.sp else 14.sp
+    val descSize     = if (tablet) 13.sp else 11.sp
+    val itemTitle    = if (tablet) 14.sp else 12.sp
+    val itemSub      = if (tablet) 12.sp else 10.sp
+    val chipSize     = if (tablet) 11.sp else 9.sp
+    val buttonSize   = if (tablet) 13.sp else 11.sp
+
+    val dialogWidthRatio = if (tablet) 0.7f else 0.95f
+    val outerPad   = if (tablet) 22.dp else 16.dp
+    val verticalGap = if (tablet) 16.dp else 12.dp
+    val itemPadH   = if (tablet) 14.dp else 11.dp
+    val itemPadV   = if (tablet) 12.dp else 10.dp
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black.copy(alpha = 0.7f))
+                .clickable(onClick = onDismiss),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth(dialogWidthRatio)
+                    .heightIn(max = maxDialogHeight)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(BgSurface)
+                    .border(1.dp, BgBorder, RoundedCornerShape(14.dp))
+                    .clickable(enabled = false) {}
+                    .imePadding()
+                    .padding(outerPad),
+                verticalArrangement = Arrangement.spacedBy(verticalGap)
+            ) {
+                // ── 헤더 (고정) ──
+                Text(
+                    "설치할 버전 선택",
+                    color = TextMain, fontSize = titleSize, fontWeight = FontWeight.Bold,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "$modName · 원하는 모드팩 버전을 고르세요. 의존성은 설치 시 자동으로 채워집니다.",
+                    color = TextSub, fontSize = descSize
+                )
+
+                // ── 가운데 리스트 (스크롤) ──
+                Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+                    when {
+                        isLoading -> {
+                            Row(
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                                horizontalArrangement = Arrangement.Center,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                CircularProgressIndicator(color = Flame, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
+                                Spacer(Modifier.width(10.dp))
+                                Text("버전 목록 불러오는 중...", color = TextSub, fontSize = descSize)
+                            }
+                        }
+                        versions.isEmpty() -> {
+                            Text(
+                                "표시할 버전이 없습니다. 네트워크 상태를 확인하거나 잠시 후 다시 시도해 주세요.",
+                                color = TextSub, fontSize = descSize,
+                                modifier = Modifier.padding(vertical = 16.dp)
+                            )
+                        }
+                        else -> {
+                            LazyColumn(
+                                modifier = Modifier.fillMaxSize(),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                items(versions) { version ->
+                                    val mcVer = version.gameVersions
+                                        .firstOrNull { Regex("""^\d+\.\d+(\.\d+)?$""").matches(it.trim()) }
+                                    val loader = version.loaders.firstOrNull()
+                                        ?.replaceFirstChar { it.uppercase() }
+                                    val date = formatFileDate(version.datePublished)
+                                    // 표시 이름: 모델에 이름 필드가 없을 수 있어 primary 파일명으로 폴백
+                                    val displayName = version.files.firstOrNull { it.primary }?.filename
+                                        ?: version.files.firstOrNull()?.filename
+                                        ?: "버전 ${mcVer ?: ""}".trim()
+
+                                    Column(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(BgItem)
+                                            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+                                            .clickable { onSelect(version) }
+                                            .padding(horizontal = itemPadH, vertical = itemPadV),
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        // 1줄: 버전 이름 + versionType 배지
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            Text(
+                                                text = displayName,
+                                                color = TextMain, fontSize = itemTitle, fontWeight = FontWeight.Bold,
+                                                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            ReleaseTypeBadge(releaseTypeToInt(version.versionType), chipSize)
+                                        }
+                                        // 2줄: MC 버전 · 로더 · 날짜
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            InfoChip(text = mcVer?.let { "MC $it" } ?: "MC 미상", fg = Flame, fontSize = chipSize)
+                                            InfoChip(text = loader ?: "로더 미상", fg = TextSub, fontSize = chipSize)
+                                            if (date != null) {
+                                                Text("· $date", color = TextSub, fontSize = itemSub, maxLines = 1)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── 하단 버튼 (고정) ──
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = onDismiss) {
+                        Text("취소", color = TextSub, fontSize = buttonSize)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Modrinth versionType("release"/"beta"/"alpha") → ReleaseTypeBadge 가 쓰는 Int(1/2/3) */
+private fun releaseTypeToInt(versionType: String?): Int = when (versionType?.lowercase()) {
+    "release" -> 1
+    "beta"    -> 2
+    else      -> 3   // alpha 및 미상
 }
 
 /** ISO8601("2024-03-01T12:34:56.789Z") → "2024-03-01". 파싱 실패/없으면 null. */

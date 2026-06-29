@@ -54,7 +54,12 @@ data class JvmSettings(
         classPath: String,
         libraryPath: String,
         mainClass: String,
-        versionId : String
+        versionId : String,
+        // 호출자(MinecraftActivity.resolveRendererForVersion)가 이미 해석한 렌더러 id.
+        // null 이면 과거처럼 RendererManager.load 로 폴백하지만, 그 경우 인스턴스별
+        // rendererId(InstanceMeta) 를 무시해 MinecraftActivity 와 값이 어긋날 수 있으므로
+        // 가능하면 항상 넘긴다. (이 불일치가 opengl.libname 중복/충돌의 원인이었다)
+        rendererId: String? = null
     ): Array<String> {
         val args = mutableListOf(
             "-Xmx${maxHeapMb}M",
@@ -93,31 +98,31 @@ data class JvmSettings(
             )
         }
 
-        val renderer = RendererManager.load(context)
+        // 렌더러 결정: 호출자가 넘긴 rendererId 를 최우선으로 신뢰한다.
+        // (MinecraftActivity.resolveRendererForVersion 이 InstanceMeta.rendererId →
+        //  전역 기본 → MobileGlues 미설치 폴백 → pre-1.13 GL4ES 강제까지 모두 반영한 값)
+        // 넘어오지 않은 경우에만 과거 동작(RendererManager.load)으로 폴백.
+        val resolvedRendererId = rendererId ?: RendererManager.load(context).id
 
         // pre-1.13(1.12.x 이하) 레거시는 Zink(OSMesa)로 못 돌리므로 GL4ES 로 강제.
-        //   ⚠️ 여기서 RendererManager.load 가 사용자 설정(예: zink)을 그대로 읽으면
-        //   -Dorg.lwjgl.opengl.libname 이 libOSMesa.so 로 박혀 LWJGL 이 OSMesa 를 로드하고,
-        //   GL4ES env(LIBGL_NAME 등)가 무색해져 검은 화면이 된다.
-        //   MinecraftActivity.resolveRendererForVersion() 과 동일 기준으로 여기서도 오버라이드.
+        //   rendererId 를 넘겨받았다면 이미 resolveRendererForVersion 에서 동일 처리가
+        //   끝났지만, 폴백 경로(rendererId == null)를 위해 여기서도 한 번 더 보정한다.
         val legacyForceGl4es = isLegacyVersion(versionId)
-        val effectiveRendererId = if (legacyForceGl4es && renderer.id != "gl4es" && renderer.id != "gl4es_desktop")
-            "gl4es" else renderer.id
-
-        val glLibName = when (effectiveRendererId) {
-            "mobileglues" -> "libmobileglues.so"
-            "gl4es", "gl4es_desktop", "holy_gl4es" -> "libgl4es_114.so"
-            "zink" -> "libOSMesa.so"
-            else   -> "libgl4es_114.so"
-        }
+        val effectiveRendererId = if (legacyForceGl4es &&
+            resolvedRendererId != "gl4es" && resolvedRendererId != "gl4es_desktop")
+            "gl4es" else resolvedRendererId
 
         args += listOf(
             "-Duser.dir=$userDir",
             "-Djava.class.path=$classPath",
             "-Djava.library.path=$libraryPath",
-            "-Dorg.lwjgl.opengl.libname=${glLibName}",
-            // MobileGlues 는 opengles 쪽도 같은 .so 로 묶어줘야 함
-            "-Dorg.lwjgl.opengles.libname=${glLibName}",
+            // ⚠️ org.lwjgl.opengl.libname / opengles.libname 는 여기서 emit 하지 않는다.
+            //    MinecraftActivity.startMinecraft 의 rendererLibArgs 가 단일 소스로 emit하며
+            //    (MobileGlues 는 RendererPluginManager 로 .so 절대경로까지 해석한다),
+            //    여기서 중복 emit 하면 JVM 이 "먼저 정의된 값"을 채택해 충돌한다.
+            //    실제로 과거엔 여기 libOSMesa.so 가 앞쪽([25])에 박혀 MobileGlues 절대경로
+            //    override([69])를 이겨버려, LWJGL 이 OSMesa 를 로드하고 GL 함수 포인터를
+            //    못 잡아 프로세스가 죽었다.
             "-Dorg.lwjgl.librarypath=$libraryPath",
             "-Dping.main.class=$mainClass",
             "-Dorg.lwjgl.system.SharedLibraryExtractPath=$libraryPath",
@@ -130,14 +135,6 @@ data class JvmSettings(
             "-Djava.io.tmpdir=${cacheDirPath}"
         )
 
-
-
-        if (renderer.id == "mobileglues") {
-            args += listOf(
-                "-Dnet.caffeinemc.sodium.checks.skip=true",
-                "-Dsodium.checks.issue2561=false"
-            )
-        }
         // ── Cacio (AWT 가상 백엔드) ──────────────────────────────────────────
         // FancyMenu, Dice, JourneyMap 등 일부 모드가 java.awt.* 를 호출하는데,
         // JRE 에 libawt_xawt.so(headful AWT)가 없어서 headless=true 여도 Toolkit.loadLibraries
@@ -146,8 +143,9 @@ data class JvmSettings(
         //
         // ⚠️ JRE 버전별로 cacio 주입 방식이 완전히 다르다 (둘을 섞으면 안 됨):
         //   - JRE8 : cacio-androidnw-1.10 + -Xbootclasspath/p:(prepend) + net.java.openjdk.cacio.ctc.*
-        //   - JRE9+: cacio-tta/shared-1.18 + -Xbootclasspath/a:(append) + CTCPreloadClassLoader
-        //            + com.github.caciocavallosilano.cacio.ctc.* + --add-exports/--add-opens 풀세트.
+        //   - JRE9+: cacio 1.19.1(shared+tta) + -Xbootclasspath/a:(append)
+        //            + -javaagent:cacio-agent.jar (premain 이 Unsafe 로 Toolkit 설치)
+        //            + com.github.caciocavallosilano.cacio.ctc.* + -Djdk.module.addExports/addOpens 풀세트.
         //            (JRE9+ 에 -Xbootclasspath/p: 를 주면 HotSpot 이 JNI_CreateJavaVM 단계에서
         //             -6(JNI_EINVAL) 으로 JVM 생성을 거부한다. prepend 옵션이 제거됐기 때문.)
         val javaMajor = resolveJavaMajor(versionId)
@@ -184,10 +182,17 @@ data class JvmSettings(
             //   3) 신버전 클래스명 com.github.caciocavallosilano.cacio.ctc.*
             //   4) java.desktop 내부 패키지 개방용 --add-exports / --add-opens 풀세트.
             val cacio17Dir = "${context.filesDir}/caciocavallo17"
+            // ZL2(main) 와 동일한 cacio 1.19.1 세트 + 전용 agent jar.
+            //   ⚠️ agent 는 cacio-tta 와 별개의 파일(cacio-agent.jar)이며 매니페스트에
+            //      Premain-Class(com.github.caciocavallosilano.cacio.agent.CTCJavaAgent) 를 갖는다.
+            //      이 agent 는 premain 에서 sun.misc.Unsafe 로 Toolkit/GraphicsEnvironment 필드를
+            //      직접 덮어써 CTCToolkit 을 설치한다(=privateLookupIn 을 쓰지 않음).
+            //      그래서 system class loader 트릭이 필요 없고, initPhase3 타이밍 문제도 없다.
             val cacio17Jars = listOf(
-                "$cacio17Dir/cacio-shared-1.18-SNAPSHOT.jar",
-                "$cacio17Dir/cacio-tta-1.18-SNAPSHOT.jar"
+                "$cacio17Dir/cacio-shared-1.19.1-SNAPSHOT.jar",
+                "$cacio17Dir/cacio-tta-1.19.1-SNAPSHOT.jar"
             ).joinToString(":")
+            val cacioAgentJar = "$cacio17Dir/cacio-agent.jar"
 
             // 모던: 렌더링은 GL 이 담당. cacio 가상 화면은 AWT 호환용이라 실제 픽셀이면 충분.
             val dm = context.resources.displayMetrics
@@ -199,10 +204,20 @@ data class JvmSettings(
             args += "-Dswing.defaultlaf=javax.swing.plaf.nimbus.NimbusLookAndFeel"
             args += "-Dawt.toolkit=com.github.caciocavallosilano.cacio.ctc.CTCToolkit"
             args += "-Djava.awt.graphicsenv=com.github.caciocavallosilano.cacio.ctc.CTCGraphicsEnvironment"
-            args += "-Djava.system.class.loader=com.github.caciocavallosilano.cacio.ctc.CTCPreloadClassLoader"
+            // ❌ -Djava.system.class.loader=...CTCPreloadClassLoader 는 쓰지 않는다.
+            //    그 방식은 initSystemClassLoader(initPhase3)에서 CTCPreloadClassLoader.<clinit>
+            //    가 MethodHandles.privateLookupIn(java.lang.reflect) 를 호출하는데, 이 시점엔
+            //    addOpens 가 아직 deep-reflection 을 허용할 만큼 안정화되지 않아
+            //    "module java.base does not open java.lang.reflect" 로 죽는다.
+            // ✅ 대신 agent 를 쓴다. premain 은 모듈/open 안정화 이후 실행되고,
+            //    sun.misc.Unsafe 로 Toolkit 필드를 직접 덮어쓰므로 privateLookupIn 이 필요 없다.
+            args += "-javaagent:$cacioAgentJar"
             args += "-Xbootclasspath/a:$cacio17Jars"
 
-            // java.desktop / java.base 내부 패키지 개방 (JRE17 모듈 캡슐화 우회). PojavLauncher 와 동일 세트.
+            // java.desktop / java.base 내부 패키지 개방 (JRE9+ 모듈 캡슐화 우회).
+            //   ZL2 와 동일하게 한-토큰 "--add-exports=A/B=ALL-UNNAMED" 형식으로 emit 한다.
+            //   JNI_CreateJavaVM 경로에서도 한-토큰 '=' 형식은 정상 인식된다(JDK-8320860).
+            //   normalizeJvmArgsForJni 는 이미 '=' 가 붙은 한-토큰을 그대로 통과시킨다.
             args += "--add-exports=java.desktop/java.awt=ALL-UNNAMED"
             args += "--add-exports=java.desktop/java.awt.peer=ALL-UNNAMED"
             args += "--add-exports=java.desktop/sun.awt.image=ALL-UNNAMED"
@@ -223,7 +238,7 @@ data class JvmSettings(
         // ─────────────────────────────────────────────────────────────────────
 
         // MobileGlues 사용 시 Sodium 자체 검증 우회 (1.21+ 셰이더 호환)
-        if (renderer.id == "mobileglues") {
+        if (effectiveRendererId == "mobileglues") {
             args += listOf(
                 "-Dnet.caffeinemc.sodium.checks.skip=true",
                 "-Dsodium.checks.issue2561=false",

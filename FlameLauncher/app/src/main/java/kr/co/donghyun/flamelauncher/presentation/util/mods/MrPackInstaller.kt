@@ -176,7 +176,7 @@ class MrpackInstaller(
         destFile.parentFile?.mkdirs()
         val request = Request.Builder()
             .url(url)
-            .header("User-Agent", "donghyun/FlameLauncher/1.0 (kr.co.donghyun.pinglauncher)")
+            .header("User-Agent", "donghyun/FlameLauncher/1.0 (kr.co.donghyun.flamelauncher)")
             .build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw Exception("다운로드 실패: $url (${response.code})")

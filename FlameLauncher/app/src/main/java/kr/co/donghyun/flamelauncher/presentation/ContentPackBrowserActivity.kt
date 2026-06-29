@@ -9,6 +9,9 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.lifecycleScope
@@ -42,7 +45,11 @@ import kr.co.donghyun.flamelauncher.data.mojang.VersionEntry
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.screen.ContentPackBrowserScreen
 import kr.co.donghyun.flamelauncher.presentation.ui.screen.ContentType
-import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.BgSurface
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.TextMain
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.TextSub
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.Flame
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlameLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.util.fabric.FabricInstaller
 import kr.co.donghyun.flamelauncher.presentation.util.fabric.FabricMetaAPI
 import kr.co.donghyun.flamelauncher.presentation.util.forge.ForgeInstaller
@@ -86,6 +93,9 @@ class ContentPackBrowserActivity : BaseActivity() {
     private val _installedIds = MutableStateFlow<Set<String>>(emptySet())
     private val _hasMore = MutableStateFlow(true)
 
+    // 설치 불가(인스턴스-콘텐츠 버전 불일치 등) 시 띄우는 에러 다이얼로그 메시지. null 이면 숨김.
+    private val _errorDialogMessage = MutableStateFlow<String?>(null)
+
     // CurseForge Podium project ID (modrinth: "podium", CF slug: "podium-sodium")
     private val PODIUM_MOD_ID = 1241894   // ← CurseForge "Podium (Pojav x Sodium)"
 
@@ -128,12 +138,15 @@ class ContentPackBrowserActivity : BaseActivity() {
                 val targetWorld = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_WORLD)
                 val targetFileId = data.getIntExtra(ContentPackDetailActivity.EXTRA_TARGET_FILE_ID, -1)
                     .takeIf { it > 0 }
+                val targetMrVersionId = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_MR_VERSION_ID)
+                    ?.takeIf { it.isNotBlank() }
 
                 val contentType = _selectedContentType.value
                 Log.d("FLAME_LAUNCHER",
                     "install request: mod=${mod.name} type=$contentType " +
                             "targetInstance=$targetInstanceId targetVersion=$targetVersion " +
-                            "targetLoader=$targetLoader targetWorld=$targetWorld targetFileId=$targetFileId")
+                            "targetLoader=$targetLoader targetWorld=$targetWorld " +
+                            "targetFileId=$targetFileId targetMrVersionId=$targetMrVersionId")
 
                 when {
                     // 기존 인스턴스 선택 (데이터팩이면 targetWorld 도 함께 전달)
@@ -144,9 +157,11 @@ class ContentPackBrowserActivity : BaseActivity() {
                     targetVersion != null ->
                         installToNewInstance(mod, targetVersion, targetLoader, contentType)
 
-                    // 그 외 (모드팩 등 — 타겟 선택 없이 바로 설치). 모드팩은 고른 파일(버전) id 전달.
+                    // 그 외 (모드팩 등 — 타겟 선택 없이 바로 설치).
+                    //   CurseForge 모드팩: 고른 파일(버전) id(Int) 전달.
+                    //   Modrinth 모드팩: 고른 버전 id(String) 전달.
                     else ->
-                        installDirect(mod, contentType, targetFileId)
+                        installDirect(mod, contentType, targetFileId, targetMrVersionId)
                 }
             }
             "launch" -> {
@@ -163,7 +178,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         refreshInstalledIds()
 
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 val contentPacks by _contentPacks.asStateFlow().collectAsState()
                 val progress by _progress.asStateFlow().collectAsState()
                 val isLoading by _isLoading.asStateFlow().collectAsState()
@@ -194,6 +209,22 @@ class ContentPackBrowserActivity : BaseActivity() {
                     onInstall = { mod -> openDetailForInstall(mod) },
                     onLaunch = { mod -> launchMod(mod) }
                 )
+
+                // 설치 불가 에러 다이얼로그 — 선택한 인스턴스에 맞는 콘텐츠 버전이 없을 때 등
+                val errorDialogMessage by _errorDialogMessage.asStateFlow().collectAsState()
+                errorDialogMessage?.let { msg ->
+                    AlertDialog(
+                        onDismissRequest = { _errorDialogMessage.value = null },
+                        containerColor = BgSurface,
+                        title = { Text("설치할 수 없음", color = TextMain) },
+                        text = { Text(msg, color = TextSub) },
+                        confirmButton = {
+                            TextButton(onClick = { _errorDialogMessage.value = null }) {
+                                Text("확인", color = Flame)
+                            }
+                        }
+                    )
+                }
             }
         }
 
@@ -565,11 +596,16 @@ class ContentPackBrowserActivity : BaseActivity() {
         categories = emptyList()
     )
 
-    private fun installDirect(mod: ContentItem, contentType: ContentType, fileId: Int? = null) {
-        // Modrinth 는 .mrpack 경로로 분기 (모드팩만 우선 지원). fileId 는 Modrinth 버전 id 문자열을
-        //   별도 경로로 받으므로 여기선 CurseForge 전용.
+    private fun installDirect(
+        mod: ContentItem,
+        contentType: ContentType,
+        fileId: Int? = null,
+        mrVersionId: String? = null,
+    ) {
+        // Modrinth 는 .mrpack 경로로 분기 (모드팩만 우선 지원). 사용자가 버전 선택 다이얼로그에서
+        //   고른 버전 id(mrVersionId)가 있으면 그 버전을, 없으면 최신 버전을 받는다.
         if (mod.source == ContentSource.MODRINTH) {
-            installModrinthModpack(mod)
+            installModrinthModpack(mod, mrVersionId)
             return
         }
         val cfMod = cfModFromItem(mod)
@@ -594,20 +630,29 @@ class ContentPackBrowserActivity : BaseActivity() {
     }
 
     /**
-     * Modrinth 모드팩 설치 — 최신 버전의 primary .mrpack 파일을 받아 MrpackInstaller 로 설치.
-     * (버전 선택 UI 는 3b 단계에서 Detail 에 붙임 — 여기선 최신 버전 사용)
+     * Modrinth 모드팩 설치.
+     *
+     * 흐름:
+     *  1) 설치할 버전 결정 — [mrVersionId] 가 있으면 그 버전, 없으면 .mrpack 을 가진 최신 버전.
+     *  2) 그 버전의 primary .mrpack 을 MrpackInstaller 로 설치 (mods/overrides 전개).
+     *  3) ★ manifest 에 명시됐지만 .mrpack 에 파일이 빠진 required 의존성을 찾아 mods/ 에 보강.
+     *     (Modrinth 모드팩은 보통 의존성을 동봉하지만, external 표기/누락 케이스를 커버)
+     *  4) 공통 마무리(finalizeModpackInstance): 바닐라 MC + 로더 설치 + 메타 저장.
      */
-    private fun installModrinthModpack(mod: ContentItem) {
+    private fun installModrinthModpack(mod: ContentItem, mrVersionId: String? = null) {
         lifecycleScope.launch {
             if (!beginInstall(mod, "${mod.name} 모드팩 설치 중...")) return@launch
             try {
-                val result = withContext(Dispatchers.IO) {
+                val prepared = withContext(Dispatchers.IO) {
                     val versions = modrinthApi.getVersions(mod.id)
-                    val version = versions.firstOrNull { v -> v.files.any { it.primary } }
+                    // 고른 버전 우선, 없으면 .mrpack(primary) 가진 최신, 그것도 없으면 아무 버전
+                    //   ※ ModrinthVersion.id 가 모델에서 다른 이름이면(@SerializedName) 이 한 줄만 맞추면 됨.
+                    val version = mrVersionId?.let { id -> versions.firstOrNull { it.id == id } }
+                        ?: versions.firstOrNull { v -> v.files.any { it.primary } }
                         ?: versions.firstOrNull()
                     val file = version?.files?.firstOrNull { it.primary } ?: version?.files?.firstOrNull()
-                    if (file == null) {
-                        Log.e("FLAME_LAUNCHER", "❌ Modrinth 모드팩 파일 없음: ${mod.id}")
+                    if (version == null || file == null) {
+                        Log.e("FLAME_LAUNCHER", "❌ Modrinth 모드팩 파일 없음: ${mod.id} (ver=$mrVersionId)")
                         return@withContext null
                     }
                     val instanceId = InstanceManager.modpackId(mod.name)
@@ -618,17 +663,31 @@ class ContentPackBrowserActivity : BaseActivity() {
                         modrinthApi = modrinthApi,
                         onProgress = { _progress.value = it }
                     )
-                    installer.install(file.url, mod.name) to instanceDir
+                    Triple(installer.install(file.url, mod.name), instanceDir, version)
                 }
-                if (result == null) {
+                if (prepared == null) {
                     _statusMessage.value = "❌ ${mod.name} 파일 정보를 가져올 수 없음"
                     return@launch
                 }
-                val (installResult, instanceDir) = result
+                val (installResult, instanceDir, rootVersion) = prepared
                 if (!installResult.success) {
                     _statusMessage.value = "❌ ${mod.name} 설치 실패: ${installResult.error ?: "알 수 없음"}"
                     return@launch
                 }
+
+                // ── 3) 누락 의존성 보강 ──
+                //   .mrpack 전개 후 mods/ 를 스캔해, manifest 의 required 의존성 중
+                //   아직 설치 안 된 프로젝트를 호환 버전으로 받아 채운다.
+                _statusMessage.value = "의존성 확인 중..."
+                withContext(Dispatchers.IO) {
+                    installMissingMrpackDependencies(
+                        rootVersion = rootVersion,
+                        instanceDir = instanceDir,
+                        mcVersion = installResult.mcVersion,
+                        loaderType = installResult.loaderType?.lowercase(),
+                    )
+                }
+
                 // .mrpack 설치기가 mods/overrides 를 풀고 (mcVersion, loaderType, loaderVersion) 을 줬으니
                 //   이후 바닐라 다운로드 + 로더 설치 + 메타 저장은 CurseForge 와 동일한 공통 경로를 탄다.
                 finalizeModpackInstance(
@@ -650,6 +709,68 @@ class ContentPackBrowserActivity : BaseActivity() {
                 endInstall()
             }
         }
+    }
+
+    /**
+     * Modrinth 모드팩(.mrpack) 설치 후, manifest 에 required 로 명시됐지만 mods/ 에 파일이 없는
+     * 의존성을 찾아 보강한다.
+     *
+     * 동작:
+     *  - rootVersion.dependencies 의 required 의존성을 BFS 로 재귀 수집 (resolveModrinthDependencies 재사용)
+     *  - 각 의존성 파일이 이미 mods/ 에 있으면 스킵 (파일명 prefix 비교)
+     *  - 없으면 mc/loader 호환 버전을 받아 mods/ 에 떨군다
+     *
+     * 모드팩이 의존성을 이미 동봉한 경우 대부분 여기서 전부 "이미 있음"으로 스킵된다.
+     * external 표기(.mrpack 에 URL 만 있고 파일 미동봉)나 manifest 누락 케이스만 실제로 받는다.
+     */
+    private suspend fun installMissingMrpackDependencies(
+        rootVersion: ModrinthVersion,
+        instanceDir: File,
+        mcVersion: String,
+        loaderType: String?,
+    ) {
+        val depFiles = resolveModrinthDependencies(rootVersion, mcVersion, loaderType)
+        if (depFiles.isEmpty()) {
+            Log.d("FLAME_LAUNCHER", "🩹 mrpack 의존성: 추가로 받을 항목 없음")
+            return
+        }
+
+        val modsDir = (if (isLegacyVersion(mcVersion)) instanceDir.resolve(".minecraft/mods")
+        else instanceDir.resolve("mods")).also { it.mkdirs() }
+
+        // 이미 깔린 jar 들의 prefix 집합 — 같은 모드 다른 파일명이어도 prefix 로 중복 차단
+        val installedPrefixes = (modsDir.listFiles()
+            ?.filter { it.isFile && it.extension == "jar" }
+            ?.map { extractModFilePrefix(it.name).lowercase() }
+            ?.toMutableSet()) ?: mutableSetOf()
+
+        var added = 0
+        depFiles.forEach { f ->
+            val prefix = extractModFilePrefix(f.filename).lowercase()
+            if (prefix in installedPrefixes) {
+                Log.d("FLAME_LAUNCHER", "🩹 의존성 이미 존재(스킵): ${f.filename}")
+                return@forEach
+            }
+            val outFile = modsDir.resolve(f.filename)
+            if (outFile.exists() && outFile.length() == f.size && f.size > 0) {
+                installedPrefixes += prefix
+                return@forEach
+            }
+            try {
+                _statusMessage.value = "의존성 ${f.filename} 다운로드 중..."
+                downloadFile(f.url, outFile, f.filename)
+                if (outFile.exists() && outFile.length() > 0) {
+                    installedPrefixes += prefix
+                    added++
+                    Log.d("FLAME_LAUNCHER", "🩹 누락 의존성 보강: ${f.filename}")
+                } else {
+                    Log.w("FLAME_LAUNCHER", "🩹 의존성 검증 실패: ${f.filename}")
+                }
+            } catch (e: Exception) {
+                Log.e("FLAME_LAUNCHER", "🩹 의존성 다운로드 실패: ${f.filename} — ${e.message}", e)
+            }
+        }
+        Log.d("FLAME_LAUNCHER", "🩹 mrpack 의존성 보강 완료: ${added}개 추가 (후보 ${depFiles.size})")
     }
 
     /**
@@ -855,7 +976,32 @@ class ContentPackBrowserActivity : BaseActivity() {
         } ?: run {
             Log.w("FLAME_LAUNCHER", "❌ ${mod.name} — MC ${meta.mcVersion} 호환 파일 없음")
             _statusMessage.value = "${mod.name} — MC ${meta.mcVersion} 호환 파일 없음"
+            _errorDialogMessage.value =
+                "‘${mod.name}’ 는 이 인스턴스(MC ${meta.mcVersion}" +
+                        (meta.loaderType?.let { " · $it" } ?: "") + ")에 맞는 버전이 없습니다.\n" +
+                        "다른 인스턴스를 고르거나, 호환되는 마인크래프트 버전으로 새 인스턴스를 만들어 주세요."
             return false
+        }
+
+        // ── 1.5) MC 버전 재검증 (방어) ─────────────────────────────────
+        //   서버/클라 필터가 새더라도, 받은 파일이 인스턴스의 정확한 MC 버전을
+        //   gameVersions 에 실제로 포함하는지 최종 확인한다. MOD 에만 엄격 적용
+        //   (리소스팩/셰이더/월드/데이터팩은 버전 너그럽거나 별도 경로).
+        if (contentType == ContentType.MOD) {
+            val fileMcVersions = rootFile.gameVersions.filter {
+                it.matches(Regex("""\d+\.\d+(\.\d+)?"""))
+            }
+            if (fileMcVersions.isNotEmpty() && meta.mcVersion !in fileMcVersions) {
+                Log.w("FLAME_LAUNCHER",
+                    "❌ ${mod.name} 버전 불일치 — 인스턴스 MC ${meta.mcVersion}, " +
+                            "파일 지원 ${fileMcVersions.joinToString()} (${rootFile.fileName})")
+                _statusMessage.value = "${mod.name} — MC ${meta.mcVersion} 비호환"
+                _errorDialogMessage.value =
+                    "‘${mod.name}’ 는 이 인스턴스(MC ${meta.mcVersion})와 버전이 맞지 않습니다.\n" +
+                            "이 모드가 지원하는 버전: ${fileMcVersions.joinToString(", ")}\n" +
+                            "해당 버전의 인스턴스를 고르거나 새로 만들어 주세요."
+                return false
+            }
         }
 
         if (contentType == ContentType.WORLD) {
@@ -987,12 +1133,36 @@ class ContentPackBrowserActivity : BaseActivity() {
         } ?: run {
             Log.w("FLAME_LAUNCHER", "❌ ${item.name} — MC ${meta.mcVersion} 호환 Modrinth 버전 없음")
             _statusMessage.value = "${item.name} — MC ${meta.mcVersion} 호환 버전 없음"
+            _errorDialogMessage.value =
+                "‘${item.name}’ 는 이 인스턴스(MC ${meta.mcVersion}" +
+                        (meta.loaderType?.let { " · $it" } ?: "") + ")에 맞는 버전이 없습니다.\n" +
+                        "다른 인스턴스를 고르거나, 호환되는 마인크래프트 버전으로 새 인스턴스를 만들어 주세요."
             return false
         }
         val rootFile = rootVersion.files.firstOrNull { it.primary } ?: rootVersion.files.firstOrNull()
         ?: run {
             _statusMessage.value = "${item.name} — 다운로드 파일 없음"
             return false
+        }
+
+        // ── 1.5) MC 버전 재검증 (방어) ─────────────────────────────────
+        //   pickModrinthVersion 이 서버 필터를 거치지만, 받은 버전이 인스턴스의 정확한
+        //   MC 버전을 gameVersions 에 실제로 포함하는지 최종 확인. MOD 에만 엄격 적용.
+        if (contentType == ContentType.MOD) {
+            val verMcVersions = rootVersion.gameVersions.filter {
+                it.matches(Regex("""\d+\.\d+(\.\d+)?"""))
+            }
+            if (verMcVersions.isNotEmpty() && meta.mcVersion !in verMcVersions) {
+                Log.w("FLAME_LAUNCHER",
+                    "❌ ${item.name} 버전 불일치 — 인스턴스 MC ${meta.mcVersion}, " +
+                            "버전 지원 ${verMcVersions.joinToString()} (${rootFile.filename})")
+                _statusMessage.value = "${item.name} — MC ${meta.mcVersion} 비호환"
+                _errorDialogMessage.value =
+                    "‘${item.name}’ 는 이 인스턴스(MC ${meta.mcVersion})와 버전이 맞지 않습니다.\n" +
+                            "이 모드가 지원하는 버전: ${verMcVersions.joinToString(", ")}\n" +
+                            "해당 버전의 인스턴스를 고르거나 새로 만들어 주세요."
+                return false
+            }
         }
 
         if (contentType == ContentType.WORLD) {

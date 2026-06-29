@@ -27,7 +27,7 @@ import kotlinx.coroutines.withContext
 import kr.co.donghyun.flamelauncher.data.auth.MicrosoftAuthManager
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.Flame
-import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlameLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.TextSub
 
 class LoginActivity : BaseActivity() {
@@ -38,7 +38,7 @@ class LoginActivity : BaseActivity() {
 
     override fun onCreated() {
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 var isLoading by remember { mutableStateOf(false) }
                 var statusMessage by remember { mutableStateOf("") }
 

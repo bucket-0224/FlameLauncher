@@ -73,7 +73,7 @@ class ShareImportActivity : BaseActivity() {
         val instances = loadInstances(this)
 
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 ShareImportContent(
                     files = files,
                     instances = instances,

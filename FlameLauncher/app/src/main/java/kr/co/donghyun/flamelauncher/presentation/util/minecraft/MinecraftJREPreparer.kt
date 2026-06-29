@@ -118,12 +118,30 @@ class MinecraftJREPreparer {
                 }
             } else {
                 // ── JRE9+ (17/21/25): modern 버전 AWT 지원 ────────────────────────────
-                // (1) cacio17 jar 복사 (JVMSettings 의 JRE9+ 분기가 -Xbootclasspath/a: 로 참조)
+                // (1) cacio17 jar 복사 (JVMSettings 의 JRE9+ 분기가 -Xbootclasspath/a: 와
+                //     -javaagent: 로 참조)
+                //   ⚠️ cacio-agent.jar 는 toolkit jar(shared/tta)와 별개의 파일이며
+                //      Premain-Class 를 갖는다. premain 이 Unsafe 로 Toolkit 을 설치하므로
+                //      이 3개가 모두 있어야 JRE9+ 에서 AWT(cacio)가 동작한다.
                 val cacio17Dir = File(context.filesDir, "caciocavallo17")
                 cacio17Dir.mkdirs()
-                val cacio17Jars = listOf(
+
+                // 구버전(1.18) 잔재 제거: 파일명이 바뀌어도 옛 jar 가 남아 있으면
+                //   -Xbootclasspath/a: 에 두 버전이 섞여 클래스 충돌이 날 수 있어 먼저 지운다.
+                listOf(
                     "cacio-shared-1.18-SNAPSHOT.jar",
                     "cacio-tta-1.18-SNAPSHOT.jar"
+                ).forEach { old ->
+                    val f = File(cacio17Dir, old)
+                    if (f.exists() && f.delete()) {
+                        Log.i(TAG, "🧹 구버전 cacio jar 제거: $old")
+                    }
+                }
+
+                val cacio17Jars = listOf(
+                    "cacio-shared-1.19.1-SNAPSHOT.jar",
+                    "cacio-tta-1.19.1-SNAPSHOT.jar",
+                    "cacio-agent.jar"
                 )
                 val needsCopy17 = cacio17Jars.any { !File(cacio17Dir, it).exists() }
                 if (needsCopy17) {

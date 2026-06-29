@@ -38,7 +38,7 @@ import kr.co.donghyun.flamelauncher.data.mojang.VersionEntry
 import kr.co.donghyun.flamelauncher.data.renderer.RendererPluginManager
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.screen.MainScreen
-import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlameLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.util.fabric.FabricInstaller
 import kr.co.donghyun.flamelauncher.presentation.util.forge.ForgeInstaller
 import kr.co.donghyun.flamelauncher.presentation.util.minecraft.MinecraftDownloader
@@ -105,7 +105,7 @@ class MainActivity : BaseActivity() {
         refreshInstances()
 
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 val versions by _versions.asStateFlow().collectAsState()
                 val progress by _progress.asStateFlow().collectAsState()
                 val selected by _selectedVersion.asStateFlow().collectAsState()

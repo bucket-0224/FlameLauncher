@@ -7,7 +7,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
 import kr.co.donghyun.flamelauncher.presentation.ui.screen.SettingsScreen
-import kr.co.donghyun.flamelauncher.presentation.ui.theme.PingLauncherTheme
+import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlameLauncherTheme
 
 class SettingsActivity : BaseActivity() {
     companion object {
@@ -21,7 +21,7 @@ class SettingsActivity : BaseActivity() {
             statusBarStyle = SystemBarStyle.dark(scrim = android.graphics.Color.TRANSPARENT)
         )
         setContent {
-            PingLauncherTheme {
+            FlameLauncherTheme {
                 SettingsScreen(onBack = { finish() })
             }
         }
