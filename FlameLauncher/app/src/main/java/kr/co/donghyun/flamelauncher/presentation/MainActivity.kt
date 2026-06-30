@@ -61,6 +61,10 @@ class MainActivity : BaseActivity() {
 
     private val _instances = MutableStateFlow<List<InstanceMeta>>(emptyList())
 
+    // 게임 실행 중 표시 팝업. 인스턴스 실행을 누르면 그 메타를 담고, MinecraftActivity 로
+    // 전환돼 이 화면이 onPause 되면 자동으로 null 로 비워 팝업을 내린다.
+    private var launchingInstance by mutableStateOf<InstanceMeta?>(null)
+
     // MobileGlues 미설치 안내 팝업 표시 여부. MinecraftActivity 가 RESULT_MOBILEGLUES_MISSING 으로
     // 종료하면 true 가 되어 설치 안내 다이얼로그를 띄운다.
     private var showMobileGluesMissing by mutableStateOf(false)
@@ -138,6 +142,7 @@ class MainActivity : BaseActivity() {
                     username = username,
                     onLogin = { loginLauncher.launch(Intent(this, LoginActivity::class.java)) },
                     onLaunchNeoForge = { v, f -> startForgeDownloadAndPlay(v, f, true) },
+                    launchingInstance = launchingInstance,
                 )
 
                 // MobileGlues 미설치 안내 팝업 (MinecraftActivity 가 미설치로 종료했을 때)
@@ -478,6 +483,9 @@ class MainActivity : BaseActivity() {
         val internalBase = applicationContext.filesDir
         val nativesDir = File(internalBase, "natives")
 
+        // 실행 즉시 팝업 표시(준비 작업 동안 사용자가 다시 누르지 못하게 + 진행 인지).
+        launchingInstance = meta
+
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 copyNativesFromApkLibDir(nativesDir)
@@ -493,11 +501,22 @@ class MainActivity : BaseActivity() {
                         mainClass   = meta.mainClass,
                         instanceDir = instanceDir.absolutePath,
                     )
+                    // 팝업은 onPause(MinecraftActivity 전환)에서 내린다.
                 }
             } catch (e: Exception) {
                 Log.e("FLAME_LAUNCHER", "인스턴스 실행 실패: ${e.message}", e)
+                withContext(Dispatchers.Main) {
+                    launchingInstance = null   // 실패 시 팝업 즉시 제거
+                    Toast.makeText(this@MainActivity, "실행 실패: ${e.message}", Toast.LENGTH_SHORT).show()
+                }
             }
         }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // MinecraftActivity 등으로 화면이 가려지면 실행 팝업을 내린다(반응 최소화).
+        launchingInstance = null
     }
 
     override fun onResume() {

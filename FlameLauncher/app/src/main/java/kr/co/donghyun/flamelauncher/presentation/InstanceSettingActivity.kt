@@ -17,6 +17,7 @@ import kr.co.donghyun.flamelauncher.data.instance.InstanceManager
 import kr.co.donghyun.flamelauncher.data.renderer.Renderer
 import kr.co.donghyun.flamelauncher.data.renderer.RendererPluginManager
 import kr.co.donghyun.flamelauncher.presentation.base.BaseActivity
+import kr.co.donghyun.flamelauncher.presentation.ui.screen.InstalledMod
 import kr.co.donghyun.flamelauncher.presentation.ui.screen.InstanceSettingsScreen
 import kr.co.donghyun.flamelauncher.presentation.ui.theme.FlameLauncherTheme
 import kr.co.donghyun.flamelauncher.presentation.util.maps.MapImporter
@@ -129,6 +130,9 @@ class InstanceSettingsActivity : BaseActivity() {
             InstanceManager.loadRendererId(this, instanceId)
         )
 
+        // 이 인스턴스 mods/ 의 설치된 모드 목록. 진입 시 1회 스캔, 삭제/새로고침 때 갱신.
+        val modsState = mutableStateOf(scanInstalledMods())
+
         setContent {
             FlameLauncherTheme {
                 InstanceSettingsScreen(
@@ -144,6 +148,12 @@ class InstanceSettingsActivity : BaseActivity() {
                         Toast.makeText(this, "렌더러: $label 으로 설정됨", Toast.LENGTH_SHORT).show()
                     },
                     onInstallMobileGlues = { openMobileGluesRelease() },
+                    installedMods = modsState.value,
+                    onDeleteMod = { fileName ->
+                        deleteMod(fileName)
+                        modsState.value = scanInstalledMods()   // 삭제 후 즉시 갱신
+                    },
+                    refreshMods = { modsState.value = scanInstalledMods() },
                     launchMapPicker = { importMessage, importing ->
                         pendingMapMessage = importMessage
                         pendingMapImporting = importing
@@ -204,6 +214,57 @@ class InstanceSettingsActivity : BaseActivity() {
             "fabric"   -> "Fabric"
             else       -> null
         }
+    }
+
+    // ── 설치된 모드 스캔/삭제 ──
+
+    /**
+     * 이 인스턴스 mods/ 디렉터리의 모드 목록을 읽는다.
+     * 활성(.jar) + 비활성(.jar.disabled, 자동 비활성 포함) 모두 포함하며,
+     * 활성 먼저 → 이름순으로 정렬한다.
+     */
+    private fun scanInstalledMods(): List<InstalledMod> {
+        val modsDir = File(gameDirForInstance(), "mods")
+        if (!modsDir.isDirectory) return emptyList()
+        return modsDir.listFiles()
+            ?.filter { f ->
+                f.isFile && (
+                        f.name.endsWith(".jar", ignoreCase = true) ||
+                                f.name.endsWith(".jar.disabled", ignoreCase = true)
+                        )
+            }
+            ?.map { f ->
+                val enabled = f.name.endsWith(".jar", ignoreCase = true)
+                val display = f.name
+                    .removeSuffix(".disabled")
+                    .removeSuffix(".jar")
+                InstalledMod(
+                    fileName = f.name,
+                    displayName = display,
+                    enabled = enabled,
+                    sizeBytes = f.length(),
+                )
+            }
+            ?.sortedWith(compareByDescending<InstalledMod> { it.enabled }.thenBy { it.displayName.lowercase() })
+            ?: emptyList()
+    }
+
+    /**
+     * mods/ 안의 모드 파일 1개를 삭제한다.
+     * fileName 은 scanInstalledMods 가 준 실제 파일명(확장자/.disabled 포함)이라
+     * 활성/비활성 어느 쪽이든 그대로 지운다. 디렉터리 밖 경로는 방어적으로 차단.
+     */
+    private fun deleteMod(fileName: String) {
+        val modsDir = File(gameDirForInstance(), "mods")
+        val target = File(modsDir, fileName)
+        // 경로 탈출 방지: 정규화한 부모가 modsDir 와 같아야만 삭제.
+        if (target.parentFile?.canonicalFile != modsDir.canonicalFile) {
+            Log.w("FLAME_LAUNCHER", "모드 삭제 거부(경로 이상): $fileName")
+            return
+        }
+        val ok = runCatching { target.delete() }.getOrDefault(false)
+        if (ok) Log.d("FLAME_LAUNCHER", "🗑 모드 삭제: $fileName")
+        else Log.w("FLAME_LAUNCHER", "모드 삭제 실패: $fileName")
     }
 
     /**

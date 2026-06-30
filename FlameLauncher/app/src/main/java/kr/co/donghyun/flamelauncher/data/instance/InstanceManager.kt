@@ -17,6 +17,12 @@ data class InstanceMeta(
     val extraJars: List<String> = emptyList(),
     val assetIndexId: String = "",
     val iconEmoji: String = "🌿",
+    /**
+     * 다운로드한 인스턴스 아이콘 파일의 절대경로(예: <instanceDir>/icon.png).
+     * 모드팩/모드를 CurseForge·Modrinth 에서 설치할 때 그 콘텐츠 로고를 받아 저장한다.
+     * null 이면 로더 기본 아이콘(또는 CurseForge 기본 아이콘)으로 폴백 — 하위호환(기존 json엔 키 없음).
+     */
+    val iconPath: String? = null,
     val gameJvmArgs: List<String> = emptyList(), // Fabric profile의 arguments.jvm
     val gameArgs: List<String> = emptyList(),    // Fabric profile의 arguments.game
     val sourceModId: Int? = null,
@@ -91,4 +97,21 @@ object InstanceManager {
 
     fun fabricId(mcVersion: String, loaderVersion: String): String =
         "fabric_${mcVersion}_" + loaderVersion.replace(".", "_")
+
+    // ── 신규(고유) 인스턴스용 토큰/접미사 ─────────────────────────────
+
+    /**
+     * "새로 설치"를 누를 때마다 같은 MC 버전·로더라도 별개 인스턴스로 분리하기 위한 짧은 토큰.
+     * UUID 앞 8자리만 쓴다(충돌 확률 무시 가능, 폴더명도 짧게 유지).
+     */
+    fun newInstanceToken(): String =
+        java.util.UUID.randomUUID().toString().substring(0, 8)
+
+    /**
+     * 기존 deterministic id 에 토큰을 덧붙여 고유 id 를 만든다.
+     * token 이 null/blank 면 원래 id 를 그대로 반환(=기존 동작/재사용 유지).
+     *   예) "vanilla_1.21.4" + "a1b2c3d4" → "vanilla_1.21.4_a1b2c3d4"
+     */
+    fun withToken(baseId: String, token: String?): String =
+        if (token.isNullOrBlank()) baseId else "${baseId}_$token"
 }

@@ -3,6 +3,7 @@ package kr.co.donghyun.flamelauncher.presentation.ui.screen
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,9 +11,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -72,6 +76,11 @@ import kotlin.math.roundToInt
  * @param onRendererSelected 렌더러를 고르면 호출(저장은 Activity 가 InstanceManager 로 처리).
  *                           null 을 넘기면 "전역 기본 사용"으로 되돌린다.
  * @param onInstallMobileGlues MobileGlues 미설치 상태에서 설치 안내를 눌렀을 때(브라우저 등).
+ *
+ * @param installedMods   이 인스턴스 mods/ 에 들어있는 모드 목록(활성 .jar + 비활성 .jar.disabled).
+ *                        화면 진입 시 Activity 가 스캔해 넘기고, 삭제 후 refreshMods 로 다시 채운다.
+ * @param onDeleteMod     모드 1개 삭제 요청. fileName 은 InstalledMod.fileName(확장자 포함).
+ * @param refreshMods     모드 목록을 다시 읽어달라는 요청(삭제 다이얼로그를 열 때/삭제 후 호출).
  */
 @Composable
 fun InstanceSettingsScreen(
@@ -81,6 +90,9 @@ fun InstanceSettingsScreen(
     currentRendererId : String?,
     onRendererSelected : (rendererId : String?) -> Unit,
     onInstallMobileGlues : () -> Unit,
+    installedMods : List<InstalledMod>,
+    onDeleteMod : (fileName : String) -> Unit,
+    refreshMods : () -> Unit,
     launchMapPicker : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
     launchModPicker : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
     importModpack : (importMessage : MutableState<String>, importing : MutableState<Boolean>) -> Unit,
@@ -98,6 +110,7 @@ fun InstanceSettingsScreen(
 
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var showRendererPicker by remember { mutableStateOf(false) }
+    var showModManager by remember { mutableStateOf(false) }
     val isImporting by importing
     val msg by importMessage
     val finishNow by deletedFinish
@@ -172,6 +185,22 @@ fun InstanceSettingsScreen(
                         "Forge / Fabric / NeoForge 설치 시 사용 가능",
                     enabled = !isImporting && loaderInstalled,
                 ) { launchModPicker(importMessage, importing) }
+
+                Spacer(Modifier.height(10.dp))
+
+                // 설치된 모드 관리 — 개별 삭제. mods/ 가 있는(로더 설치된) 인스턴스에서만.
+                val modCountLabel = if (installedMods.isEmpty()) "설치된 모드 없음"
+                else "총 ${installedMods.size}개 · 탭하여 개별 삭제"
+                SettingRow(
+                    emoji = "🗂",
+                    title = "설치된 모드 관리",
+                    subtitle = if (loaderInstalled) modCountLabel
+                    else "Forge / Fabric / NeoForge 설치 시 사용 가능",
+                    enabled = !isImporting && loaderInstalled,
+                ) {
+                    refreshMods()           // 다이얼로그 열기 직전 최신 목록으로 갱신
+                    showModManager = true
+                }
 
                 Spacer(Modifier.height(10.dp))
 
@@ -259,6 +288,18 @@ fun InstanceSettingsScreen(
                     showRendererPicker = false
                     onInstallMobileGlues()
                 },
+            )
+        }
+
+        // ── 설치된 모드 관리 다이얼로그 ──
+        if (showModManager) {
+            ModManagerDialog(
+                mods = installedMods,
+                onDelete = { fileName ->
+                    onDeleteMod(fileName)
+                    refreshMods()       // 삭제 직후 목록 재조회 → 다이얼로그가 즉시 반영
+                },
+                onDismiss = { showModManager = false },
             )
         }
 
@@ -577,4 +618,137 @@ private fun RendererOption(
             Text("✓", color = FlamePrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
         }
     }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// 설치된 모드 관리 (개별 삭제)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * mods/ 에서 발견한 모드 1개.
+ * @param fileName 실제 파일명(확장자 포함). 삭제는 이 이름으로 한다.
+ *                 활성 모드는 "xxx.jar", 비활성(자동 비활성 포함)은 "xxx.jar.disabled".
+ * @param displayName 사용자에게 보여줄 이름(.disabled/.jar 꼬리표 제거).
+ * @param enabled .disabled 가 아니면 true.
+ * @param sizeBytes 파일 크기(표시용).
+ */
+data class InstalledMod(
+    val fileName: String,
+    val displayName: String,
+    val enabled: Boolean,
+    val sizeBytes: Long,
+)
+
+/**
+ * 설치된 모드 목록 다이얼로그. 각 항목 우측의 삭제(🗑) 버튼으로 개별 제거한다.
+ * 삭제 자체는 Activity(onDelete)가 파일을 지우고, 호출부가 refreshMods 로 목록을 다시 채운다.
+ */
+@Composable
+private fun ModManagerDialog(
+    mods: List<InstalledMod>,
+    onDelete: (fileName: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // 삭제 재확인 대상(파일명). null 이면 확인창 안 띄움.
+    var pendingDelete by remember { mutableStateOf<InstalledMod?>(null) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = BgSurface,
+        title = { Text("설치된 모드 (${mods.size})", color = TextPrimary, fontWeight = FontWeight.Bold) },
+        text = {
+            if (mods.isEmpty()) {
+                Text("이 인스턴스에 설치된 모드가 없습니다.", color = TextSecondary, fontSize = 13.sp)
+            } else {
+                // 목록이 길 수 있으니 높이를 제한하고 스크롤.
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    items(mods, key = { it.fileName }) { mod ->
+                        ModRow(mod = mod, onDeleteClick = { pendingDelete = mod })
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("닫기", color = TextSecondary) }
+        },
+    )
+
+    // 개별 삭제 재확인
+    pendingDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            containerColor = BgSurface,
+            title = { Text("모드 삭제", color = TextPrimary) },
+            text = {
+                Text(
+                    "‘${target.displayName}’ 모드를 삭제할까요?\n파일이 영구적으로 제거됩니다.",
+                    color = TextSecondary,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    onDelete(target.fileName)
+                    pendingDelete = null
+                }) { Text("삭제", color = Color(0xFFE5484D)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("취소", color = TextSecondary)
+                }
+            },
+        )
+    }
+}
+
+/** 모드 목록 한 줄: 이름 + (비활성 배지) + 크기 + 삭제 버튼. */
+@Composable
+private fun ModRow(
+    mod: InstalledMod,
+    onDeleteClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(BgDark)
+            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(if (mod.enabled) "🧩" else "🚫", fontSize = 18.sp)
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                mod.displayName,
+                color = if (mod.enabled) TextPrimary else TextSecondary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                buildString {
+                    if (!mod.enabled) append("비활성 · ")
+                    append(formatFileSize(mod.sizeBytes))
+                },
+                color = TextSecondary,
+                fontSize = 10.sp,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        TextButton(onClick = onDeleteClick) {
+            Text("🗑 삭제", color = Color(0xFFE5484D), fontSize = 12.sp)
+        }
+    }
+}
+
+/** 바이트 → 사람이 읽기 쉬운 크기. */
+private fun formatFileSize(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+    bytes >= 1024L         -> String.format("%.0f KB", bytes / 1024.0)
+    else                   -> "$bytes B"
 }

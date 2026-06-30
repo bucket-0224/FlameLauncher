@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kr.co.donghyun.flamelauncher.R
@@ -75,6 +76,7 @@ fun MainScreen(
     username: String?,
     onLogin: () -> Unit,
     loginError: String? = null,
+    launchingInstance: InstanceMeta? = null,
 ) {
     val isDownloading = progress.phase != DownloadPhase.IDLE &&
             progress.phase != DownloadPhase.DONE &&
@@ -94,6 +96,17 @@ fun MainScreen(
     var showLoaderDialog by remember { mutableStateOf(false) }
     var showTerracotta by remember { mutableStateOf(false) }
     val tablet = isTablet()
+
+    // INSTALLED 탭에서 사용자가 고른 인스턴스. 항목을 탭하면 선택되고,
+    // 실행은 (태블릿) 우측 패널 / (폰) 하단 실행 바의 ▶ 버튼으로만 한다.
+    var selectedInstanceId by remember { mutableStateOf<String?>(null) }
+    // 목록이 갱신돼 선택했던 인스턴스가 사라지면 선택 해제, 후보가 있으면 첫 항목을 기본 선택.
+    LaunchedEffect(instances) {
+        if (instances.none { it.id == selectedInstanceId }) {
+            selectedInstanceId = instances.firstOrNull()?.id
+        }
+    }
+    val selectedInstance = instances.firstOrNull { it.id == selectedInstanceId }
 
     Box(modifier = Modifier.fillMaxSize().background(BgDark)) {
         Column(modifier = Modifier.fillMaxSize().padding(bottom = if (tablet) 0.dp else 40.dp)) {
@@ -149,7 +162,13 @@ fun MainScreen(
                 Row(modifier = Modifier.fillMaxSize().weight(1f)) {
                     Box(modifier = Modifier.weight(0.62f).fillMaxHeight()) {
                         when (selectedTab) {
-                            MainTab.INSTALLED -> InstancesList(isLoggedIn, instances, onLaunchInstance, onOpenInstanceSettings)
+                            MainTab.INSTALLED -> InstancesList(
+                                isLoggedIn = isLoggedIn,
+                                instances = instances,
+                                selectedInstanceId = selectedInstanceId,
+                                onSelect = { selectedInstanceId = it.id },
+                                onOpenSettings = onOpenInstanceSettings,
+                            )
                             else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                         }
                     }
@@ -163,7 +182,12 @@ fun MainScreen(
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
                         if (selectedTab == MainTab.INSTALLED) {
-                            InstalledPanel(instances.size)
+                            InstalledPanel(
+                                count = instances.size,
+                                selected = selectedInstance,
+                                isLoggedIn = isLoggedIn,
+                                onLaunch = { selectedInstance?.let { onLaunchInstance(it) } },
+                            )
                         } else {
                             SidePlayPanel(
                                 selectedVersion = selectedVersion,
@@ -180,7 +204,13 @@ fun MainScreen(
             } else {
                 Box(modifier = Modifier.fillMaxSize()) {
                     when (selectedTab) {
-                        MainTab.INSTALLED -> InstancesList(isLoggedIn, instances, onLaunchInstance, onOpenInstanceSettings)
+                        MainTab.INSTALLED -> InstancesList(
+                            isLoggedIn = isLoggedIn,
+                            instances = instances,
+                            selectedInstanceId = selectedInstanceId,
+                            onSelect = { selectedInstanceId = it.id },
+                            onOpenSettings = onOpenInstanceSettings,
+                        )
                         else -> VersionsList(filteredVersions, selectedVersion, onVersionSelect)
                     }
                 }
@@ -199,6 +229,16 @@ fun MainScreen(
                 isLoggedIn = isLoggedIn,
                 onLogin = onLogin,
                 loginError = loginError
+            )
+        }
+
+        // 폰: INSTALLED 탭에서 인스턴스를 선택하면 하단 고정 실행 바가 등장.
+        if (!tablet && selectedTab == MainTab.INSTALLED && selectedInstance != null) {
+            InstanceLaunchBar(
+                meta = selectedInstance,
+                isLoggedIn = isLoggedIn,
+                onLaunch = { onLaunchInstance(selectedInstance) },
+                modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
 
@@ -233,6 +273,13 @@ fun MainScreen(
                 showTerracotta = false
             }
         }
+
+        // ── 게임 실행 중 팝업 ──
+        // 실행을 누르면 표시되고, MinecraftActivity 로 전환돼 이 화면이 onPause 되면
+        // Activity 가 launchingInstance 를 null 로 바꿔 자동으로 사라진다. (사용자 조작 불필요)
+        if (launchingInstance != null) {
+            LaunchingDialog(meta = launchingInstance, tablet = tablet)
+        }
     }
 }
 
@@ -258,7 +305,8 @@ private fun VersionsList(
 private fun InstancesList(
     isLoggedIn: Boolean,
     instances: List<InstanceMeta>,
-    onLaunch: (InstanceMeta) -> Unit,
+    selectedInstanceId: String?,
+    onSelect: (InstanceMeta) -> Unit,
     onOpenSettings: (InstanceMeta) -> Unit,
 ) {
     if (instances.isEmpty()) {
@@ -293,20 +341,61 @@ private fun InstancesList(
         items(instances, key = { it.id }) { meta ->
             InstanceItem(
                 meta,
-                isLoggedIn = isLoggedIn,
-                onLaunch = { onLaunch(meta) },
+                selected = meta.id == selectedInstanceId,
+                onSelect = { onSelect(meta) },
                 onOpenSettings = { onOpenSettings(meta) },
             )
         }
-        item { Box(modifier = Modifier.height(64.dp)) }
+        item { Box(modifier = Modifier.height(96.dp)) }   // 하단 실행 바에 가리지 않도록 여백
+    }
+}
+
+/**
+ * 인스턴스 목록/실행 바에서 쓰는 아이콘.
+ * 우선순위:
+ *   1) iconPath(다운로드한 콘텐츠 로고 파일) 가 있으면 그 이미지를 보여준다.
+ *   2) 없고 모드팩/모드 출처(sourceModId != null)면 CurseForge 기본 아이콘.
+ *   3) 그 외엔 로더 기본 아이콘(fabric/forge/neoforge) 또는 바닐라(마인크래프트) 아이콘.
+ */
+@Composable
+private fun InstanceIcon(meta: InstanceMeta, size: androidx.compose.ui.unit.Dp) {
+    val iconFile = meta.iconPath?.let { java.io.File(it) }?.takeIf { it.exists() && it.length() > 0 }
+    when {
+        iconFile != null -> {
+            AsyncImage(
+                model = iconFile,
+                contentDescription = meta.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(size).clip(RoundedCornerShape(6.dp)),
+            )
+        }
+        else -> {
+            // 폴백 아이콘 리소스 결정
+            val fallbackRes = when {
+                // 모드팩/모드로 만든 인스턴스인데 아이콘 다운로드가 실패한 경우 → CurseForge 기본 아이콘
+                meta.sourceModId != null -> R.drawable.img_curseforge_icon
+                else -> when (meta.loaderType?.lowercase()) {
+                    "fabric"   -> R.drawable.img_loader_fabric
+                    "forge"    -> R.drawable.img_anvil
+                    "neoforge" -> R.drawable.img_loader_neoforge
+                    else       -> R.drawable.img_minecraft   // 바닐라(로더 없음)
+                }
+            }
+            Image(
+                painter = painterResource(fallbackRes),
+                contentDescription = meta.loaderType ?: "Vanilla",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.size(size),
+            )
+        }
     }
 }
 
 @Composable
 private fun InstanceItem(
     meta: InstanceMeta,
-    onLaunch: () -> Unit,
-    isLoggedIn: Boolean,
+    selected: Boolean,
+    onSelect: () -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val tablet = isTablet()
@@ -315,27 +404,20 @@ private fun InstanceItem(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            .background(BgSurface)
-            .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+            .background(if (selected) FlameDark else BgSurface)
+            .border(
+                if (selected) 1.5.dp else 1.dp,
+                if (selected) FlamePrimary else BgBorder,
+                RoundedCornerShape(10.dp)
+            )
+            .clickable { onSelect() }
             .padding(horizontal = if (tablet) 14.dp else 10.dp, vertical = if (tablet) 12.dp else 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // 인스턴스 아이콘 — 로더 종류로 결정(저장된 iconEmoji 가 아니라 loaderType 기준이라
-        //   기존에 만들어 둔 인스턴스도 자동으로 올바른 로고가 표시됨).
-        //   해당 PNG 를 res/drawable-*/ 에 같은 이름으로 넣으면 됨.
-        val loaderIconRes = when (meta.loaderType?.lowercase()) {
-            "fabric"   -> R.drawable.img_loader_fabric
-            "forge"    -> R.drawable.img_anvil
-            "neoforge" -> R.drawable.img_loader_neoforge
-            else       -> R.drawable.img_minecraft   // 바닐라(로더 없음)
-        }
-        Image(
-            painter = painterResource(loaderIconRes),
-            contentDescription = meta.loaderType ?: "Vanilla",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier.size(if (tablet) 28.dp else 22.dp),
-        )
+        // 인스턴스 아이콘 — 다운로드한 콘텐츠 아이콘(iconPath)이 있으면 그것을,
+        //   없으면 로더 기본 아이콘(또는 CurseForge 기본 아이콘)으로 폴백.
+        InstanceIcon(meta = meta, size = if (tablet) 28.dp else 22.dp)
 
         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
@@ -361,6 +443,11 @@ private fun InstanceItem(
             )
         }
 
+        // 선택 표시 체크
+        if (selected) {
+            Text("✓", color = FlamePrimary, fontSize = if (tablet) 18.sp else 15.sp, fontWeight = FontWeight.Bold)
+        }
+
         // 설정 (맵/리소스팩 가져오기, 삭제 등)
         Box(
             modifier = Modifier
@@ -373,32 +460,20 @@ private fun InstanceItem(
         ) {
             Text("⚙️", fontSize = if (tablet) 14.sp else 12.sp)
         }
-
-        // 실행
-        Button(
-            onClick = onLaunch,
-            enabled = (isLoggedIn || BuildConfig.DEBUG),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = FlamePrimary,
-                disabledContainerColor = BgBorder
-            ),
-            shape = RoundedCornerShape(8.dp),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
-            modifier = Modifier.height(if (tablet) 36.dp else 30.dp),
-        ) {
-            Text(
-                "▶ 실행",
-                color = Color.White,
-                fontSize = if (tablet) 12.sp else 10.sp,
-                fontWeight = FontWeight.Bold,
-            )
-        }
     }
 }
 
 @Composable
-private fun InstalledPanel(count: Int) {
-    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+private fun InstalledPanel(
+    count: Int,
+    selected: InstanceMeta?,
+    isLoggedIn: Boolean,
+    onLaunch: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxHeight(),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
         Text("설치된 인스턴스", color = TextSecondary, fontSize = 12.sp)
         Text(
             "${count}개",
@@ -406,12 +481,154 @@ private fun InstalledPanel(count: Int) {
             fontSize = 28.sp,
             fontWeight = FontWeight.Bold,
         )
-        Text(
-            "좌측 목록에서 ▶ 실행을 눌러 바로 시작할 수 있습니다.",
-            color = TextSecondary,
-            fontSize = 12.sp,
-        )
+
+        if (selected == null) {
+            Text(
+                "좌측 목록에서 인스턴스를 선택하면 여기에서 실행할 수 있습니다.",
+                color = TextSecondary,
+                fontSize = 12.sp,
+            )
+        } else {
+            Spacer(Modifier.height(4.dp))
+            // 선택된 인스턴스 요약 카드
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(BgDark)
+                    .border(1.dp, BgBorder, RoundedCornerShape(10.dp))
+                    .padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text("선택됨", color = TextSecondary, fontSize = 11.sp)
+                Text(
+                    selected.name,
+                    color = TextPrimary,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                val loaderLabel = when (selected.loaderType?.lowercase()) {
+                    "fabric"   -> "Fabric ${selected.loaderVersion ?: ""}"
+                    "forge"    -> "Forge ${selected.loaderVersion ?: ""}"
+                    "neoforge" -> "NeoForge ${selected.loaderVersion ?: ""}"
+                    else       -> "Vanilla"
+                }
+                Text("MC ${selected.mcVersion} · $loaderLabel", color = TextSecondary, fontSize = 12.sp)
+            }
+
+            // 실행 버튼을 사이드바 패널 맨 아래로 밀어 고정한다.
+            Spacer(Modifier.weight(1f))
+
+            Button(
+                onClick = onLaunch,
+                enabled = (isLoggedIn || BuildConfig.DEBUG),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = FlamePrimary,
+                    disabledContainerColor = BgBorder,
+                ),
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) {
+                Text(
+                    if (isLoggedIn || BuildConfig.DEBUG) "▶ 실행" else "로그인 후 실행 가능",
+                    color = Color.White,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        }
     }
+}
+
+/**
+ * 폰 전용 하단 고정 실행 바. INSTALLED 탭에서 인스턴스를 고르면 화면 하단에 등장한다.
+ * 좌측에 선택된 인스턴스 정보, 우측에 ▶ 실행 버튼.
+ */
+@Composable
+private fun InstanceLaunchBar(
+    meta: InstanceMeta,
+    isLoggedIn: Boolean,
+    onLaunch: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .background(BgSurface)
+            .border(1.dp, BgBorder)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        InstanceIcon(meta = meta, size = 24.dp)
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
+            Text(
+                meta.name,
+                color = TextPrimary,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text("MC ${meta.mcVersion}", color = TextSecondary, fontSize = 9.sp, maxLines = 1)
+        }
+        Button(
+            onClick = onLaunch,
+            enabled = (isLoggedIn || BuildConfig.DEBUG),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = FlamePrimary,
+                disabledContainerColor = BgBorder,
+            ),
+            shape = RoundedCornerShape(8.dp),
+            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 4.dp),
+            modifier = Modifier.height(38.dp),
+        ) {
+            Text(
+                "▶ 실행",
+                color = Color.White,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+    }
+}
+
+/**
+ * 게임 실행 중 모달 팝업. 실행을 누른 직후 표시되고,
+ * MinecraftActivity 로 전환돼 호스트 화면이 onPause 되면 자동으로 사라진다.
+ */
+@Composable
+private fun LaunchingDialog(meta: InstanceMeta, tablet: Boolean) {
+    AlertDialog(
+        onDismissRequest = { /* 사용자가 닫지 못함 — 화면 전환 시 자동 제거 */ },
+        containerColor = BgSurface,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(color = FlamePrimary, strokeWidth = 2.5.dp, modifier = Modifier.size(20.dp))
+                Text("게임 실행 중", color = TextPrimary, fontSize = if (tablet) 16.sp else 14.sp, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    meta.name,
+                    color = TextPrimary,
+                    fontSize = if (tablet) 14.sp else 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "Minecraft 를 준비하고 있습니다. 잠시만 기다려 주세요…",
+                    color = TextSecondary,
+                    fontSize = if (tablet) 12.sp else 10.sp,
+                )
+            }
+        },
+        confirmButton = {},
+    )
 }
 
 /** 태블릿 우측 패널 — 큰 Play 버튼과 진행률을 한 곳에. */

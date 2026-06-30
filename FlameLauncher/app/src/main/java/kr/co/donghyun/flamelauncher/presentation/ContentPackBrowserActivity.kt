@@ -140,22 +140,27 @@ class ContentPackBrowserActivity : BaseActivity() {
                     .takeIf { it > 0 }
                 val targetMrVersionId = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_MR_VERSION_ID)
                     ?.takeIf { it.isNotBlank() }
+                // 새 인스턴스 고유 분리 토큰(UUID8). 있으면 같은 버전·로더라도 별개 인스턴스 생성.
+                val targetNewToken = data.getStringExtra(ContentPackDetailActivity.EXTRA_TARGET_NEW_TOKEN)
+                    ?.takeIf { it.isNotBlank() }
 
                 val contentType = _selectedContentType.value
                 Log.d("FLAME_LAUNCHER",
                     "install request: mod=${mod.name} type=$contentType " +
                             "targetInstance=$targetInstanceId targetVersion=$targetVersion " +
                             "targetLoader=$targetLoader targetWorld=$targetWorld " +
-                            "targetFileId=$targetFileId targetMrVersionId=$targetMrVersionId")
+                            "targetFileId=$targetFileId targetMrVersionId=$targetMrVersionId " +
+                            "targetNewToken=$targetNewToken")
 
                 when {
                     // 기존 인스턴스 선택 (데이터팩이면 targetWorld 도 함께 전달)
                     targetInstanceId != null ->
                         installToExistingInstance(mod, targetInstanceId, contentType, targetWorld)
 
-                    // 새 인스턴스 — loader 가 null 이어도 Vanilla 로 진행되어야 함
+                    // 새 인스턴스 — loader 가 null 이어도 Vanilla 로 진행되어야 함.
+                    //   targetNewToken 이 있으면 고유 id 로 분리 생성(같은 버전 중복 허용).
                     targetVersion != null ->
-                        installToNewInstance(mod, targetVersion, targetLoader, contentType)
+                        installToNewInstance(mod, targetVersion, targetLoader, contentType, targetNewToken)
 
                     // 그 외 (모드팩 등 — 타겟 선택 없이 바로 설치).
                     //   CurseForge 모드팩: 고른 파일(버전) id(Int) 전달.
@@ -698,6 +703,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     loaderType = installResult.loaderType?.lowercase(),
                     loaderVersion = installResult.loaderVersion,
                     sourceModId = null,   // Modrinth 는 숫자 id 가 없음 (이름 폴백으로 설치표시)
+                    iconUrl = mod.logoUrl,
                 )
                 refreshInstalledIds()
                 _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
@@ -1433,7 +1439,8 @@ class ContentPackBrowserActivity : BaseActivity() {
         mod: ContentItem,
         mcVersion: String,
         loader: ModLoader?,                 // ← null 이면 바닐라
-        contentType: ContentType
+        contentType: ContentType,
+        newToken: String? = null,           // ← 있으면 고유 분리 토큰(UUID8). 같은 버전 중복 생성 허용.
     ) {
         val isModrinth = mod.source == ContentSource.MODRINTH
         val cfMod = if (isModrinth) null else cfModFromItem(mod)
@@ -1450,10 +1457,10 @@ class ContentPackBrowserActivity : BaseActivity() {
                 }
 
                 val instanceId: String = when (loader) {
-                    null               -> setupVanillaInstance(mcVersion, versionEntry) ?: return@launch
-                    ModLoader.FABRIC   -> setupFabricInstance(mcVersion, versionEntry)  ?: return@launch
-                    ModLoader.FORGE    -> setupForgeInstance(mcVersion, versionEntry, isNeoForge = false) ?: return@launch
-                    ModLoader.NEOFORGE -> setupForgeInstance(mcVersion, versionEntry, isNeoForge = true)  ?: return@launch
+                    null               -> setupVanillaInstance(mcVersion, versionEntry, newToken) ?: return@launch
+                    ModLoader.FABRIC   -> setupFabricInstance(mcVersion, versionEntry, newToken)  ?: return@launch
+                    ModLoader.FORGE    -> setupForgeInstance(mcVersion, versionEntry, isNeoForge = false, newToken = newToken) ?: return@launch
+                    ModLoader.NEOFORGE -> setupForgeInstance(mcVersion, versionEntry, isNeoForge = true,  newToken = newToken) ?: return@launch
                 }
 
                 _statusMessage.value = "${mod.name} 다운로드 중..."
@@ -1462,6 +1469,15 @@ class ContentPackBrowserActivity : BaseActivity() {
                 } else {
                     addContentToInstance(cfMod!!, instanceId, contentType)
                 }
+
+                // 모드/모드팩이면 콘텐츠 로고를 인스턴스 아이콘으로 저장(로더 기본 아이콘 대신).
+                //   (텍스처/쉐이더/월드 등은 별도 아이콘을 입히지 않고 기존 로더/바닐라 아이콘 유지)
+                if (contentType == ContentType.MOD || contentType == ContentType.MODPACK) {
+                    withContext(Dispatchers.IO) {
+                        applyContentIconToInstance(instanceId, mod.logoUrl)
+                    }
+                }
+
                 refreshInstalledIds()
                 _progress.value = DownloadProgress(phase = DownloadPhase.DONE)
             } catch (e: Exception) {
@@ -1476,9 +1492,10 @@ class ContentPackBrowserActivity : BaseActivity() {
     /** 바닐라 인스턴스 생성 또는 재사용. 실패 시 null. */
     private suspend fun setupVanillaInstance(
         mcVersion: String,
-        versionEntry: VersionEntry
+        versionEntry: VersionEntry,
+        newToken: String? = null,
     ): String? {
-        val instanceId = InstanceManager.vanillaId(mcVersion)
+        val instanceId = InstanceManager.withToken(InstanceManager.vanillaId(mcVersion), newToken)
         val instanceDir = InstanceManager.instanceDir(this, instanceId)
         if (InstanceManager.loadMeta(instanceDir) != null) {
             Log.d("FLAME_LAUNCHER", "ℹ️ Vanilla 인스턴스 재사용: $instanceId")
@@ -1501,7 +1518,8 @@ class ContentPackBrowserActivity : BaseActivity() {
 
         InstanceManager.saveMeta(this, InstanceMeta(
             id = instanceId,
-            name = mcVersion,
+            // 토큰이 붙은 경우(=새로 만든 별개 인스턴스) 이름에 짧은 토큰을 표기해 구분이 쉽게.
+            name = if (newToken.isNullOrBlank()) mcVersion else "$mcVersion ($newToken)",
             type = InstanceType.VANILLA,
             mcVersion = mcVersion,
             mainClass = mcResult.mainClass,
@@ -1515,7 +1533,8 @@ class ContentPackBrowserActivity : BaseActivity() {
     /** 새 Fabric 인스턴스를 만들거나 기존 것 반환. 실패 시 null. */
     private suspend fun setupFabricInstance(
         mcVersion: String,
-        versionEntry: VersionEntry
+        versionEntry: VersionEntry,
+        newToken: String? = null,
     ): String? {
         val fabricApi = FabricMetaAPI()
         val loaderList = withContext(Dispatchers.IO) { fabricApi.listLoaders(mcVersion) }
@@ -1526,7 +1545,9 @@ class ContentPackBrowserActivity : BaseActivity() {
                 return null
             }
 
-        val instanceId = InstanceManager.fabricId(mcVersion, loaderVersion)
+        val instanceId = InstanceManager.withToken(
+            InstanceManager.fabricId(mcVersion, loaderVersion), newToken
+        )
         val instanceDir = InstanceManager.instanceDir(this, instanceId)
         if (InstanceManager.loadMeta(instanceDir) != null) {
             Log.d("FLAME_LAUNCHER", "ℹ️ Fabric 인스턴스 재사용: $instanceId")
@@ -1556,7 +1577,8 @@ class ContentPackBrowserActivity : BaseActivity() {
 
         InstanceManager.saveMeta(this, InstanceMeta(
             id = instanceId,
-            name = "$mcVersion · Fabric $loaderVersion",
+            name = if (newToken.isNullOrBlank()) "$mcVersion · Fabric $loaderVersion"
+            else "$mcVersion · Fabric $loaderVersion ($newToken)",
             type = InstanceType.FABRIC,
             mcVersion = mcVersion,
             loaderType = "fabric",
@@ -1581,7 +1603,8 @@ class ContentPackBrowserActivity : BaseActivity() {
     private suspend fun setupForgeInstance(
         mcVersion: String,
         versionEntry: VersionEntry,
-        isNeoForge: Boolean
+        isNeoForge: Boolean,
+        newToken: String? = null,
     ): String? {
         val loaderList = withContext(Dispatchers.IO) {
             runCatching {
@@ -1603,7 +1626,8 @@ class ContentPackBrowserActivity : BaseActivity() {
             ?: loaderList.first().forgeVersion
 
         val loaderType = if (isNeoForge) "neoforge" else "forge"
-        val instanceId = "${loaderType}_${mcVersion.replace('.', '_')}_${forgeVersion.replace('.', '_')}"
+        val baseForgeId = "${loaderType}_${mcVersion.replace('.', '_')}_${forgeVersion.replace('.', '_')}"
+        val instanceId = InstanceManager.withToken(baseForgeId, newToken)
         val instanceDir = InstanceManager.instanceDir(this, instanceId)
         if (InstanceManager.loadMeta(instanceDir) != null) {
             Log.d("FLAME_LAUNCHER", "ℹ️ $loaderType 인스턴스 재사용: $instanceId")
@@ -1643,7 +1667,10 @@ class ContentPackBrowserActivity : BaseActivity() {
 
         InstanceManager.saveMeta(this, InstanceMeta(
             id = instanceId,
-            name = "$mcVersion · ${if (isNeoForge) "NeoForge" else "Forge"} $forgeVersion",
+            name = run {
+                val base = "$mcVersion · ${if (isNeoForge) "NeoForge" else "Forge"} $forgeVersion"
+                if (newToken.isNullOrBlank()) base else "$base ($newToken)"
+            },
             type = InstanceType.MODPACK,         // FABRIC 외엔 MODPACK 으로 분류해두는 듯
             mcVersion = mcVersion,
             loaderType = loaderType,
@@ -1720,6 +1747,7 @@ class ContentPackBrowserActivity : BaseActivity() {
             loaderType = loaderType,
             loaderVersion = loaderVersion,
             sourceModId = mod.id,
+            iconUrl = mod.logo?.url,
         )
     }
 
@@ -1739,6 +1767,7 @@ class ContentPackBrowserActivity : BaseActivity() {
         loaderType: String?,
         loaderVersion: String?,
         sourceModId: Int?,
+        iconUrl: String? = null,        // 콘텐츠 로고 URL(CurseForge/Modrinth). 받아서 인스턴스 아이콘으로 저장.
     ) {
         // ── 1.5) Sodium 본체가 모드팩에 있으면 Podium 자동 동봉 ──
         _statusMessage.value = "Sodium 호환 점검 중..."
@@ -1759,6 +1788,11 @@ class ContentPackBrowserActivity : BaseActivity() {
         _statusMessage.value = "MC $mcVersion 다운로드 중..."
         val mcResult = withContext(Dispatchers.IO) {
             MinecraftDownloader(instanceDir, versionEntry) { _progress.value = it }.prepare()
+        }
+
+        // ── 3.5) 모드팩 로고를 인스턴스 아이콘으로 저장 (실패해도 무시) ──
+        val iconPath = withContext(Dispatchers.IO) {
+            downloadInstanceIcon(iconUrl, instanceDir)
         }
 
         // ── 4) 로더 설치 + 최종 InstanceMeta 조립 ───────────────────
@@ -1797,6 +1831,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     gameJvmArgs = fr.gameJvmArgs,
                     gameArgs = fr.gameArgs,
                     sourceModId = sourceModId,
+                    iconPath = iconPath,
                 )
             }
 
@@ -1839,6 +1874,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     gameJvmArgs = fr.gameJvmArgs,
                     gameArgs = fr.gameArgs,
                     sourceModId = sourceModId,
+                    iconPath = iconPath,
                 )
             }
 
@@ -1857,6 +1893,7 @@ class ContentPackBrowserActivity : BaseActivity() {
                     iconEmoji = "📦",
                     gameArgs = legacyArgs,
                     sourceModId = sourceModId,
+                    iconPath = iconPath,
                 )
             }
         }
@@ -2061,12 +2098,28 @@ class ContentPackBrowserActivity : BaseActivity() {
             val body = response.body ?: return
             val contentLen = body.contentLength()
             val totalKb = if (contentLen > 0) (contentLen / 1024).toInt().coerceAtLeast(1) else 0
-            _progress.value = DownloadProgress(
-                phase = DownloadPhase.DOWNLOADING_CLIENT,
-                current = 0,
-                total = totalKb,
-                fileName = displayName
-            )
+
+            // 속도 측정용 상태. 일정 간격(150ms)마다 구간 평균 속도를 갱신해 표시가 출렁이지 않게 한다.
+            val startNs = System.nanoTime()
+            var lastTickNs = startNs
+            var lastTickBytes = 0L
+            var speedBps = 0.0
+            var lastPublishNs = 0L
+
+            fun publish(downloaded: Long, done: Boolean) {
+                // 화면 갱신을 150ms 로 throttling (Compose 리컴포지션 폭주 방지)
+                val now = System.nanoTime()
+                if (!done && now - lastPublishNs < 150_000_000L) return
+                lastPublishNs = now
+                _progress.value = DownloadProgress(
+                    phase = if (done) DownloadPhase.DONE else DownloadPhase.DOWNLOADING_CLIENT,
+                    current = if (totalKb > 0) (downloaded / 1024).toInt().coerceAtMost(totalKb) else 0,
+                    total = totalKb,
+                    fileName = buildDownloadLabel(displayName, downloaded, contentLen, speedBps),
+                )
+            }
+
+            publish(0, done = false)
 
             body.byteStream().use { input ->
                 destination.outputStream().use { output ->
@@ -2077,15 +2130,22 @@ class ContentPackBrowserActivity : BaseActivity() {
                         if (read <= 0) break
                         output.write(buf, 0, read)
                         total += read
-                        if (totalKb > 0) {
-                            _progress.value = DownloadProgress(
-                                phase = DownloadPhase.DOWNLOADING_CLIENT,
-                                current = (total / 1024).toInt().coerceAtMost(totalKb),
-                                total = totalKb,
-                                fileName = displayName
-                            )
+
+                        // 구간 속도 갱신
+                        val now = System.nanoTime()
+                        val dtNs = now - lastTickNs
+                        if (dtNs >= 150_000_000L) {           // 0.15s 마다
+                            val dBytes = total - lastTickBytes
+                            speedBps = dBytes * 1_000_000_000.0 / dtNs
+                            lastTickNs = now
+                            lastTickBytes = total
                         }
+                        publish(total, done = false)
                     }
+                    // 전체 평균으로 마지막 속도 보정(짧은 파일은 구간 샘플이 안 잡힐 수 있음)
+                    val elapsed = (System.nanoTime() - startNs).coerceAtLeast(1)
+                    if (speedBps <= 0.0) speedBps = total * 1_000_000_000.0 / elapsed
+                    publish(total, done = false)
                 }
             }
 
@@ -2093,9 +2153,90 @@ class ContentPackBrowserActivity : BaseActivity() {
                 phase = DownloadPhase.DONE,
                 current = totalKb,
                 total = totalKb,
-                fileName = displayName
+                fileName = buildDownloadLabel(displayName, contentLen.coerceAtLeast(0), contentLen, speedBps),
             )
         }
+    }
+
+    /**
+     * 다운로드 팝업에 보일 한 줄 라벨.
+     *   "<파일명> · 12.3 MB / 45.0 MB · 8.4 MB/s"
+     * 총 크기를 모르면(Content-Length 없음) 받은 양과 속도만 표시한다.
+     */
+    private fun buildDownloadLabel(
+        name: String,
+        downloaded: Long,
+        totalBytes: Long,
+        speedBps: Double,
+    ): String = buildString {
+        append(name)
+        if (totalBytes > 0) {
+            append(" · ${formatBytes(downloaded)} / ${formatBytes(totalBytes)}")
+        } else if (downloaded > 0) {
+            append(" · ${formatBytes(downloaded)}")
+        }
+        if (speedBps > 1.0) append(" · ${formatSpeed(speedBps)}")
+    }
+
+    private fun formatBytes(bytes: Long): String = when {
+        bytes >= 1024L * 1024L * 1024L -> String.format("%.2f GB", bytes / (1024.0 * 1024.0 * 1024.0))
+        bytes >= 1024L * 1024L         -> String.format("%.1f MB", bytes / (1024.0 * 1024.0))
+        bytes >= 1024L                 -> String.format("%.0f KB", bytes / 1024.0)
+        else                           -> "$bytes B"
+    }
+
+    private fun formatSpeed(bytesPerSec: Double): String = when {
+        bytesPerSec >= 1024.0 * 1024.0 -> String.format("%.1f MB/s", bytesPerSec / (1024.0 * 1024.0))
+        bytesPerSec >= 1024.0          -> String.format("%.0f KB/s", bytesPerSec / 1024.0)
+        else                           -> String.format("%.0f B/s", bytesPerSec)
+    }
+
+    /**
+     * 콘텐츠(모드팩/모드) 로고를 인스턴스 폴더에 내려받아 아이콘으로 저장한다.
+     * 성공하면 저장된 파일의 절대경로, 실패(또는 url 없음)하면 null 을 반환한다.
+     * 호출부는 이 값을 InstanceMeta.iconPath 로 저장하고, null 이면 기본 아이콘으로 폴백한다.
+     *
+     * @param logoUrl  CurseForge/Modrinth 로고 URL. CurseForgeMod.logo?.url / ModrinthProject.iconUrl 등.
+     * @param instanceDir 인스턴스 루트(아이콘은 그 안 icon.png 로 저장).
+     */
+    private fun downloadInstanceIcon(logoUrl: String?, instanceDir: File): String? {
+        if (logoUrl.isNullOrBlank()) return null
+        return try {
+            val iconFile = File(instanceDir, "icon.png").also { it.parentFile?.mkdirs() }
+            val req = Request.Builder().url(logoUrl).build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w("FLAME_LAUNCHER", "아이콘 다운로드 실패(${resp.code}): $logoUrl")
+                    return null
+                }
+                val body = resp.body ?: return null
+                body.byteStream().use { input ->
+                    iconFile.outputStream().use { input.copyTo(it) }
+                }
+            }
+            if (iconFile.length() > 0) {
+                Log.d("FLAME_LAUNCHER", "✅ 인스턴스 아이콘 저장: ${iconFile.absolutePath}")
+                iconFile.absolutePath
+            } else null
+        } catch (e: Exception) {
+            Log.w("FLAME_LAUNCHER", "아이콘 다운로드 예외: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * 이미 만들어진 인스턴스에 콘텐츠 로고를 받아 아이콘으로 입힌다(iconPath 만 갱신 저장).
+     * 새 인스턴스에 모드를 설치할 때, 로더 기본 아이콘 대신 해당 모드의 로고를 쓰기 위함.
+     * 메타가 없거나 다운로드 실패하면 조용히 무시(기존 메타 유지).
+     * 이미 아이콘이 있으면 덮어쓰지 않는다.
+     */
+    private fun applyContentIconToInstance(instanceId: String, logoUrl: String?) {
+        if (logoUrl.isNullOrBlank()) return
+        val instanceDir = InstanceManager.instanceDir(this, instanceId)
+        val meta = InstanceManager.loadMeta(instanceDir) ?: return
+        if (meta.iconPath != null) return
+        val path = downloadInstanceIcon(logoUrl, instanceDir) ?: return
+        InstanceManager.saveMeta(this, meta.copy(iconPath = path))
     }
 
     // ───── 인스턴스 ID 추적 (설치 여부 표시) ─────

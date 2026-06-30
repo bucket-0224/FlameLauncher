@@ -59,7 +59,12 @@ class ModPackInstaller(
         modpackZip.parentFile?.mkdirs()
 
         onProgress(DownloadProgress(phase = DownloadPhase.DOWNLOADING_CLIENT, fileName = "${mod.name}.zip"))
-        downloadFile(downloadUrl, modpackZip)
+        downloadFile(downloadUrl, modpackZip) { downloaded, total, speed ->
+            onProgress(DownloadProgress(
+                phase = DownloadPhase.DOWNLOADING_CLIENT,
+                fileName = "${mod.name}.zip · ${byteDetail(downloaded, total, speed)}",
+            ))
+        }
 
         val manifest = extractManifest(modpackZip)
             ?: return ModPackInstallResult(success = false, error = "manifest.json 없음")
@@ -207,15 +212,84 @@ class ModPackInstaller(
         }
     }
 
-    private fun downloadFile(url: String, destFile: File) {
+    private fun downloadFile(
+        url: String,
+        destFile: File,
+        onBytes: ((downloaded: Long, total: Long, speedBps: Double) -> Unit)? = null,
+    ) {
         if (destFile.exists() && destFile.length() > 0) return
         destFile.parentFile?.mkdirs()
         val request = Request.Builder().url(url).build()
         client.newCall(request).execute().use { response ->
             if (!response.isSuccessful) throw Exception("다운로드 실패: $url (${response.code})")
-            response.body?.byteStream()?.use { input ->
-                FileOutputStream(destFile).use { input.copyTo(it) }
+            val body = response.body ?: throw Exception("응답 본문 없음: $url")
+            val contentLen = body.contentLength()
+
+            if (onBytes == null) {
+                // 진행 보고가 필요 없는 경우(개별 모드 등) — 기존처럼 통째 복사.
+                body.byteStream().use { input ->
+                    FileOutputStream(destFile).use { input.copyTo(it) }
+                }
+                return
+            }
+
+            // 진행 보고가 필요한 경우(모드팩 zip 등) — 스트리밍하며 속도 계산.
+            val startNs = System.nanoTime()
+            var lastTickNs = startNs
+            var lastTickBytes = 0L
+            var speedBps = 0.0
+            var lastPublishNs = 0L
+
+            body.byteStream().use { input ->
+                FileOutputStream(destFile).use { output ->
+                    val buf = ByteArray(64 * 1024)
+                    var total = 0L
+                    while (true) {
+                        val read = input.read(buf)
+                        if (read <= 0) break
+                        output.write(buf, 0, read)
+                        total += read
+
+                        val now = System.nanoTime()
+                        val dtNs = now - lastTickNs
+                        if (dtNs >= 150_000_000L) {
+                            speedBps = (total - lastTickBytes) * 1_000_000_000.0 / dtNs
+                            lastTickNs = now
+                            lastTickBytes = total
+                        }
+                        if (now - lastPublishNs >= 150_000_000L) {
+                            lastPublishNs = now
+                            onBytes(total, contentLen, speedBps)
+                        }
+                    }
+                    val elapsed = (System.nanoTime() - startNs).coerceAtLeast(1)
+                    if (speedBps <= 0.0) speedBps = total * 1_000_000_000.0 / elapsed
+                    onBytes(total, contentLen, speedBps)
+                }
             }
         }
+    }
+
+    /** 바이트/속도 → "12.3 MB / 45.0 MB · 8.4 MB/s" 라벨(파일명 뒤에 붙일 상세). */
+    private fun byteDetail(downloaded: Long, total: Long, speedBps: Double): String = buildString {
+        if (total > 0) append("${fmtBytes(downloaded)} / ${fmtBytes(total)}")
+        else if (downloaded > 0) append(fmtBytes(downloaded))
+        if (speedBps > 1.0) {
+            if (isNotEmpty()) append(" · ")
+            append(fmtSpeed(speedBps))
+        }
+    }
+
+    private fun fmtBytes(b: Long): String = when {
+        b >= 1024L*1024L*1024L -> String.format("%.2f GB", b / (1024.0*1024.0*1024.0))
+        b >= 1024L*1024L       -> String.format("%.1f MB", b / (1024.0*1024.0))
+        b >= 1024L             -> String.format("%.0f KB", b / 1024.0)
+        else                   -> "$b B"
+    }
+
+    private fun fmtSpeed(bps: Double): String = when {
+        bps >= 1024.0*1024.0 -> String.format("%.1f MB/s", bps / (1024.0*1024.0))
+        bps >= 1024.0        -> String.format("%.0f KB/s", bps / 1024.0)
+        else                 -> String.format("%.0f B/s", bps)
     }
 }

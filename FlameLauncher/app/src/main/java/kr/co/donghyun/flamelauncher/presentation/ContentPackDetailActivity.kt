@@ -183,6 +183,7 @@ class ContentPackDetailActivity : BaseActivity() {
         const val EXTRA_TARGET_INSTANCE_ID = "target_instance_id"   // 기존 인스턴스 선택 시
         const val EXTRA_TARGET_VERSION = "target_version"           // 새 인스턴스 생성 시
         const val EXTRA_TARGET_LOADER = "target_loader"             // 새 인스턴스 생성 시 (ModLoader.name)
+        const val EXTRA_TARGET_NEW_TOKEN = "target_new_token"       // 새 인스턴스 생성 시: 고유 분리 토큰(UUID8). 있으면 기존과 별개 인스턴스로 만듦
         const val EXTRA_TARGET_WORLD = "target_world"               // 데이터팩 설치 대상 월드명
         const val EXTRA_TARGET_FILE_ID = "target_file_id"           // 모드팩(CurseForge): 사용자가 고른 파일(버전) id (Int)
         const val EXTRA_TARGET_MR_VERSION_ID = "target_mr_version_id" // 모드팩(Modrinth): 사용자가 고른 버전 id (String)
@@ -379,6 +380,9 @@ class ContentPackDetailActivity : BaseActivity() {
                                     .putExtra(EXTRA_MOD_KEY, modKey)
                                     .putExtra("action", "install")
                                     .putExtra(EXTRA_TARGET_VERSION, version)
+                                    // "새로 설치"는 항상 고유 토큰을 달아, 같은 버전·로더라도
+                                    // 기존 인스턴스를 덮어쓰지 않고 별개로 만든다.
+                                    .putExtra(EXTRA_TARGET_NEW_TOKEN, InstanceManager.newInstanceToken())
                                 if (loader != null) intent.putExtra(EXTRA_TARGET_LOADER, loader.name)
                                 setResult(RESULT_OK, intent)
                                 finish()

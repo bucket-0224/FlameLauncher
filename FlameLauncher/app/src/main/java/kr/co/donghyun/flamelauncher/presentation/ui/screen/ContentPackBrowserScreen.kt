@@ -231,24 +231,8 @@ fun ContentPackBrowserScreen(
             }
         }
 
-        // 다운로드 인디케이터 배너 알림창
-        if (isInstalling) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Flame.copy(alpha = 0.15f))
-                    .padding(10.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                Text(statusMessage, color = TextMain, fontSize = if (tablet) 12.sp else 10.sp)
-                LinearProgressIndicator(
-                    progress = { progress.fraction },
-                    color = Flame,
-                    trackColor = BgBorder,
-                    modifier = Modifier.fillMaxWidth().height(4.dp)
-                )
-            }
-        }
+        // 다운로드 진행은 화면 하단 배너가 아니라 모달 팝업으로 표시한다.
+        // (아래 LazyVerticalGrid 뒤, Column 밖에서 띄움)
 
         // 메인 리스트 레이아웃 Grid 처리 (태블릿은 2열, 폰은 1열 구성 대응)
         LazyVerticalGrid(
@@ -278,6 +262,17 @@ fun ContentPackBrowserScreen(
                     }
                 }
             }
+        }
+
+        // ── 다운로드 진행 팝업 (모달) ──
+        // 설치/다운로드 중에는 무엇을, 어디까지, 얼마나 빠르게 받는지 한 곳에 모아 보여준다.
+        // 진행 중에는 사용자가 실수로 닫지 못하게 onDismiss 를 무시한다(자동으로만 사라짐).
+        if (isInstalling) {
+            DownloadProgressDialog(
+                statusMessage = statusMessage,
+                progress = progress,
+                tablet = tablet,
+            )
         }
 
         if (showCautionDialog) {
@@ -392,4 +387,94 @@ fun ContentPackItem(
             }
         }
     }
+}
+/**
+ * 다운로드 진행 모달 팝업.
+ *
+ * 표시 정보:
+ *  - 단계 메시지(statusMessage) — 예: "OptiFine 다운로드 중...", "Forge 0.x 설치 중..."
+ *  - 무엇을 받는지(progress.fileName) — Activity 가 "<파일명> · 12.3 MB / 45.0 MB · 8.4 MB/s"
+ *    형태로 합성해 넘긴다. 여기서 ' · ' 로 쪼개 파일명과 상세(크기/속도)를 두 줄로 나눠 보여준다.
+ *  - 진행률 막대 + 퍼센트
+ *
+ * 진행 중에는 사용자가 닫을 수 없다(onDismissRequest 무시) — 설치가 끝나면 호출부가 자동으로 내린다.
+ */
+@Composable
+private fun DownloadProgressDialog(
+    statusMessage: String,
+    progress: DownloadProgress,
+    tablet: Boolean,
+) {
+    // "<파일명> · 12.3 MB / 45.0 MB · 8.4 MB/s" → 파일명 / 상세 분리
+    val rawLabel = progress.fileName
+    val firstSep = rawLabel.indexOf(" · ")
+    val fileName = if (firstSep >= 0) rawLabel.substring(0, firstSep) else rawLabel
+    val detail = if (firstSep >= 0) rawLabel.substring(firstSep + 3) else ""
+
+    AlertDialog(
+        onDismissRequest = { /* 진행 중에는 닫지 못함 */ },
+        containerColor = BgSurface,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                CircularProgressIndicator(
+                    color = Flame,
+                    strokeWidth = 2.5.dp,
+                    modifier = Modifier.size(20.dp),
+                )
+                Text("다운로드 중", color = TextMain, fontSize = if (tablet) 16.sp else 14.sp, fontWeight = FontWeight.Bold)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                // 단계 메시지
+                if (statusMessage.isNotBlank()) {
+                    Text(statusMessage, color = TextSub, fontSize = if (tablet) 13.sp else 11.sp)
+                }
+
+                // 무엇을 받는지(파일명)
+                if (fileName.isNotBlank()) {
+                    Text(
+                        fileName,
+                        color = TextMain,
+                        fontSize = if (tablet) 13.sp else 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // 크기 / 속도 상세
+                if (detail.isNotBlank()) {
+                    Text(detail, color = Flame, fontSize = if (tablet) 12.sp else 10.sp, fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(Modifier.height(2.dp))
+
+                // 진행률 막대 + 퍼센트
+                LinearProgressIndicator(
+                    progress = { progress.fraction },
+                    color = Flame,
+                    trackColor = BgBorder,
+                    modifier = Modifier.fillMaxWidth().height(6.dp).clip(RoundedCornerShape(3.dp)),
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        if (progress.total > 0) "${progress.current} / ${progress.total}" else "",
+                        color = TextSub,
+                        fontSize = if (tablet) 11.sp else 9.sp,
+                    )
+                    Text(
+                        "${progress.percent}%",
+                        color = Flame,
+                        fontSize = if (tablet) 12.sp else 10.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+    )
 }
